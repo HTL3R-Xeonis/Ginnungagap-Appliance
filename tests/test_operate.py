@@ -1,5 +1,6 @@
 import os
 import stat
+import subprocess
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -265,3 +266,27 @@ def test_a_failed_restore_does_not_start_the_services_on_half_written_data(
     )
     assert len(run.calls) == 2  # stop, the failed replace - no start
     assert any("left stopped" in line for line in lines)
+
+
+def test_docker_is_run_from_the_bundle_folder_by_default(
+    config_file, bundle, generator_sources, monkeypatch
+):
+    """compose reads COMPOSE_FILE relative to the working directory: from any other folder it can't find compose.yml."""
+    seen = []
+
+    def fake_run(args, check, cwd):
+        seen.append((args[:2], cwd))
+        return subprocess.CompletedProcess(args, 0)
+
+    monkeypatch.setattr(operate.subprocess, "run", fake_run)
+    monkeypatch.chdir(config_file.parent)  # not the bundle
+    code = operate.apply(
+        config_file,
+        bundle,
+        generator_sources,
+        fetch=healthy_fetch,
+        sleep=lambda s: None,
+        out=lambda m: None,
+    )
+    assert code == 0
+    assert seen and all(cwd == bundle for _, cwd in seen)

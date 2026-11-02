@@ -161,13 +161,16 @@ def caddyfile(config: dict[str, Any]) -> str:
 
     lines = [HEADER.rstrip("\n"), ""]
     if appliance["tls"]["mode"] == "self-signed":
-        site, tls = urlparse(appliance["public_url"]).hostname, ["tls internal"]
+        name, tls = urlparse(appliance["public_url"]).hostname, ["tls internal"]
+        # also the machine's own address: Caddy answers a request for a name it has no site for with an empty 200, which
+        # `ginnungagap status` (it asks 127.0.0.1) and a `curl localhost` would take for a healthy answer
+        site = ", ".join(dict.fromkeys([name, "localhost", "127.0.0.1"]))
         port = appliance["https_port"]
         target = "https://{host}" + (f":{port}" if port != 443 else "") + "{uri}"
         lines += [
             "{",
             # a client that connects by address (no name to ask for) gets the site's certificate, e.g. `ginnungagap status`
-            f"\tdefault_sni {site}",
+            f"\tdefault_sni {name}",
             # Caddy's own redirect always names port 443; the published port may be another one
             "\tauto_https disable_redirects",
             "}",

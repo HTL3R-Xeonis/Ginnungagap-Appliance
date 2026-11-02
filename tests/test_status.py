@@ -233,3 +233,16 @@ def test_ova_deploy_as_a_container_is_asked_through_the_gateway(make_config):
         by["ova-deploy"].state == "degraded"
         and "template store" in by["ova-deploy"].detail
     )
+
+
+def test_a_200_without_the_services_own_data_is_not_healthy(make_config):
+    """A gateway with no site for the address it is asked on answers 200 with nothing at all (found on a real machine)."""
+    table = {path: (200, "", None) for path in ALL_OK}
+    rows = st.check(make_config(), "http://g", answers(table))
+    assert not st.healthy(rows)
+    by = rows_by_name(rows)
+    assert (
+        by["ginnungagap"].state == "down"
+        and "wrong host name" in by["ginnungagap"].detail
+    )
+    assert by["generator"].state == "down"

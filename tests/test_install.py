@@ -74,6 +74,9 @@ def test_installs_program_command_config_and_unit(place):
     )
     assert "Requires=docker.service" in unit and "WantedBy=multi-user.target" in unit
     assert "edit it" in result.stdout.lower()
+    assert (
+        "systemctl enable ginnungagap.service" in result.stdout
+    )  # not enabled before the example has been edited
 
 
 def test_the_installed_command_runs_the_installed_program(place, tmp_path):
@@ -126,6 +129,7 @@ def test_uninstall_removes_program_command_and_unit_but_keeps_the_config(place):
     result = install(place, "--uninstall")
     assert result.returncode == 0, result.stderr
     assert not (place["prefix"] / "app").exists()
+    assert not place["prefix"].exists()  # the empty folder is removed with it
     assert not (place["bin"] / "ginnungagap").exists()
     assert not (place["units"] / "ginnungagap.service").exists()
     assert (place["config"] / "ginnungagap.yml").is_file()

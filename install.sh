@@ -51,6 +51,7 @@ if [ "$UNINSTALL" = 1 ]; then
   [ "$REAL_SYSTEMD" = 1 ] && systemctl disable ginnungagap.service >/dev/null 2>&1 || true
   rm -f "$UNIT" "$WRAPPER"
   rm -rf "$APP"
+  rmdir "$PREFIX" 2>/dev/null || true  # only when nothing else lives there
   [ "$REAL_SYSTEMD" = 1 ] && systemctl daemon-reload || true
   echo "Removed the program, the command and the unit. Kept: $CONFIG_DIR (your configuration) and the containers' data volumes."
   echo "Stop the containers with: docker compose --project-name ginnungagap down"
@@ -128,7 +129,10 @@ WantedBy=multi-user.target
 UNITFILE
   if [ "$REAL_SYSTEMD" = 1 ]; then
     systemctl daemon-reload
-    systemctl enable ginnungagap.service >/dev/null 2>&1 || true
+    # the unit applies the configuration at boot: not before the example file has been edited (a boot with it would only fail)
+    if [ "$CREATED" = 0 ]; then
+      systemctl enable ginnungagap.service >/dev/null 2>&1 || true
+    fi
   fi
 fi
 
@@ -136,6 +140,7 @@ echo "Installed: program in $APP, command $WRAPPER, configuration in $CONFIG_DIR
 if [ "$CREATED" = 1 ]; then
   echo "A new $CONFIG_DIR/ginnungagap.yml was created from the example (readable by root only). Edit it, then run:"
   echo "  sudo ginnungagap apply $CONFIG_DIR/ginnungagap.yml"
+  [ "$SYSTEMD" = 1 ] && echo "and, so that it also starts at boot:  sudo systemctl enable ginnungagap.service"
   exit 0
 fi
 if [ "$START" = 1 ]; then

@@ -85,6 +85,14 @@ def _row(
         return Row(name, "login", "the gateway wants a login (use --user)")
     data = _json(body)
     if status == 200:
+        if not data:
+            # every service answers /health with a JSON object; anything else did not come from the service (a gateway
+            # with no site for the address it was asked on answers 200 with nothing)
+            return Row(
+                name,
+                "down",
+                "answered 200 without the service's own health data - not the service (wrong host name?)",
+            )
         return Row(name, "ok", summary(data))
     if status == 503:
         problems = data.get("problems") or [

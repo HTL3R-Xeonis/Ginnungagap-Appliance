@@ -40,8 +40,16 @@ APP_SERVICES = (
 )  # the services that use the data volume
 
 
-def default_runner(args: list[str]) -> int:
-    return subprocess.run(args, check=False).returncode
+def default_runner(args: list[str], cwd: Path | None = None) -> int:
+    """
+    Runs the command. Docker is run from the bundle folder: compose resolves the files named in COMPOSE_FILE (rendered/compose.env)
+    relative to the working directory, not to --project-directory, so from anywhere else it looks for compose.yml in the wrong place.
+    """
+    return subprocess.run(args, check=False, cwd=cwd).returncode
+
+
+def _runner(run: Runner | None, bundle: Path) -> Runner:
+    return run or (lambda args: default_runner(args, cwd=bundle))
 
 
 def _digests(folder: Path) -> dict[str, str]:
@@ -70,7 +78,7 @@ def apply(
     config_file: str | Path,
     bundle: Path,
     generator_config: str | Path | None,
-    run: Runner = default_runner,
+    run: Runner | None = None,
     start: bool = True,
     build: bool = True,
     wait_seconds: float = 90.0,
@@ -79,6 +87,7 @@ def apply(
     out: Callable[[str], None] = print,
 ) -> int:
     """Validate, render, start what is needed and wait until it is healthy. Returns the exit code (0 = all healthy)."""
+    run = _runner(run, bundle)
     try:
         config = config_module.load(config_file)
     except config_module.ConfigError as exc:
@@ -153,7 +162,7 @@ def backup(
     config_file: str | Path,
     bundle: Path,
     destination: str | Path,
-    run: Runner = default_runner,
+    run: Runner | None = None,
     now: Callable[[], datetime] = datetime.now,
     image: str = "python:3.12-slim",
     out: Callable[[str], None] = print,
@@ -162,6 +171,7 @@ def backup(
     Copies the config file and the app's data volume (host profiles with their stored passwords, projects, designs, notes) into
     a new folder under `destination`. Everything in it is readable by the owner only. Returns the folder, None on failure.
     """
+    run = _runner(run, bundle)
     folder = Path(destination) / f"ginnungagap-backup-{now():%Y%m%d-%H%M%S}"
     folder.mkdir(parents=True, mode=0o700)
     shutil.copyfile(config_file, folder / "ginnungagap.yml")
@@ -186,11 +196,12 @@ def backup(
 def restore(
     backup_folder: str | Path,
     bundle: Path,
-    run: Runner = default_runner,
+    run: Runner | None = None,
     image: str = "python:3.12-slim",
     out: Callable[[str], None] = print,
 ) -> int:
     """Replaces the app's data volume by the backup's data.tgz. The services using it are stopped first and started again."""
+    run = _runner(run, bundle)
     folder = Path(backup_folder)
     archive = folder / "data.tgz"
     if not archive.is_file():

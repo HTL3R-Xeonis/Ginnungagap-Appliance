@@ -3,12 +3,12 @@
 Runs the Ginnungagap services together on one VM, configured by **one file** (`ginnungagap.yml`). Hosts (an ESXi host and
 its GNS3 VM) are not part of that file: they stay profiles that you create in the app.
 
-**Status: first version, run with Docker.** `smoke/smoke-test.sh` builds every image, starts each service on its own and then
-all together against a throw-away project, a fake template store and a host that does not exist, and passes on a Docker
-host (Docker 29, Compose 5). What it does not cover: an actual OVA import by the OVA deploy service (it needs a real ESXi host), basic auth, a real host with a
-real ESXi password, and anything beyond the services' health and the gateway's routes. The command line (`apply`, `status`,
-`backup`, `restore`) and the installer are covered by unit tests with a recording stand-in for Docker; they have not yet been
-run against a real project in this repository's smoke test.
+**Status: first version, run with Docker.** `smoke/smoke-test.sh` builds every image and runs it against a throw-away project, a
+fake template store and a host that does not exist: each service alone, then all together through the gateway, then the
+operating commands (`status`, `apply` on an unchanged file recreates nothing, `backup`, `restore`) and a switch to self-signed
+TLS. It passes on a Docker host (Docker 29, Compose 5). What it does not cover: an actual OVA import by the OVA deploy
+service (it needs a real ESXi host and password), basic auth, and the installer as root with the real systemd unit (the
+installer itself is covered by unit tests with temporary folders).
 
 ## Use
 
