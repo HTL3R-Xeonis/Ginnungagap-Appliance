@@ -3,8 +3,10 @@
 Runs the Ginnungagap services together on one VM, configured by **one file** (`ginnungagap.yml`). Hosts (an ESXi host and
 its GNS3 VM) are not part of that file: they stay profiles that you create in the app.
 
-**Status: first version, not yet run with Docker.** The configuration, the renderer and the structure of the compose
-project are tested (`python -m pytest`); `docker compose` itself has not been run against it yet.
+**Status: first version, run with Docker.** `smoke/smoke-test.sh` builds every image, starts each service on its own and then
+all together against a throw-away project, a fake template store and a host that does not exist, and passes on a Docker
+host (Docker 29, Compose 5). What it does not cover: the OVA deploy service (external), TLS, basic auth, a real host with a
+real ESXi password, and anything beyond the services' health and the gateway's routes.
 
 ## Use
 
@@ -45,6 +47,10 @@ docker compose --env-file rendered/compose.env ps
 
 The **OVA deploy API** is a service too, but its source is not in our repositories, so it is not built here: it stays
 external (`ova_deploy.external_url`, reached through the gateway at `/ova/`).
+
+`smoke/smoke-test.sh` runs the whole sequence - each service alone (degraded until its data is there), then the gateway
+alone (502 for what is not running), the app with a host that does not answer, then everything together - and removes
+everything afterwards (`KEEP=1` keeps it). It needs only Docker and the sibling repositories.
 
 `tests/test_compose.py` enforces the separation (own profile per service, no `depends_on`, only the gateway publishes
 ports, read-only mounts for the template store and the host profiles).
