@@ -5,7 +5,7 @@ its GNS3 VM) are not part of that file: they stay profiles that you create in th
 
 **Status: first version, run with Docker.** `smoke/smoke-test.sh` builds every image, starts each service on its own and then
 all together against a throw-away project, a fake template store and a host that does not exist, and passes on a Docker
-host (Docker 29, Compose 5). What it does not cover: an actual OVA import by the OVA deploy service (it needs a real ESXi host), TLS, basic auth, a real host with a
+host (Docker 29, Compose 5). What it does not cover: an actual OVA import by the OVA deploy service (it needs a real ESXi host), basic auth, a real host with a
 real ESXi password, and anything beyond the services' health and the gateway's routes. The command line (`apply`, `status`,
 `backup`, `restore`) and the installer are covered by unit tests with a recording stand-in for Docker; they have not yet been
 run against a real project in this repository's smoke test.
@@ -29,8 +29,10 @@ for another place).
 
 **OVA deploy service.** `services.ova_deploy` is `true` (own container `ova-deploy`, built from the TopologyBuilderServices
 repository as it is, with a `/health` endpoint added around it), `external` (the existing one, `ova_deploy.external_url`) or
-`off`. As a container it needs `ova_deploy.esxi_password`, the ESXi root password: it is written to
-`rendered/ova-deploy/esxi_password` (mode 0600) and mounted as a secret file, never put into an environment variable or
+`off`. With several ESXi hosts each has its own password: the container looks the password up by the requested host's
+address in the host profiles the app stores (read-only, on every request, so a host added in the app works at once).
+`ova_deploy.esxi_password` is only the fallback for a host without a stored password and may stay empty; if set it is written
+to `rendered/ova-deploy/esxi_password` (mode 0600) and mounted as a secret file, never put into an environment variable or
 another file. The service reads the OVAs from the same template store as the ESXi template API (read-only).
 
 ## Operate
@@ -62,6 +64,18 @@ It needs Docker with the compose plugin, `python3` (3.12+) with `python3-yaml`, 
 are built from. A systemd unit (`ginnungagap.service`) applies the configuration at boot; the containers restart by
 themselves, so this only picks up an edited file. Running `install.sh` again updates the program and keeps your
 configuration; `sudo ./install.sh --uninstall` removes program, command and unit and keeps the configuration and the data.
+
+## TLS
+
+`appliance.tls.mode: self-signed` (with an `https://` `public_url`) makes the gateway serve HTTPS with a certificate from its own
+CA and send plain HTTP to HTTPS on the published port. A browser warns until the CA is trusted; take its certificate out and
+import it where needed:
+
+```bash
+cd /opt/ginnungagap/app && docker compose --env-file rendered/compose.env cp gateway:/data/caddy/pki/authorities/local/root.crt ginnungagap-ca.crt
+```
+
+`status` accepts that certificate on this machine's own gateway. Certificates from a file or from ACME are not available yet.
 
 ## Every service stays separate
 
@@ -102,5 +116,5 @@ today; `services.monitoring` in the config is refused with that explanation rath
 ## Not available yet
 
 The file browser (the config refuses `true` instead of ignoring it),
-TLS from a file or ACME, single sign-on, an aggregate health endpoint, and a ready-made appliance image. The design
+TLS from a file or ACME, single sign-on (basic auth at the gateway exists in the config but is neither wanted nor tested), an aggregate health endpoint, and a ready-made appliance image. The design
 and the decisions still open are in the project's handoff repository.

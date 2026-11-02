@@ -231,14 +231,11 @@ def _check(config: dict[str, Any]) -> list[str]:
         problems.append(
             "ova_deploy.external_url: needed while services.ova_deploy is external"
         )
-    if services["ova_deploy"] is True:
-        password = ova["esxi_password"]
-        if not isinstance(password, str) or not password:
-            problems.append(
-                "ova_deploy.esxi_password: needed while services.ova_deploy is true (the service logs in to the ESXi host with it)"
-            )
-        elif "\n" in password or "\r" in password:
-            problems.append("ova_deploy.esxi_password: must not contain a line break")
+    password = ova["esxi_password"]
+    if not isinstance(password, str):
+        problems.append("ova_deploy.esxi_password: must be text")
+    elif "\n" in password or "\r" in password:
+        problems.append("ova_deploy.esxi_password: must not contain a line break")
     if not isinstance(ova["timeout_seconds"], int) or ova["timeout_seconds"] < 1:
         problems.append("ova_deploy.timeout_seconds: must be a positive number")
     if logging_cfg["level"] not in _LEVELS:

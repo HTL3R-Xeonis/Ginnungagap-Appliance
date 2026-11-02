@@ -328,6 +328,13 @@ def ova_config(make_config):
     )
 
 
+def test_without_a_fallback_password_the_secret_file_is_empty_not_missing(
+    make_config, out, generator_sources
+):
+    render(make_config(services={"ova_deploy": True}), out, generator_sources)
+    assert (out / "ova-deploy" / "esxi_password").read_text(encoding="utf-8") == ""
+
+
 def test_ova_deploy_as_a_container_gets_a_profile_a_route_and_the_password_as_a_file(
     make_config, out, generator_sources
 ):
@@ -375,3 +382,43 @@ def test_external_ova_deploy_still_routes_to_the_configured_address(
     render(config, out, generator_sources)
     assert "reverse_proxy http://10.20.20.172:8003" in read(out, "Caddyfile")
     assert "ova-deploy" not in env_of(read(out, "compose.env"))["COMPOSE_PROFILES"]
+
+
+def tls_caddyfile(make_config, out, generator_sources, **appliance):
+    config = make_config(
+        appliance={
+            "public_url": "https://ginnungagap.lab",
+            "tls": {"mode": "self-signed"},
+            **appliance,
+        }
+    )
+    render(config, out, generator_sources)
+    return read(out, "Caddyfile")
+
+
+def test_tls_answers_a_client_that_connects_by_address_with_the_sites_certificate(
+    make_config, out, generator_sources
+):
+    caddy = tls_caddyfile(make_config, out, generator_sources)
+    assert "default_sni ginnungagap.lab" in caddy.split("ginnungagap.lab {")[0]
+
+
+def test_plain_http_is_sent_to_https_on_the_published_port(
+    make_config, out, generator_sources
+):
+    standard = tls_caddyfile(make_config, out, generator_sources)
+    assert "redir https://{host}{uri} 308" in standard  # 443: no port in the address
+    assert (
+        "auto_https disable_redirects" in standard
+    )  # Caddy's own redirect would always name 443
+    other = tls_caddyfile(make_config, out, generator_sources, https_port=8443)
+    assert "redir https://{host}:8443{uri} 308" in other
+
+
+def test_without_tls_there_is_no_redirect_and_no_name_to_expect(
+    make_config, out, generator_sources
+):
+    render(make_config(), out, generator_sources)
+    caddy = read(out, "Caddyfile")
+    assert "redir" not in caddy and "default_sni" not in caddy
+    assert "auto_https off" in caddy

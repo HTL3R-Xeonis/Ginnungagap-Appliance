@@ -162,6 +162,21 @@ def caddyfile(config: dict[str, Any]) -> str:
     lines = [HEADER.rstrip("\n"), ""]
     if appliance["tls"]["mode"] == "self-signed":
         site, tls = urlparse(appliance["public_url"]).hostname, ["tls internal"]
+        port = appliance["https_port"]
+        target = "https://{host}" + (f":{port}" if port != 443 else "") + "{uri}"
+        lines += [
+            "{",
+            # a client that connects by address (no name to ask for) gets the site's certificate, e.g. `ginnungagap status`
+            f"\tdefault_sni {site}",
+            # Caddy's own redirect always names port 443; the published port may be another one
+            "\tauto_https disable_redirects",
+            "}",
+            "",
+            "http:// {",
+            f"\tredir {target} 308",
+            "}",
+            "",
+        ]
     else:
         lines += ["{", "\tauto_https off", "}", ""]
         site, tls = ":80", []
@@ -274,7 +289,8 @@ def render(
         files["generator.env"] = (generator_env(config), 0o600)  # holds the API keys
         files.update(extra)
     if config["services"]["ova_deploy"] is True:
-        # the ESXi password as a file (mounted as a secret), not as an env file: no quoting rules can alter it
+        # the fallback ESXi password (the hosts' own passwords come from the app's profiles) as a file mounted as a
+        # secret, not as an env file: no quoting rules can alter it. An empty file means "no fallback".
         files["ova-deploy/esxi_password"] = (
             config["ova_deploy"]["esxi_password"],
             0o600,

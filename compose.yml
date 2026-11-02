@@ -133,16 +133,19 @@ services:
     restart: unless-stopped
     environment:
       TZ: ${TZ:-UTC}
+      # the ESXi password of each host is looked up in the app's host profiles (read-only), like the GNS3 collector does
+      HOST_PROFILES_DIR: /host-data/settings_profiles
     secrets:
       - esxi_password
     volumes:
       - template-store:/templates/esxi:ro
+      - data:/host-data:ro
     healthcheck:
       <<: *probe
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=4)"]
 
 secrets:
-  # the root password of the ESXi host the OVAs are imported to; a file in rendered/, never an environment variable
+  # the fallback ESXi password for a host that has none stored in the app (may be empty); a file in rendered/, never an environment variable
   esxi_password:
     file: ./rendered/ova-deploy/esxi_password
 

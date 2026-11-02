@@ -325,9 +325,11 @@ def test_monitoring_is_not_part_of_the_solution_and_says_so():
     )  # not even "false": the setting does not exist
 
 
-def test_ova_deploy_as_a_container_needs_the_esxi_password():
+def test_the_ova_deploy_container_needs_no_password_in_the_file_but_takes_one_as_a_fallback():
     base = {"generator": MINIMAL["generator"], "services": {"ova_deploy": True}}
-    assert any("ova_deploy.esxi_password" in p for p in problems(base))
+    assert (
+        normalise(base)["ova_deploy"]["esxi_password"] == ""
+    )  # the hosts' own come from the app's profiles
     assert any(
         "ova_deploy.esxi_password" in p and "line break" in p
         for p in problems({**base, "ova_deploy": {"esxi_password": "a\nb"}})

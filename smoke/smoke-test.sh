@@ -115,12 +115,21 @@ up generator && sleep 8
 check "/health is 200" "$(status_of generator http://127.0.0.1:8000/health)" "200"
 
 say "ova-deploy ALONE: the service's own code, a health endpoint added around it, the password as a secret file"
+# the app stores a host's password beside its profile; written after the GNS3 steps, whose collector would otherwise log in with it
+docker run --rm -v "${PROJECT}_data:/data" --entrypoint python "${PROJECT}-collector-gns3" -c "
+import json, os
+os.makedirs('/data/settings_profiles/.secrets', exist_ok=True)
+json.dump({'esxi_password': 'host-specific-not-real'}, open('/data/settings_profiles/.secrets/lab.yml.json', 'w'))"
 up ova-deploy && sleep 8
 check "/health is 200 (password and store present)" "$(status_of ova-deploy http://127.0.0.1:8000/health)" "200"
 check "the password is not in the container's environment" "$(docker inspect --format '{{.Config.Env}}' "$(compose ps -q ova-deploy)" | grep -c 'smoke-test-password-not-real')" "0"
 check "the secret file holds it, exactly" "$(compose exec -T ova-deploy cat /run/secrets/esxi_password)" "smoke-test-password-not-real"
 check "the service's own route is there" "$(inside ova-deploy http://127.0.0.1:8000/openapi.json | grep -c '/deploy/ova')" "1"
+check "the host's own password is found by its ESXi address" "$(compose exec -T ova-deploy python -c "import passwords; print(passwords.login_for('10.255.255.1') == ('root', 'host-specific-not-real'))")" "True"
+check "another address gets the fallback" "$(compose exec -T ova-deploy sh -c "ESXI_PASSWORD=\$(cat /run/secrets/esxi_password) python -c \"import passwords; print(passwords.login_for('10.9.9.9') == ('root', 'smoke-test-password-not-real'))\"")" "True"
+check "the health endpoint counts the host" "$(inside ova-deploy http://127.0.0.1:8000/health | grep -c '"hosts_with_password":1')" "1"
 check "it reads the store read-only" "$(compose exec -T ova-deploy sh -c 'touch /templates/esxi/x 2>&1 | grep -c Read-only')" "1"
+docker run --rm -v "${PROJECT}_data:/data" --entrypoint rm "${PROJECT}-collector-gns3" -f /data/settings_profiles/.secrets/lab.yml.json  # the GNS3 collector reads it too
 
 say "gateway ALONE: starts without the app, answers 502 for it, routes to what runs"
 up gateway && sleep 4
@@ -168,6 +177,19 @@ else
   if ginn restore "$BK" --yes >"$WORK/restore.txt" 2>&1; then ok "restore succeeds"; else bad "restore failed: $(tail -2 "$WORK/restore.txt" | tr '\n' '|')"; fi
   check "the data is back" "$(docker run --rm -v "${PROJECT}_data:/data" --entrypoint cat python:3.12-slim /data/marker)" "before"
   wait_healthy ginnungagap 90 && ok "the app is healthy again after the restore" || bad "app not healthy after the restore"
+
+  say "TLS: self-signed certificate at the gateway (applied to the running project)"
+  sed -i 's|^appliance: .*|appliance: {public_url: "https://localhost", timezone: UTC, tls: {mode: self-signed}, http_port: '"$PORT"', https_port: '"$((PORT + 1))"'}|' "$WORK/ginnungagap.yml"
+  if ginn apply "$WORK/ginnungagap.yml" --generator-config "$REPOS_DIR/topology-generator/config" --no-build >"$WORK/apply-tls.txt" 2>&1; then ok "apply with TLS succeeds"; else bad "apply with TLS failed: $(tail -3 "$WORK/apply-tls.txt" | tr '\n' '|')"; fi
+  sleep 3
+  check "https answers (certificate not trusted here, so -k)" "$(curl -sk -o /dev/null -w '%{http_code}' "https://localhost:$((PORT + 1))/health")" "200"
+  check "plain http is sent to https" "$(curl -s -o /dev/null -w '%{http_code} %{redirect_url}' "http://localhost:$PORT/health")" "308 https://localhost:$((PORT + 1))/health"
+  check "the certificate comes from the gateway's own CA" "$(curl -skv "https://localhost:$((PORT + 1))/health" 2>&1 | grep -c 'issuer: .*Caddy Local Authority')" "1"
+  check "a service behind it still answers through https" "$(curl -sk -o /dev/null -w '%{http_code}' "https://localhost:$((PORT + 1))/templates/esxi/health")" "200"
+  if ginn status "$WORK/ginnungagap.yml" >"$WORK/status-tls.txt" 2>&1; then ok "status works over https"; else bad "status over https: $(tr '\n' '|' <"$WORK/status-tls.txt")"; fi
+  compose cp gateway:/data/caddy/pki/authorities/local/root.crt "$WORK/root.crt" >/dev/null 2>&1
+  check "the CA certificate can be taken out to trust it" "$(head -1 "$WORK/root.crt" 2>/dev/null)" "-----BEGIN CERTIFICATE-----"
+  check "the same certificate is the one that signed the site" "$(curl -s --cacert "$WORK/root.crt" -o /dev/null -w '%{http_code}' "https://localhost:$((PORT + 1))/health")" "200"
 fi
 
 echo

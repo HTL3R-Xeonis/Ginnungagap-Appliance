@@ -57,6 +57,10 @@ def test_the_ova_deploy_service_is_its_own_container_with_the_password_as_a_secr
         == "./rendered/ova-deploy/esxi_password"
     )
     assert "template-store:/templates/esxi:ro" in service["volumes"]
+    assert (
+        "data:/host-data:ro" in service["volumes"]
+    )  # the hosts' passwords, as the app stored them
+    assert service["environment"]["HOST_PROFILES_DIR"] == "/host-data/settings_profiles"
     assert "/health" in " ".join(service["healthcheck"]["test"])
     assert service["build"]["additional_contexts"]["service"].endswith(
         "/TopologyBuilderServices"
