@@ -1,0 +1,53 @@
+# Ginnungagap appliance - the ONE configuration file.
+#
+# Copy it to ginnungagap.yml (git-ignored, keep it readable by root only: it holds API keys) and run
+#   python -m ginnungagap validate ginnungagap.yml
+#   python -m ginnungagap render ginnungagap.yml
+# Hosts (an ESXi host and its GNS3 VM) are NOT configured here: they are profiles you create in the app.
+
+version: 1
+
+appliance:
+  public_url: http://localhost          # the address people use; https:// when tls.mode is self-signed
+  timezone: Europe/Vienna
+  tls: { mode: off }                    # off | self-signed
+  auth: { mode: none }                  # none | basic (user + a bcrypt password_hash from `caddy hash-password`)
+  legacy_ports: false                   # true: also publish 8123, 8000, 8001, 8002 as the services had before
+  http_port: 80
+  https_port: 443
+
+services:                               # every service is its own container and can run alone
+  template_esxi: true
+  template_gns3: true
+  generator: true
+  ova_deploy: external                  # external (the existing service, see ova_deploy below) | off
+  filebrowser: false                    # not available yet
+  monitoring: false                     # not available yet
+
+templates:                              # where the OVAs and their *.yml descriptions live (read-only)
+  store:
+    type: local                         # local | nfs
+    local: { path: /srv/templates }
+    # nfs: { server: 10.20.20.180, export: /mnt/pool/templates }
+  esxi_refresh_minutes: 15
+  gns3_refresh_minutes: 5
+  # esxi_url: http://10.20.20.171:8000  # only needed when services.template_esxi is false
+  # gns3_url: http://10.20.20.171:8001  # only needed when services.template_gns3 is false
+
+generator:
+  # url: http://10.20.20.172:8002       # only needed when services.generator is false
+  llm_servers:                          # external Ollama servers, tried in order
+    - { name: ollama-1, url: "http://10.20.20.81:11434", model: "granite4.1:8b" }
+    - { name: ollama-2, url: "http://10.20.20.85:11434", model: "granite4.1:8b" }
+  hosted:                               # optional hosted LLM services; the key is written only into a file only root reads
+    # gemini: { api_key: "..." }        # presets: gemini, groq, openrouter (others need base_url and model)
+  max_retries: 3
+  request_timeout_seconds: 500
+
+ova_deploy:
+  external_url: "http://10.20.20.172:8003"   # the OVA deploy service stays separate (its source is not in our repositories)
+  timeout_seconds: 600
+
+logging:
+  level: INFO
+  max_lines: 100000

@@ -1,0 +1,11 @@
+# Added by COMPOSE_FILE when appliance.legacy_ports is true: the services also answer on the ports they used before, so
+# clients that still point at them (TopologyBuilder's built-in addresses, saved settings files) keep working meanwhile.
+services:
+  ginnungagap:
+    ports: ["8123:8123"]
+  template-esxi:
+    ports: ["8000:8000"]
+  template-gns3:
+    ports: ["8001:8000"]
+  generator:
+    ports: ["8002:8000"]

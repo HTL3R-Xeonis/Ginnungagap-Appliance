@@ -1,0 +1,136 @@
+# Every service is its own container with its own image, its own rendered configuration, its own health check and its
+# own profile. There is deliberately no depends_on anywhere: a service only knows the others by the URLs it is given, so
+# each one can be started and tested alone, e.g.
+#   docker compose --env-file rendered/compose.env up -d --build template-esxi
+# Which services run together is decided by COMPOSE_PROFILES in rendered/compose.env (written by `ginnungagap render`).
+
+name: ginnungagap
+
+x-healthcheck-python: &probe
+  interval: 30s
+  timeout: 5s
+  retries: 3
+  start_period: 20s
+
+services:
+  gateway:
+    profiles: [gateway]
+    image: caddy:2
+    restart: unless-stopped
+    ports:
+      - "${HTTP_PORT:-80}:80"
+      - "${HTTPS_PORT:-443}:443"
+    volumes:
+      - ./rendered/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+
+  ginnungagap:
+    profiles: [ginnungagap]
+    build:
+      context: .
+      dockerfile: docker/operator.Dockerfile
+      additional_contexts:
+        operator: ${REPOS_DIR:-..}/TopologyOperator
+        builder: ${REPOS_DIR:-..}/TopologyBuilder
+    restart: unless-stopped
+    env_file: [rendered/operator.env]
+    volumes:
+      - data:/data
+    healthcheck:
+      <<: *probe
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8123/health', timeout=4)"]
+
+  template-esxi:
+    profiles: [template-esxi]
+    build: ${REPOS_DIR:-..}/Docker-Server-Files/yaml-api
+    restart: unless-stopped
+    environment:
+      TZ: ${TZ:-UTC}
+      DATA_DIR: /data
+      TEMPLATE_STORE_DIR: /store
+    volumes:
+      - template-data:/data:ro
+      - template-store:/store:ro
+    healthcheck:
+      <<: *probe
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=4)"]
+
+  collector-esxi:
+    profiles: [collector-esxi]
+    build:
+      context: .
+      dockerfile: docker/collector-esxi.Dockerfile
+      additional_contexts:
+        services: ${REPOS_DIR:-..}/Docker-Server-Files
+    restart: unless-stopped
+    environment:
+      TZ: ${TZ:-UTC}
+      TEMPLATE_STORE_DIR: /store
+      TEMPLATES_OUTPUT_FILE: /data/templates.yml
+      TEMPLATES_LOG_FILE: /data/collect.log
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+      REFRESH_SECONDS: ${ESXI_REFRESH_SECONDS:-900}
+    volumes:
+      - template-data:/data
+      - template-store:/store:ro
+
+  template-gns3:
+    profiles: [template-gns3]
+    build:
+      context: ${REPOS_DIR:-..}/Docker-Server-Files/gns3-template-api
+      dockerfile: gns3_api.Dockerfile
+    restart: unless-stopped
+    environment:
+      TZ: ${TZ:-UTC}
+      DATA_DIR: /data
+    volumes:
+      - template-data:/data:ro
+    healthcheck:
+      <<: *probe
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=4)"]
+
+  collector-gns3:
+    profiles: [collector-gns3]
+    build:
+      context: .
+      dockerfile: docker/collector-gns3.Dockerfile
+      additional_contexts:
+        services: ${REPOS_DIR:-..}/Docker-Server-Files
+    restart: unless-stopped
+    environment:
+      TZ: ${TZ:-UTC}
+      REFRESH_SECONDS: ${GNS3_REFRESH_SECONDS:-300}
+    volumes:
+      - template-data:/data
+      - data:/host-data:ro
+      - ./rendered/collector-gns3:/config:ro
+
+  generator:
+    profiles: [generator]
+    build:
+      context: ${REPOS_DIR:-..}/topology-generator
+      dockerfile: topology.Dockerfile
+    restart: unless-stopped
+    env_file:
+      - path: rendered/generator.env
+        required: false
+    environment:
+      TZ: ${TZ:-UTC}
+      CONFIG_PATH: /config/topology_config.yml
+    volumes:
+      - ./rendered/generator:/config:ro
+    healthcheck:
+      <<: *probe
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=4)"]
+
+volumes:
+  data: {}
+  template-data: {}
+  caddy-data: {}
+  # the template store: a local folder or an NFS export, always read-only; chosen in ginnungagap.yml
+  template-store:
+    driver: local
+    driver_opts:
+      type: ${TEMPLATE_STORE_VOLUME_TYPE:-none}
+      o: ${TEMPLATE_STORE_VOLUME_OPTS:-bind,ro}
+      device: ${TEMPLATE_STORE_VOLUME_DEVICE:-/srv/templates}
