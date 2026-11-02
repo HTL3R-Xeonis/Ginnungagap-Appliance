@@ -123,6 +123,29 @@ services:
       <<: *probe
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=4)"]
 
+  ova-deploy:
+    profiles: [ova-deploy]
+    build:
+      context: .
+      dockerfile: docker/ova-deploy.Dockerfile
+      additional_contexts:
+        service: ${REPOS_DIR:-..}/TopologyBuilderServices
+    restart: unless-stopped
+    environment:
+      TZ: ${TZ:-UTC}
+    secrets:
+      - esxi_password
+    volumes:
+      - template-store:/templates/esxi:ro
+    healthcheck:
+      <<: *probe
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=4)"]
+
+secrets:
+  # the root password of the ESXi host the OVAs are imported to; a file in rendered/, never an environment variable
+  esxi_password:
+    file: ./rendered/ova-deploy/esxi_password
+
 volumes:
   data: {}
   template-data: {}

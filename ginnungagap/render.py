@@ -49,11 +49,12 @@ def service_urls(config: dict[str, Any]) -> dict[str, str]:
         config["templates"],
         config["generator"],
     )
-    ova = (
-        config["ova_deploy"]["external_url"]
-        if services["ova_deploy"] == "external"
-        else DISABLED_URL
-    )
+    if services["ova_deploy"] is True:
+        ova = "http://ova-deploy:8000"
+    elif services["ova_deploy"] == "external":
+        ova = config["ova_deploy"]["external_url"]
+    else:
+        ova = DISABLED_URL
     return {
         "esxi": "http://template-esxi:8000"
         if services["template_esxi"]
@@ -77,6 +78,8 @@ def profiles(config: dict[str, Any]) -> list[str]:
         result += ["template-gns3", "collector-gns3"]
     if services["generator"]:
         result.append("generator")
+    if services["ova_deploy"] is True:
+        result.append("ova-deploy")
     return result
 
 
@@ -151,7 +154,9 @@ def caddyfile(config: dict[str, Any]) -> str:
         routes.append(("/templates/gns3/*", "template-gns3:8000"))
     if services["generator"]:
         routes.append(("/generator/*", "generator:8000"))
-    if services["ova_deploy"] == "external":
+    if services["ova_deploy"] is True:
+        routes.append(("/ova/*", "ova-deploy:8000"))
+    elif services["ova_deploy"] == "external":
         routes.append(("/ova/*", urls["ova"]))
 
     lines = [HEADER.rstrip("\n"), ""]
@@ -268,6 +273,12 @@ def render(
         )
         files["generator.env"] = (generator_env(config), 0o600)  # holds the API keys
         files.update(extra)
+    if config["services"]["ova_deploy"] is True:
+        # the ESXi password as a file (mounted as a secret), not as an env file: no quoting rules can alter it
+        files["ova-deploy/esxi_password"] = (
+            config["ova_deploy"]["esxi_password"],
+            0o600,
+        )
     if config["services"]["template_gns3"]:
         files["collector-gns3/gns3_config.yml"] = (
             HEADER + yaml.safe_dump(gns3_collector_config(config), sort_keys=False),

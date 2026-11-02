@@ -69,7 +69,7 @@ DEFAULTS: dict[str, Any] = {
         "max_retries": 3,
         "request_timeout_seconds": 500,
     },
-    "ova_deploy": {"external_url": "", "timeout_seconds": 600},
+    "ova_deploy": {"external_url": "", "esxi_password": "", "timeout_seconds": 600},
     "logging": {"level": "INFO", "max_lines": 100000},
 }
 
@@ -176,9 +176,9 @@ def _check(config: dict[str, Any]) -> list[str]:
     for name in ("template_esxi", "template_gns3", "generator"):
         if not isinstance(services[name], bool):
             problems.append(f"services.{name}: must be true or false")
-    if services["ova_deploy"] not in ("external", "off"):
+    if services["ova_deploy"] not in (True, "external", "off"):
         problems.append(
-            "services.ova_deploy: must be external or off (a container for it needs the service's source, which is missing)"
+            "services.ova_deploy: must be true (runs here), external (runs elsewhere, see ova_deploy.external_url) or off"
         )
     if services["filebrowser"] is not False:
         problems.append(
@@ -231,6 +231,14 @@ def _check(config: dict[str, Any]) -> list[str]:
         problems.append(
             "ova_deploy.external_url: needed while services.ova_deploy is external"
         )
+    if services["ova_deploy"] is True:
+        password = ova["esxi_password"]
+        if not isinstance(password, str) or not password:
+            problems.append(
+                "ova_deploy.esxi_password: needed while services.ova_deploy is true (the service logs in to the ESXi host with it)"
+            )
+        elif "\n" in password or "\r" in password:
+            problems.append("ova_deploy.esxi_password: must not contain a line break")
     if not isinstance(ova["timeout_seconds"], int) or ova["timeout_seconds"] < 1:
         problems.append("ova_deploy.timeout_seconds: must be a positive number")
     if logging_cfg["level"] not in _LEVELS:
@@ -359,6 +367,8 @@ def redacted(config: dict[str, Any]) -> dict[str, Any]:
     for settings in shown["generator"]["hosted"].values():
         if isinstance(settings, dict) and "api_key" in settings:
             settings["api_key"] = "<hidden>"
+    if shown["ova_deploy"].get("esxi_password"):
+        shown["ova_deploy"]["esxi_password"] = "<hidden>"
     if "password_hash" in shown["appliance"]["auth"]:
         shown["appliance"]["auth"]["password_hash"] = "<hidden>"
     return shown

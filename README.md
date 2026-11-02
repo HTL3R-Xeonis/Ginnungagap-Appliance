@@ -5,7 +5,7 @@ its GNS3 VM) are not part of that file: they stay profiles that you create in th
 
 **Status: first version, run with Docker.** `smoke/smoke-test.sh` builds every image, starts each service on its own and then
 all together against a throw-away project, a fake template store and a host that does not exist, and passes on a Docker
-host (Docker 29, Compose 5). What it does not cover: the OVA deploy service (external), TLS, basic auth, a real host with a
+host (Docker 29, Compose 5). What it does not cover: an actual OVA import by the OVA deploy service (it needs a real ESXi host), TLS, basic auth, a real host with a
 real ESXi password, and anything beyond the services' health and the gateway's routes. The command line (`apply`, `status`,
 `backup`, `restore`) and the installer are covered by unit tests with a recording stand-in for Docker; they have not yet been
 run against a real project in this repository's smoke test.
@@ -24,7 +24,14 @@ the template store), `Caddyfile`, `operator.env`, `generator/`, `generator.env` 
 `collector-gns3/`. Files are rewritten in place because Docker mounts single files by inode.
 
 The compose file builds the services from the sibling checkouts `../TopologyOperator`, `../TopologyBuilder`,
-`../Docker-Server-Files` and `../topology-generator` (set `REPOS_DIR` for another place).
+`../Docker-Server-Files`, `../topology-generator` and, for the OVA deploy service, `../TopologyBuilderServices` (set `REPOS_DIR`
+for another place).
+
+**OVA deploy service.** `services.ova_deploy` is `true` (own container `ova-deploy`, built from the TopologyBuilderServices
+repository as it is, with a `/health` endpoint added around it), `external` (the existing one, `ova_deploy.external_url`) or
+`off`. As a container it needs `ova_deploy.esxi_password`, the ESXi root password: it is written to
+`rendered/ova-deploy/esxi_password` (mode 0600) and mounted as a secret file, never put into an environment variable or
+another file. The service reads the OVAs from the same template store as the ESXi template API (read-only).
 
 ## Operate
 
@@ -77,8 +84,8 @@ docker compose --env-file rendered/compose.env ps
 | GNS3 template collector (hosts from the app's profiles) | `collector-gns3` | - (writes `gns3_templates.yml`) | - |
 | topology generator | `generator` | `generator:8000` | `/health` |
 
-The **OVA deploy API** is a service too, but its source is not in our repositories, so it is not built here: it stays
-external (`ova_deploy.external_url`, reached through the gateway at `/ova/`).
+The **OVA deploy API** is a service too (`ova-deploy`, `/ova/health`), built from the TopologyBuilderServices repository when
+`services.ova_deploy` is `true`; with `external` the existing one (`ova_deploy.external_url`) is reached through the gateway at `/ova/`.
 
 `smoke/smoke-test.sh` runs the whole sequence - each service alone (degraded until its data is there), then the gateway
 alone (502 for what is not running), the app with a host that does not answer, then everything together - and removes
@@ -94,6 +101,6 @@ today; `services.monitoring` in the config is refused with that explanation rath
 
 ## Not available yet
 
-The file browser (the config refuses `true` instead of ignoring it), the OVA deploy service as a container,
+The file browser (the config refuses `true` instead of ignoring it),
 TLS from a file or ACME, single sign-on, an aggregate health endpoint, and a ready-made appliance image. The design
 and the decisions still open are in the project's handoff repository.

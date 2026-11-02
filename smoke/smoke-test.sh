@@ -68,7 +68,8 @@ version: 1
 appliance: {public_url: http://localhost, timezone: UTC, tls: {mode: "off"}, http_port: $PORT, https_port: $((PORT + 1))}
 templates: {store: {type: local, local: {path: $WORK/store}}, esxi_refresh_minutes: 1, gns3_refresh_minutes: 1}
 generator: {llm_servers: [{name: test, url: "http://127.0.0.1:11434", model: m}]}
-ova_deploy: {external_url: "http://127.0.0.1:9"}
+services: {ova_deploy: true}
+ova_deploy: {esxi_password: "smoke-test-password-not-real"}
 YML
 # the renderer runs in a throw-away python container, so the machine needs nothing but Docker
 # (as your own user, so that the key file it writes - mode 0600 - stays readable for docker compose)
@@ -113,11 +114,20 @@ say "generator ALONE"
 up generator && sleep 8
 check "/health is 200" "$(status_of generator http://127.0.0.1:8000/health)" "200"
 
+say "ova-deploy ALONE: the service's own code, a health endpoint added around it, the password as a secret file"
+up ova-deploy && sleep 8
+check "/health is 200 (password and store present)" "$(status_of ova-deploy http://127.0.0.1:8000/health)" "200"
+check "the password is not in the container's environment" "$(docker inspect --format '{{.Config.Env}}' "$(compose ps -q ova-deploy)" | grep -c 'smoke-test-password-not-real')" "0"
+check "the secret file holds it, exactly" "$(compose exec -T ova-deploy cat /run/secrets/esxi_password)" "smoke-test-password-not-real"
+check "the service's own route is there" "$(inside ova-deploy http://127.0.0.1:8000/openapi.json | grep -c '/deploy/ova')" "1"
+check "it reads the store read-only" "$(compose exec -T ova-deploy sh -c 'touch /templates/esxi/x 2>&1 | grep -c Read-only')" "1"
+
 say "gateway ALONE: starts without the app, answers 502 for it, routes to what runs"
 up gateway && sleep 4
 check "/ is 502 while the app does not run" "$(curl -s -o /dev/null -w '%{http_code}' localhost:$PORT/)" "502"
 check "/templates/esxi/health" "$(curl -s -o /dev/null -w '%{http_code}' localhost:$PORT/templates/esxi/health)" "200"
 check "download through the gateway" "$(curl -s localhost:$PORT/templates/esxi/api/download/deb12)" "FAKE-OVA-0123456789"
+check "/ova/health through the gateway" "$(curl -s -o /dev/null -w '%{http_code}' localhost:$PORT/ova/health)" "200"
 
 say "ginnungagap (the app) with a host that does not answer: must start anyway"
 up ginnungagap
@@ -127,7 +137,7 @@ check "it asks the template service over the compose network" "$(curl -s localho
 
 say "everything together"
 up && sleep 10
-check "all seven services run" "$(compose ps --format '{{.State}}' | grep -c running)" "7"
+check "all eight services run" "$(compose ps --format '{{.State}}' | grep -c running)" "8"
 
 say "operate: status, apply without a change, backup and restore against the running project"
 # the command line needs python with PyYAML: the machine's own if it has it, else a throw-away virtualenv

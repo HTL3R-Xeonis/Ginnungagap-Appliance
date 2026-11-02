@@ -20,7 +20,7 @@ services:                               # every service is its own container and
   template_esxi: true
   template_gns3: true
   generator: true
-  ova_deploy: external                  # external (the existing service, see ova_deploy below) | off
+  ova_deploy: external                  # true (runs here, own container) | external (the existing one, see ova_deploy below) | off
   filebrowser: false                    # not available yet
 
 templates:                              # where the OVAs and their *.yml descriptions live (read-only)
@@ -44,7 +44,8 @@ generator:
   request_timeout_seconds: 500
 
 ova_deploy:
-  external_url: "http://10.20.20.172:8003"   # the OVA deploy service stays separate (its source is not in our repositories)
+  external_url: "http://10.20.20.172:8003"   # used while services.ova_deploy is external
+  esxi_password: ""                          # used while services.ova_deploy is true: the ESXi root password, written only into a file only root reads
   timeout_seconds: 600
 
 logging:

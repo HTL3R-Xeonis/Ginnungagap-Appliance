@@ -139,7 +139,18 @@ def check(config: dict[str, Any], base: str, fetch: Fetch) -> list[Row]:
             continue
         status, body, error = fetch(base + path)
         rows.append(_row(label, status, body, error, summary))
-    if services["ova_deploy"] == "external":
+    if services["ova_deploy"] is True:
+        status, body, error = fetch(f"{base}/ova/health")
+        rows.append(
+            _row(
+                "ova-deploy",
+                status,
+                body,
+                error,
+                lambda d: "up - imports OVAs from the template store",
+            )
+        )
+    elif services["ova_deploy"] == "external":
         rows.append(
             Row(
                 "ova-deploy",

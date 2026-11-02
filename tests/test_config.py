@@ -72,7 +72,7 @@ def test_services_that_do_not_exist_yet_are_refused_not_ignored():
         }
     )
     assert any("services.filebrowser" in p for p in found)
-    assert any("services.ova_deploy" in p and "source" in p for p in found)
+    assert any("services.ova_deploy" in p and "true" in p for p in found)
 
 
 def test_ova_deploy_external_needs_its_address_but_off_does_not():
@@ -323,3 +323,30 @@ def test_monitoring_is_not_part_of_the_solution_and_says_so():
     assert problems(
         {**MINIMAL, "services": {"monitoring": False}}
     )  # not even "false": the setting does not exist
+
+
+def test_ova_deploy_as_a_container_needs_the_esxi_password():
+    base = {"generator": MINIMAL["generator"], "services": {"ova_deploy": True}}
+    assert any("ova_deploy.esxi_password" in p for p in problems(base))
+    assert any(
+        "ova_deploy.esxi_password" in p and "line break" in p
+        for p in problems({**base, "ova_deploy": {"esxi_password": "a\nb"}})
+    )
+    config = normalise({**base, "ova_deploy": {"esxi_password": "p'a$s\"w#rd"}})
+    assert config["services"]["ova_deploy"] is True
+
+
+def test_the_esxi_password_is_hidden_when_the_config_is_shown():
+    config = normalise(
+        {
+            "generator": MINIMAL["generator"],
+            "services": {"ova_deploy": True},
+            "ova_deploy": {"esxi_password": "sehr-geheim"},
+        }
+    )
+    shown = cfg.redacted(config)
+    assert shown["ova_deploy"]["esxi_password"] == "<hidden>"
+    assert "sehr-geheim" not in str(shown)
+    assert (
+        config["ova_deploy"]["esxi_password"] == "sehr-geheim"
+    )  # the original is untouched

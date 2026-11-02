@@ -9,3 +9,5 @@ services:
     ports: ["8001:8000"]
   generator:
     ports: ["8002:8000"]
+  ova-deploy:
+    ports: ["8003:8000"]

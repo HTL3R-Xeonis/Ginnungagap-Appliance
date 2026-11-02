@@ -190,3 +190,27 @@ def test_fetch_sends_basic_auth_only_when_given(server):
 def test_fetch_reports_a_refused_connection_instead_of_raising():
     status, body, error = st.make_fetch(timeout=2)("http://127.0.0.1:9/x")
     assert status is None and body == "" and error
+
+
+def test_ova_deploy_as_a_container_is_asked_through_the_gateway(make_config):
+    config = make_config(
+        services={"ova_deploy": True}, ova_deploy={"esxi_password": "x"}
+    )
+    table = {**ALL_OK, "/ova/health": (200, {"status": "ok", "problems": []}, None)}
+    by = rows_by_name(st.check(config, "http://g", answers(table)))
+    assert by["ova-deploy"].state == "ok"
+    table["/ova/health"] = (
+        503,
+        {
+            "status": "degraded",
+            "problems": [
+                "no ESXi password (/run/secrets/esxi_password is missing or empty)"
+            ],
+        },
+        None,
+    )
+    by = rows_by_name(st.check(config, "http://g", answers(table)))
+    assert (
+        by["ova-deploy"].state == "degraded"
+        and "no ESXi password" in by["ova-deploy"].detail
+    )

@@ -45,10 +45,25 @@ def test_the_legacy_ports_file_only_adds_ports_to_existing_services(compose):
     assert all(set(s) == {"ports"} for s in legacy["services"].values())
 
 
-def test_the_ova_deploy_service_is_not_part_of_the_bundle_yet(compose):
+def test_the_ova_deploy_service_is_its_own_container_with_the_password_as_a_secret(
+    compose,
+):
+    service = compose["services"]["ova-deploy"]
+    assert service["profiles"] == ["ova-deploy"]
+    assert "depends_on" not in service
+    assert service["secrets"] == ["esxi_password"]
+    assert (
+        compose["secrets"]["esxi_password"]["file"]
+        == "./rendered/ova-deploy/esxi_password"
+    )
+    assert "template-store:/templates/esxi:ro" in service["volumes"]
+    assert "/health" in " ".join(service["healthcheck"]["test"])
+    assert service["build"]["additional_contexts"]["service"].endswith(
+        "/TopologyBuilderServices"
+    )
     assert not any(
-        "ova" in name for name in compose["services"]
-    )  # it stays external until its source exists
+        "PASSWORD" in str(v) for v in (service.get("environment") or {}).values()
+    )
 
 
 def test_services_with_a_health_endpoint_have_a_health_check(compose):
@@ -133,9 +148,12 @@ def test_the_profiles_the_renderer_selects_all_exist_in_the_compose_file(
     from ginnungagap.render import profiles
 
     declared = {p for s in compose["services"].values() for p in s["profiles"]}
+    everything = make_config(
+        services={"ova_deploy": True}, ova_deploy={"esxi_password": "x"}
+    )
     assert set(profiles(make_config())) <= declared
     assert (
-        set(profiles(make_config())) == declared
+        set(profiles(everything)) == declared
     )  # and with everything on, every service is covered
 
 
