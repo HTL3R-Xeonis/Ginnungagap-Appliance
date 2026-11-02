@@ -1,0 +1,163 @@
+"""
+One health view over every service, asked through the gateway (the one entry point), so it checks what a user would reach.
+
+Each service already answers /health on its own; this only asks them all and says what is wrong in plain words.
+"""
+
+from __future__ import annotations
+
+import base64
+import json
+import ssl
+import urllib.error
+import urllib.request
+from collections.abc import Callable
+from dataclasses import dataclass
+from typing import Any
+
+# state values: ok | degraded | down | login | external | off
+Fetch = Callable[[str], tuple[int | None, str, str | None]]
+
+
+@dataclass(frozen=True)
+class Row:
+    name: str
+    state: str
+    detail: str
+
+
+def base_url(config: dict[str, Any], override: str | None = None) -> str:
+    """Where the gateway answers on this machine."""
+    if override:
+        return override.rstrip("/")
+    appliance = config["appliance"]
+    if appliance["tls"]["mode"] == "self-signed":
+        return f"https://127.0.0.1:{appliance['https_port']}"
+    return f"http://127.0.0.1:{appliance['http_port']}"
+
+
+def make_fetch(
+    user: str | None = None, password: str | None = None, timeout: float = 8.0
+) -> Fetch:
+    """A GET that returns (status, body, error); a self-signed certificate on this machine's own gateway is accepted."""
+    context = ssl.create_default_context()
+    context.check_hostname = False
+    context.verify_mode = ssl.CERT_NONE
+    headers = {}
+    if user is not None and password is not None:
+        headers["Authorization"] = (
+            "Basic " + base64.b64encode(f"{user}:{password}".encode()).decode()
+        )
+
+    def fetch(url: str) -> tuple[int | None, str, str | None]:
+        request = urllib.request.Request(url, headers=headers)
+        try:
+            with urllib.request.urlopen(
+                request, timeout=timeout, context=context
+            ) as response:
+                return response.status, response.read().decode("utf-8", "replace"), None
+        except urllib.error.HTTPError as exc:
+            return exc.code, exc.read().decode("utf-8", "replace"), None
+        except (urllib.error.URLError, TimeoutError, OSError) as exc:
+            return None, "", str(getattr(exc, "reason", exc))
+
+    return fetch
+
+
+def _json(body: str) -> dict[str, Any]:
+    try:
+        data = json.loads(body)
+    except ValueError:
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def _row(
+    name: str,
+    status: int | None,
+    body: str,
+    error: str | None,
+    summary: Callable[[dict[str, Any]], str],
+) -> Row:
+    if status is None:
+        return Row(name, "down", f"gateway not reachable ({error})")
+    if status == 401:
+        return Row(name, "login", "the gateway wants a login (use --user)")
+    data = _json(body)
+    if status == 200:
+        return Row(name, "ok", summary(data))
+    if status == 503:
+        problems = data.get("problems") or [
+            data.get("detail", "service reports a problem")
+        ]
+        return Row(name, "degraded", "; ".join(str(p) for p in problems))
+    if status in (502, 504):
+        return Row(name, "down", "the gateway gets no answer from the service")
+    return Row(name, "down", f"unexpected answer {status}")
+
+
+def check(config: dict[str, Any], base: str, fetch: Fetch) -> list[Row]:
+    services, ova = config["services"], config["ova_deploy"]
+    rows: list[Row] = []
+
+    status, body, error = fetch(f"{base}/health")
+    rows.append(
+        _row(
+            "ginnungagap",
+            status,
+            body,
+            error,
+            lambda d: "up" + (f" - note: {d['warning']}" if d.get("warning") else ""),
+        )
+    )
+    for key, label, path, summary in (
+        (
+            "template_esxi",
+            "template-esxi",
+            "/templates/esxi/health",
+            lambda d: f"{d.get('templates')} template(s)",
+        ),
+        (
+            "template_gns3",
+            "template-gns3",
+            "/templates/gns3/health",
+            lambda d: (
+                f"{d.get('templates')} template(s) from {d.get('servers')} server(s)"
+            ),
+        ),
+        (
+            "generator",
+            "generator",
+            "/generator/health",
+            lambda d: f"{d.get('servers')} LLM server(s)",
+        ),
+    ):
+        if not services[key]:
+            rows.append(
+                Row(label, "off", "not running here (configured to run elsewhere)")
+            )
+            continue
+        status, body, error = fetch(base + path)
+        rows.append(_row(label, status, body, error, summary))
+    if services["ova_deploy"] == "external":
+        rows.append(
+            Row(
+                "ova-deploy",
+                "external",
+                f"{ova['external_url']} (separate service, not checked here)",
+            )
+        )
+    else:
+        rows.append(Row("ova-deploy", "off", "switched off"))
+    return rows
+
+
+def healthy(rows: list[Row]) -> bool:
+    return all(row.state in ("ok", "external", "off") for row in rows)
+
+
+def render_table(rows: list[Row]) -> str:
+    width = max(len(row.name) for row in rows)
+    return "\n".join(
+        f"  {row.name.ljust(width)}  {row.state.ljust(8)}  {row.detail}" for row in rows
+    )

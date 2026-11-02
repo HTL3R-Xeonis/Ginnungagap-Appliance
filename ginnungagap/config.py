@@ -50,7 +50,6 @@ DEFAULTS: dict[str, Any] = {
         "generator": True,
         "ova_deploy": "external",
         "filebrowser": False,
-        "monitoring": False,
     },
     "templates": {
         "store": {
@@ -72,6 +71,11 @@ DEFAULTS: dict[str, Any] = {
     },
     "ova_deploy": {"external_url": "", "timeout_seconds": 600},
     "logging": {"level": "INFO", "max_lines": 100000},
+}
+
+# settings people may expect from the design but that are deliberately not part of the appliance
+_EXCLUDED = {
+    "services.monitoring": "monitoring is not part of the one-VM solution (it runs separately)"
 }
 
 _NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,40}$")
@@ -103,7 +107,8 @@ def _unknown_keys(given: dict[str, Any], known: dict[str, Any], path: str) -> li
     problems = []
     for key, value in given.items():
         if key not in known:
-            problems.append(f"{path}{key}: unknown setting (a typo?)")
+            reason = _EXCLUDED.get(f"{path}{key}", "unknown setting (a typo?)")
+            problems.append(f"{path}{key}: {reason}")
         elif (
             known[key] and isinstance(known[key], dict) and isinstance(value, dict)
         ):  # an empty default is free-form
@@ -175,11 +180,10 @@ def _check(config: dict[str, Any]) -> list[str]:
         problems.append(
             "services.ova_deploy: must be external or off (a container for it needs the service's source, which is missing)"
         )
-    for name in ("filebrowser", "monitoring"):
-        if services[name] is not False:
-            problems.append(
-                f"services.{name}: is not available in this version yet, leave it false"
-            )
+    if services["filebrowser"] is not False:
+        problems.append(
+            "services.filebrowser: is not available in this version yet, leave it false"
+        )
 
     store = templates["store"]
     if store.get("type") not in ("local", "nfs"):

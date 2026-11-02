@@ -9,6 +9,7 @@ file that is no longer produced is removed again (tracked in .manifest.json).
 from __future__ import annotations
 
 import json
+import os
 import re
 import shutil
 from pathlib import Path
@@ -104,9 +105,14 @@ def compose_env(config: dict[str, Any]) -> str:
         if appliance["legacy_ports"]
         else "compose.yml"
     )
+    project = os.environ.get("GINNUNGAGAP_PROJECT") or "ginnungagap"
+    if not re.fullmatch(r"[a-z0-9][a-z0-9_-]*", project):
+        raise RenderError(
+            f"GINNUNGAGAP_PROJECT={project!r} is not a valid compose project name (lowercase letters, digits, - and _)"
+        )
     return _env_file(
         {
-            "COMPOSE_PROJECT_NAME": "ginnungagap",
+            "COMPOSE_PROJECT_NAME": project,
             "COMPOSE_FILE": files,
             "COMPOSE_PROFILES": ",".join(profiles(config)),
             "TZ": appliance["timezone"],

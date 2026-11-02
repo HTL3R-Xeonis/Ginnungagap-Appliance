@@ -6,7 +6,9 @@ its GNS3 VM) are not part of that file: they stay profiles that you create in th
 **Status: first version, run with Docker.** `smoke/smoke-test.sh` builds every image, starts each service on its own and then
 all together against a throw-away project, a fake template store and a host that does not exist, and passes on a Docker
 host (Docker 29, Compose 5). What it does not cover: the OVA deploy service (external), TLS, basic auth, a real host with a
-real ESXi password, and anything beyond the services' health and the gateway's routes.
+real ESXi password, and anything beyond the services' health and the gateway's routes. The command line (`apply`, `status`,
+`backup`, `restore`) and the installer are covered by unit tests with a recording stand-in for Docker; they have not yet been
+run against a real project in this repository's smoke test.
 
 ## Use
 
@@ -23,6 +25,36 @@ the template store), `Caddyfile`, `operator.env`, `generator/`, `generator.env` 
 
 The compose file builds the services from the sibling checkouts `../TopologyOperator`, `../TopologyBuilder`,
 `../Docker-Server-Files` and `../topology-generator` (set `REPOS_DIR` for another place).
+
+## Operate
+
+```bash
+python -m ginnungagap apply ginnungagap.yml        # validate, render, docker compose up, wait until everything is healthy
+python -m ginnungagap status ginnungagap.yml       # one health table over every service, asked through the gateway
+python -m ginnungagap backup ginnungagap.yml --to /var/backups
+python -m ginnungagap restore /var/backups/ginnungagap-backup-20261102-123005 --yes
+```
+
+* `apply` stops at the first invalid setting without touching anything. It recreates only the services whose own rendered
+  file changed (the gateway for the `Caddyfile`, the generator for its three files); the app and its data are never
+  recreated by a change elsewhere. `--no-start` only renders, `--no-build` skips rebuilding the images.
+* `status` exits non-zero if anything is down or degraded, so it can be used from a monitor or a script. Behind a login
+  (`appliance.auth`) pass `--user NAME`; the password is asked for or read from `GINNUNGAGAP_PASSWORD`.
+* `backup` writes a folder (mode 0700) with a copy of the config file and `data.tgz`, the app's data volume (host profiles,
+  projects, designs, notes). `restore` stops the app, replaces that volume and starts it again; it needs `--yes`.
+
+## Install on a machine
+
+```bash
+sudo ./install.sh --repos-dir /srv/repos      # program in /opt/ginnungagap, command `ginnungagap`, config in /etc/ginnungagap
+sudo $EDITOR /etc/ginnungagap/ginnungagap.yml
+sudo ginnungagap apply /etc/ginnungagap/ginnungagap.yml
+```
+
+It needs Docker with the compose plugin, `python3` (3.12+) with `python3-yaml`, and the four sibling repositories the images
+are built from. A systemd unit (`ginnungagap.service`) applies the configuration at boot; the containers restart by
+themselves, so this only picks up an edited file. Running `install.sh` again updates the program and keeps your
+configuration; `sudo ./install.sh --uninstall` removes program, command and unit and keeps the configuration and the data.
 
 ## Every service stays separate
 
@@ -55,8 +87,13 @@ everything afterwards (`KEEP=1` keeps it). It needs only Docker and the sibling 
 `tests/test_compose.py` enforces the separation (own profile per service, no `depends_on`, only the gateway publishes
 ports, read-only mounts for the template store and the host profiles).
 
+## Not part of this solution
+
+**Monitoring** (Prometheus, Grafana, exporters) is deliberately not part of the one-VM solution. It keeps running where it runs
+today; `services.monitoring` in the config is refused with that explanation rather than silently ignored.
+
 ## Not available yet
 
-Monitoring and the file browser (the config refuses `true` instead of ignoring it), the OVA deploy service as a container,
-TLS from a file or ACME, single sign-on, an aggregate health endpoint, and the installer / appliance image. The design
+The file browser (the config refuses `true` instead of ignoring it), the OVA deploy service as a container,
+TLS from a file or ACME, single sign-on, an aggregate health endpoint, and a ready-made appliance image. The design
 and the decisions still open are in the project's handoff repository.

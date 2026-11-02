@@ -129,5 +129,36 @@ say "everything together"
 up && sleep 10
 check "all seven services run" "$(compose ps --format '{{.State}}' | grep -c running)" "7"
 
+say "operate: status, apply without a change, backup and restore against the running project"
+# the command line needs python with PyYAML: the machine's own if it has it, else a throw-away virtualenv
+PY=python3
+if ! $PY -c 'import yaml' 2>/dev/null; then
+  $PY -m venv "$WORK/venv" >/dev/null 2>&1 && "$WORK/venv/bin/pip" install -q pyyaml >/dev/null 2>&1 && PY="$WORK/venv/bin/python" || PY=
+fi
+if [ -z "$PY" ]; then
+  echo "   skip no python3 with PyYAML (and no venv) - install python3-yaml to run this part"
+else
+  cp -r "$HERE/ginnungagap" "$PROJ/"        # the package's parent is the folder with compose.yml
+  # the project name and the override file reach the command through the environment (apply renders compose.env again)
+  ginn() { (cd "$PROJ" && GINNUNGAGAP_PROJECT="$PROJECT" COMPOSE_FILE=compose.yml:override.yml PYTHONPATH="$PROJ" "$PY" -m ginnungagap "$@"); }
+  if ginn status "$WORK/ginnungagap.yml" --url "http://127.0.0.1:$PORT" >"$WORK/status.txt" 2>&1; then ok "status: everything healthy"; else bad "status reports a problem: $(tr '\n' '|' <"$WORK/status.txt")"; fi
+  check "status lists the generator" "$(grep -c '^  generator ' "$WORK/status.txt")" "1"
+
+  before=$(compose ps -q | sort | tr '\n' ' ')
+  if ginn apply "$WORK/ginnungagap.yml" --generator-config "$REPOS_DIR/topology-generator/config" --no-build >"$WORK/apply.txt" 2>&1; then ok "apply on the unchanged file succeeds"; else bad "apply failed: $(tail -3 "$WORK/apply.txt" | tr '\n' '|')"; fi
+  check "apply recreated no container" "$(compose ps -q | sort | tr '\n' ' ')" "$before"
+
+  docker run --rm -v "${PROJECT}_data:/data" --entrypoint sh python:3.12-slim -c 'echo before > /data/marker'
+  if ginn backup "$WORK/ginnungagap.yml" --to "$WORK" >"$WORK/backup.txt" 2>&1; then ok "backup written"; else bad "backup failed: $(tail -2 "$WORK/backup.txt" | tr '\n' '|')"; fi
+  BK=$(ls -d "$WORK"/ginnungagap-backup-* 2>/dev/null | head -1)
+  check "backup holds the marker" "$(tar tzf "$BK/data.tgz" 2>/dev/null | grep -c 'marker')" "1"
+  check "backup files are private" "$(stat -c %a "$BK/data.tgz")" "600"
+  docker run --rm -v "${PROJECT}_data:/data" --entrypoint sh python:3.12-slim -c 'echo after > /data/marker'
+  check "restore without --yes changes nothing" "$(ginn restore "$BK" >/dev/null 2>&1; echo $?)" "1"
+  if ginn restore "$BK" --yes >"$WORK/restore.txt" 2>&1; then ok "restore succeeds"; else bad "restore failed: $(tail -2 "$WORK/restore.txt" | tr '\n' '|')"; fi
+  check "the data is back" "$(docker run --rm -v "${PROJECT}_data:/data" --entrypoint cat python:3.12-slim /data/marker)" "before"
+  wait_healthy ginnungagap 90 && ok "the app is healthy again after the restore" || bad "app not healthy after the restore"
+fi
+
 echo
 if [ "$FAILED" = "0" ]; then echo "SMOKE TEST PASSED"; else echo "SMOKE TEST FAILED"; exit 1; fi

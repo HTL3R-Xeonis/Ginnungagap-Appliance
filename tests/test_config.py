@@ -66,13 +66,11 @@ def test_services_that_do_not_exist_yet_are_refused_not_ignored():
         {
             **MINIMAL,
             "services": {
-                "monitoring": True,
                 "filebrowser": True,
                 "ova_deploy": "container",
             },
         }
     )
-    assert any("services.monitoring" in p for p in found)
     assert any("services.filebrowser" in p for p in found)
     assert any("services.ova_deploy" in p and "source" in p for p in found)
 
@@ -300,7 +298,7 @@ def test_a_typo_does_not_hide_the_other_problems():
         {"servises": {}, "services": {"monitoring": True}, "logging": {"level": "LOUD"}}
     )
     assert any("servises" in p for p in found)
-    assert any("services.monitoring" in p for p in found)
+    assert any("services.monitoring: monitoring is not part" in p for p in found)
     assert any("logging.level" in p for p in found)
 
 
@@ -315,3 +313,13 @@ def test_a_typo_does_not_hide_the_other_problems():
 )
 def test_a_wrongly_shaped_value_is_a_problem_not_a_crash(broken):
     assert problems({**MINIMAL, **broken})
+
+
+def test_monitoring_is_not_part_of_the_solution_and_says_so():
+    found = problems({**MINIMAL, "services": {"monitoring": True}})
+    assert found == [
+        "services.monitoring: monitoring is not part of the one-VM solution (it runs separately)"
+    ]
+    assert problems(
+        {**MINIMAL, "services": {"monitoring": False}}
+    )  # not even "false": the setting does not exist

@@ -298,3 +298,22 @@ def test_service_urls_helper_matches_the_profiles(make_config):
     config = make_config()
     assert set(rd.service_urls(config)) == {"esxi", "gns3", "generator", "ova"}
     assert rd.profiles(config)[:2] == ["gateway", "ginnungagap"]
+
+
+def test_the_compose_project_is_ginnungagap_unless_the_environment_names_another(
+    make_config, out, generator_sources, monkeypatch
+):
+    monkeypatch.delenv("GINNUNGAGAP_PROJECT", raising=False)
+    render(make_config(), out, generator_sources)
+    assert env_of(read(out, "compose.env"))["COMPOSE_PROJECT_NAME"] == "ginnungagap"
+    monkeypatch.setenv("GINNUNGAGAP_PROJECT", "ginnsmoke")
+    render(make_config(), out, generator_sources)
+    assert env_of(read(out, "compose.env"))["COMPOSE_PROJECT_NAME"] == "ginnsmoke"
+
+
+def test_an_invalid_project_name_is_refused(
+    make_config, out, generator_sources, monkeypatch
+):
+    monkeypatch.setenv("GINNUNGAGAP_PROJECT", "Not Valid")
+    with pytest.raises(RenderError, match="compose project name"):
+        render(make_config(), out, generator_sources)

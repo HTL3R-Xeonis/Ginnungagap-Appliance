@@ -22,7 +22,6 @@ services:                               # every service is its own container and
   generator: true
   ova_deploy: external                  # external (the existing service, see ova_deploy below) | off
   filebrowser: false                    # not available yet
-  monitoring: false                     # not available yet
 
 templates:                              # where the OVAs and their *.yml descriptions live (read-only)
   store:
