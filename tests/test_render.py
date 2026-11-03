@@ -190,7 +190,7 @@ def test_self_signed_tls_and_basic_auth_in_the_gateway(
     render(config, out, generator_sources)
     caddy = read(out, "Caddyfile")
     assert (
-        "ginnungagap.lab, localhost, 127.0.0.1 {" in caddy
+        "ginnungagap.lab, localhost, 127.0.0.1, :443 {" in caddy
         and "tls internal" in caddy
         and "auto_https off" not in caddy
     )
@@ -427,17 +427,17 @@ def test_without_tls_there_is_no_redirect_and_no_name_to_expect(
 def test_the_gateway_also_answers_for_the_machines_own_address(
     make_config, out, generator_sources
 ):
-    """Without a site for it Caddy answers a request for 127.0.0.1 with an empty 200 (found on a real machine)."""
+    """Without a site for it Caddy answers a request for 127.0.0.1 - or the VM's own IP - with an empty 200 (found on real machines)."""
     caddy = tls_caddyfile(make_config, out, generator_sources)
-    assert "ginnungagap.lab, localhost, 127.0.0.1 {" in caddy
+    assert "ginnungagap.lab, localhost, 127.0.0.1, :443 {" in caddy
     local = tls_caddyfile(
         make_config, out, generator_sources, public_url="https://localhost"
     )
-    assert "\nlocalhost, 127.0.0.1 {" in local  # no name twice
+    assert "\nlocalhost, 127.0.0.1, :443 {" in local  # no name twice
     ip = tls_caddyfile(
         make_config, out, generator_sources, public_url="https://10.20.20.222"
     )
     assert (
         "default_sni 10.20.20.222" in ip
-        and "10.20.20.222, localhost, 127.0.0.1 {" in ip
+        and "10.20.20.222, localhost, 127.0.0.1, :443 {" in ip
     )

@@ -290,3 +290,43 @@ def test_docker_is_run_from_the_bundle_folder_by_default(
     )
     assert code == 0
     assert seen and all(cwd == bundle for _, cwd in seen)
+
+
+# ---------- images for an appliance image ----------
+
+
+def test_build_images_builds_and_pulls_every_profile_and_leaves_no_rendered_files(
+    bundle, generator_sources
+):
+    run = Recorder()
+    lines: list[str] = []
+    assert (
+        operate.build_images(bundle, generator_sources, run=run, out=lines.append) == 0
+    )
+    build, pull = run.calls
+    assert build[6:] == ["--profile", "*", "build"]
+    assert pull[6:] == ["--profile", "*", "pull", "--ignore-buildable"]
+    assert not (
+        bundle / "rendered"
+    ).exists()  # nothing of the throw-away configuration stays in the image
+
+
+def test_build_images_stops_at_the_first_failure_and_still_cleans_up(
+    bundle, generator_sources
+):
+    run = Recorder([1])
+    lines: list[str] = []
+    assert (
+        operate.build_images(bundle, generator_sources, run=run, out=lines.append) == 1
+    )
+    assert len(run.calls) == 1 and "building the images failed" in lines
+    assert not (bundle / "rendered").exists()
+
+
+def test_build_images_needs_the_generators_files(bundle, tmp_path):
+    run = Recorder()
+    assert (
+        operate.build_images(bundle, tmp_path / "nothing", run=run, out=lambda m: None)
+        == 1
+    )
+    assert run.calls == []

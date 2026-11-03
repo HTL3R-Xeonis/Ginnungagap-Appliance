@@ -162,9 +162,10 @@ def caddyfile(config: dict[str, Any]) -> str:
     lines = [HEADER.rstrip("\n"), ""]
     if appliance["tls"]["mode"] == "self-signed":
         name, tls = urlparse(appliance["public_url"]).hostname, ["tls internal"]
-        # also the machine's own address: Caddy answers a request for a name it has no site for with an empty 200, which
-        # `ginnungagap status` (it asks 127.0.0.1) and a `curl localhost` would take for a healthy answer
-        site = ", ".join(dict.fromkeys([name, "localhost", "127.0.0.1"]))
+        # Caddy answers a request for a name it has no site for with an EMPTY 200: someone who opens the VM by its address
+        # would see a blank page, and `ginnungagap status` (it asks 127.0.0.1) a healthy answer. So the machine's own names
+        # are listed and `:443` catches every other name or address (the certificate then comes from default_sni below).
+        site = ", ".join(dict.fromkeys([name, "localhost", "127.0.0.1", ":443"]))
         port = appliance["https_port"]
         target = "https://{host}" + (f":{port}" if port != 443 else "") + "{uri}"
         lines += [

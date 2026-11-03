@@ -173,3 +173,45 @@ def test_an_unknown_option_is_refused(place):
 
 def test_python_is_new_enough_for_the_checks():
     assert sys.version_info >= (3, 12)
+
+
+def test_the_first_boot_unit_is_written_but_the_service_waits_for_a_configuration(
+    place,
+):
+    assert install(place).returncode == 0
+    first = (place["units"] / "ginnungagap-firstboot.service").read_text()
+    assert f"ExecStart={place['bin']}/ginnungagap firstboot" in first
+    assert "Before=ssh.service ginnungagap.service" in first
+    assert "ConditionPathExists=!/var/lib/ginnungagap/firstboot.done" in first
+    assert "SuccessExitStatus=1" in first  # no configuration yet is a normal boot
+    service = (place["units"] / "ginnungagap.service").read_text()
+    assert "ginnungagap-firstboot.service" in service
+    assert f"ConditionPathExists={place['config']}/ginnungagap.yml" in service
+    env = (place["config"] / "install.env").read_text()
+    assert f"GINNUNGAGAP_CONFIG_DIR={place['config']}" in env
+    assert (place["config"] / "ginnungagap.example.yml").is_file()
+
+
+def test_image_mode_creates_no_configuration_and_does_not_start_anything(place):
+    result = install(place, "--image")
+    assert result.returncode == 0, result.stderr
+    assert not (
+        place["config"] / "ginnungagap.yml"
+    ).exists()  # the first boot brings it
+    assert (place["config"] / "ginnungagap.example.yml").is_file()
+    assert "appliance image" in result.stdout
+
+
+def test_uninstall_removes_both_units(place):
+    install(place)
+    install(place, "--uninstall")
+    assert not (place["units"] / "ginnungagap-firstboot.service").exists()
+
+
+@pytest.mark.skipif(
+    os.geteuid() == 0, reason="as root it would really install packages"
+)
+def test_install_packages_needs_root(place):
+    result = install(place, "--install-packages")
+    assert result.returncode == 1 and "needs root" in result.stderr
+    assert not place["prefix"].exists()

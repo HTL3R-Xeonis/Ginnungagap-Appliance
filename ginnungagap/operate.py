@@ -143,6 +143,53 @@ def apply(
     return 0 if status_module.healthy(rows) else 1
 
 
+def build_images(
+    bundle: Path,
+    generator_config: str | Path | None,
+    run: Runner | None = None,
+    out: Callable[[str], None] = print,
+) -> int:
+    """
+    Builds and pulls the images of EVERY service, without starting anything - for an appliance image, which must come up
+    without internet and without a build. A configuration with everything switched on is rendered only to give compose its
+    environment, and removed again afterwards, so no file of it ends up in the image.
+    """
+    run = _runner(run, bundle)
+    config = config_module.normalise(
+        {
+            "services": {"ova_deploy": True},
+            "generator": {
+                "llm_servers": [
+                    {
+                        "name": "placeholder",
+                        "url": "http://127.0.0.1:11434",
+                        "model": "none",
+                    }
+                ]
+            },
+        }
+    )
+    rendered = bundle / "rendered"
+    try:
+        render_module.render(config, rendered, generator_config)
+    except render_module.RenderError as exc:
+        out(f"render failed: {exc}")
+        return 1
+    try:
+        for step, command in (
+            ("building", ("--profile", "*", "build")),
+            ("pulling", ("--profile", "*", "pull", "--ignore-buildable")),
+        ):
+            out(f"{step} the images of every service")
+            if run(compose_args(bundle, *command)) != 0:
+                out(f"{step} the images failed")
+                return 1
+    finally:
+        shutil.rmtree(rendered, ignore_errors=True)
+    out("All images are in the local image store.")
+    return 0
+
+
 def _project(bundle: Path) -> str:
     """The compose project name the volumes are prefixed with (written by the renderer into compose.env)."""
     try:

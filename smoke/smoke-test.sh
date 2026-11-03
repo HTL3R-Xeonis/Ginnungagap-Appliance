@@ -183,6 +183,8 @@ else
   if ginn apply "$WORK/ginnungagap.yml" --generator-config "$REPOS_DIR/topology-generator/config" --no-build >"$WORK/apply-tls.txt" 2>&1; then ok "apply with TLS succeeds"; else bad "apply with TLS failed: $(tail -3 "$WORK/apply-tls.txt" | tr '\n' '|')"; fi
   sleep 3
   check "https answers (certificate not trusted here, so -k)" "$(curl -sk -o /dev/null -w '%{http_code}' "https://localhost:$((PORT + 1))/health")" "200"
+  HOSTIP=$(hostname -I | awk '{print $1}')
+  check "opened by the machine's own address (not a name of the config) it is answered, not an empty page" "$([ "$(curl -sk -o /dev/null -w '%{size_download}' "https://$HOSTIP:$((PORT + 1))/health")" -gt 0 ] && echo yes)" "yes"
   check "plain http is sent to https" "$(curl -s -o /dev/null -w '%{http_code} %{redirect_url}' "http://localhost:$PORT/health")" "308 https://localhost:$((PORT + 1))/health"
   check "the certificate comes from the gateway's own CA" "$(curl -skv "https://localhost:$((PORT + 1))/health" 2>&1 | grep -c 'issuer: .*Caddy Local Authority')" "1"
   check "a service behind it still answers through https" "$(curl -sk -o /dev/null -w '%{http_code}' "https://localhost:$((PORT + 1))/templates/esxi/health")" "200"

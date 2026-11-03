@@ -7,8 +7,9 @@ its GNS3 VM) are not part of that file: they stay profiles that you create in th
 fake template store and a host that does not exist: each service alone, then all together through the gateway, then the
 operating commands (`status`, `apply` on an unchanged file recreates nothing, `backup`, `restore`) and a switch to self-signed
 TLS. It passes on a Docker host (Docker 29, Compose 5). What it does not cover: an actual OVA import by the OVA deploy
-service (it needs a real ESXi host and password), basic auth, and the installer as root with the real systemd unit (the
-installer itself is covered by unit tests with temporary folders).
+service (it needs a real ESXi host and password) and basic auth. The installer (root, real systemd unit, reboot) and the
+appliance image (OVA: deployed on the lab ESXi, first boot from guestinfo, NFS template store, reboot) were verified on
+Debian 13 VMs in the lab; see `image/README.md`.
 
 ## Use
 
@@ -77,6 +78,43 @@ cd /opt/ginnungagap/app && docker compose --env-file rendered/compose.env cp gat
 
 `status` accepts that certificate on this machine's own gateway. Certificates from a file or from ACME are not available yet.
 
+## Appliance image (OVA)
+
+A VM that needs no installation: import the `.ova`, tell it its configuration, power it on. The image is built from a Debian 13
+VM in three steps, all from this repository (details and the export scripts: `image/README.md`):
+
+```bash
+sudo ./install.sh --repos-dir /srv/repos --install-packages --image --no-start   # on the Debian VM that becomes the image
+sudo image/prepare-image.sh --yes --zero-free-space                              # builds every image, removes everything of this machine
+sudo systemctl poweroff                                                          # then, from a machine that can reach ESXi:
+python image/export_ova.py --host <esxi> --vm <vm> --out <folder>                # ESXI_PASSWORD from the environment
+```
+
+The image has **no configuration, no SSH host keys, no machine id and no authorized SSH keys**; every image of every service is
+already in the VM's image store, so it starts without internet and without a build. At its first boot
+(`ginnungagap-firstboot.service`, `ginnungagap firstboot`) it reads what the deployer put into the VM's *guestinfo* (on ESXi:
+VM options > Advanced > configuration parameters, or `image/set_guestinfo.py`):
+
+| key (all `guestinfo.ginnungagap.`) | meaning |
+|---|---|
+| `config` | the whole `ginnungagap.yml`, base64 (`config.encoding = plain` for plain text) |
+| `hostname` | optional, the VM's host name |
+| `ssh_authorized_key` | optional, one public key for the login user |
+| `admin_password_hash` | optional, a crypt hash (`openssl passwd -6`) for the login user - never the password itself |
+| `admin_sudo_nopasswd` | optional, `true` lets the login user use `sudo` without a password (automation; the image is delivered without it) |
+
+It creates the SSH host keys, creates the template folder of a local store, validates the configuration (an invalid one is kept as `ginnungagap.yml.rejected`, the reasons
+are shown at the console login and in `/var/lib/ginnungagap/firstboot.problems`, and the next boot tries again), and
+`ginnungagap.service` then applies it. A configuration that is already in `/etc/ginnungagap/` wins over guestinfo. With no
+configuration at all the VM boots, shows at the console what to do and starts no service.
+
+The login of the underlying Debian image is the one of the template it was built from; **change it** (guestinfo
+`admin_password_hash`, or `ssh_authorized_key` and then switch password login off) before the VM is reachable by others.
+
+Reaching it: the gateway answers for the name in `appliance.public_url`, for `localhost`, and for **any other name or address**
+(so `https://<the VM's IP>` shows the web interface too; the certificate is the gateway's own either way). Without that
+catch-all Caddy would answer an unknown name with an empty page.
+
 ## Every service stays separate
 
 One container and image per service, its own rendered configuration, its own health check and its own compose profile.
@@ -116,5 +154,6 @@ today; `services.monitoring` in the config is refused with that explanation rath
 ## Not available yet
 
 The file browser (the config refuses `true` instead of ignoring it),
-TLS from a file or ACME, single sign-on (basic auth at the gateway exists in the config but is neither wanted nor tested), an aggregate health endpoint, and a ready-made appliance image. The design
-and the decisions still open are in the project's handoff repository.
+TLS from a file or ACME, single sign-on (basic auth at the gateway exists in the config but is neither wanted nor tested)
+and an aggregate health endpoint (`ginnungagap status` is the one view over every service). The design and the decisions
+still open are in the project's handoff repository.

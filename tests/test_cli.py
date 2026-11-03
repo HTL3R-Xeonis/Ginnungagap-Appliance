@@ -37,3 +37,21 @@ def test_show_hides_the_keys(tmp_path, capsys, example):
     assert cli.main(["show", str(path)]) == 0
     out = capsys.readouterr().out
     assert "gemini" in out and "sk-secret-123" not in out
+
+
+def test_firstboot_command_hands_the_config_folder_to_the_first_boot(
+    tmp_path, monkeypatch
+):
+    seen = []
+    monkeypatch.setattr(cli.firstboot, "run", lambda folder: seen.append(folder) or 0)
+    assert cli.main(["firstboot", "--config-dir", str(tmp_path)]) == 0
+    assert seen == [str(tmp_path)]
+
+
+def test_build_images_command_is_wired(tmp_path, monkeypatch):
+    seen = []
+    monkeypatch.setattr(
+        cli.operate, "build_images", lambda bundle, gen: seen.append(gen) or 0
+    )
+    assert cli.main(["build-images", "--generator-config", str(tmp_path)]) == 0
+    assert seen == [str(tmp_path)]

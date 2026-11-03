@@ -1,4 +1,4 @@
-"""Command line: python -m ginnungagap validate|show|render|apply|status|backup|restore."""
+"""Command line: python -m ginnungagap validate|show|render|apply|status|backup|restore|build-images|firstboot."""
 
 from __future__ import annotations
 
@@ -11,7 +11,7 @@ from pathlib import Path
 import yaml
 
 from ginnungagap import config as config_module
-from ginnungagap import operate
+from ginnungagap import firstboot, operate
 from ginnungagap import render as render_module
 from ginnungagap import status as status_module
 
@@ -78,6 +78,19 @@ def _parser() -> argparse.ArgumentParser:
         "--to", required=True, help="folder to create the backup folder in"
     )
 
+    commands.add_parser(
+        "build-images",
+        help="build and pull the images of every service (for an appliance image)",
+    ).add_argument("--generator-config", default=DEFAULT_GENERATOR_CONFIG)
+    first = commands.add_parser(
+        "firstboot",
+        help="first boot of an appliance image: the configuration from the hypervisor's guestinfo",
+    )
+    first.add_argument(
+        "--config-dir",
+        default=os.environ.get("GINNUNGAGAP_CONFIG_DIR", "/etc/ginnungagap"),
+    )
+
     restore = commands.add_parser(
         "restore",
         help="replace the app's data by a backup (stops the app for a moment)",
@@ -110,6 +123,10 @@ def main(argv: list[str] | None = None) -> int:
             )
             return 1
         return operate.restore(args.backup, bundle)
+    if args.command == "build-images":
+        return operate.build_images(bundle, args.generator_config)
+    if args.command == "firstboot":
+        return firstboot.run(args.config_dir)
     if args.command == "apply":
         return operate.apply(
             args.file,

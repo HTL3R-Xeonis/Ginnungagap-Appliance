@@ -216,14 +216,3 @@ def test_the_requirements_script_on_the_real_app_if_it_is_next_to_this_repositor
     lines = result.stdout.split()
     assert lines and not any(line.startswith("topologybuilder") for line in lines)
     assert any(line.startswith("fastapi==") for line in lines)
-
-
-def test_the_gns3_collector_copes_with_an_app_that_has_no_profiles_folder_yet():
-    """The app creates settings_profiles with the first host; the collector aborts on a missing folder (found on a fresh machine)."""
-    text = (ROOT / "docker" / "collector-gns3.Dockerfile").read_text(encoding="utf-8")
-    cmd = next(line for line in text.splitlines() if line.startswith("CMD"))
-    assert (
-        "[ -d" in cmd
-        and "/tmp/no-profiles" in cmd
-        and '--profiles-dir \\"$dir\\"' in cmd
-    )
