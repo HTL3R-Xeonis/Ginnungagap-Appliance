@@ -9,6 +9,7 @@ named volumes, and only the services whose rendered file changed are recreated.
 from __future__ import annotations
 
 import hashlib
+import json
 import os
 import shutil
 import subprocess
@@ -22,6 +23,7 @@ from ginnungagap import render as render_module
 from ginnungagap import status as status_module
 
 Runner = Callable[[list[str]], int]
+Inspect = Callable[[list[str]], str | None]
 
 # A change to one of these files is not picked up by a running service on its own (compose only recreates a container when
 # its own definition or env_file changed), so the owning service is recreated. The GNS3 collector re-reads its file on every
@@ -31,6 +33,7 @@ FILE_OWNERS = {
     "generator/topology_config.yml": "generator",
     "generator/prompt_template.txt": "generator",
     "generator/example_topology.yml": "generator",
+    "ova-deploy/esxi_password": "ova-deploy",  # read once at the start of the container
 }
 
 DATA_VOLUME = "data"
@@ -46,6 +49,65 @@ def default_runner(args: list[str], cwd: Path | None = None) -> int:
     relative to the working directory, not to --project-directory, so from anywhere else it looks for compose.yml in the wrong place.
     """
     return subprocess.run(args, check=False, cwd=cwd).returncode
+
+
+def default_inspect(args: list[str], cwd: Path | None = None) -> str | None:
+    """The output of a read-only command, None when it fails (for example a volume that does not exist)."""
+    try:
+        result = subprocess.run(
+            args, check=False, cwd=cwd, capture_output=True, text=True, timeout=60
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    return result.stdout if result.returncode == 0 else None
+
+
+# The services that mount the template store (a read-only volume that is a bind mount or an NFS export).
+STORE_VOLUME = "template-store"
+STORE_USERS = ("template-esxi", "collector-esxi", "ova-deploy")
+
+
+def _wanted_store_options(rendered: Path) -> dict[str, str] | None:
+    """The driver options the rendered compose.env asks for, None when it does not say."""
+    try:
+        lines = (rendered / "compose.env").read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return None
+    values = dict(line.split("=", 1) for line in lines if "=" in line)
+    keys = {
+        "type": "TEMPLATE_STORE_VOLUME_TYPE",
+        "o": "TEMPLATE_STORE_VOLUME_OPTS",
+        "device": "TEMPLATE_STORE_VOLUME_DEVICE",
+    }
+    if any(key not in values for key in keys.values()):
+        return None
+    return {name: values[key].strip().strip("\"'") for name, key in keys.items()}
+
+
+def _store_volume_is_stale(project: str, rendered: Path, inspect: Inspect) -> bool:
+    """
+    Docker never changes an existing volume's driver options, and compose does not recreate it when they change in the
+    file: after switching the store from NFS to a local folder (or to another export) the services would keep reading the
+    old one. True when the volume exists and its options differ from the rendered ones.
+    """
+    wanted = _wanted_store_options(rendered)
+    answer = inspect(
+        [
+            "docker",
+            "volume",
+            "inspect",
+            "--format",
+            "{{json .Options}}",
+            f"{project}_{STORE_VOLUME}",
+        ]
+    )
+    if wanted is None or answer is None:
+        return False
+    try:
+        actual = json.loads(answer.strip() or "null") or {}
+    except ValueError:
+        return False
+    return {key: str(actual.get(key, "")) for key in wanted} != wanted
 
 
 def _runner(run: Runner | None, bundle: Path) -> Runner:
@@ -85,9 +147,11 @@ def apply(
     fetch: status_module.Fetch | None = None,
     sleep: Callable[[float], None] = time.sleep,
     out: Callable[[str], None] = print,
+    inspect: Inspect | None = None,
 ) -> int:
     """Validate, render, start what is needed and wait until it is healthy. Returns the exit code (0 = all healthy)."""
     run = _runner(run, bundle)
+    inspect = inspect or (lambda args: default_inspect(args, cwd=bundle))
     try:
         config = config_module.load(config_file)
     except config_module.ConfigError as exc:
@@ -111,6 +175,17 @@ def apply(
     )
     if not start:
         return 0
+
+    project = _project(bundle)
+    if _store_volume_is_stale(project, rendered, inspect):
+        out(
+            "The template store changed: recreating its volume (it is read-only, nothing is lost)"
+        )
+        if run(compose_args(bundle, "rm", "-sf", *STORE_USERS)) != 0 or (
+            run(["docker", "volume", "rm", f"{project}_{STORE_VOLUME}"]) != 0
+        ):
+            out("recreating the template store volume failed")
+            return 1
 
     up = compose_args(bundle, "up", "-d", "--remove-orphans")
     if build:

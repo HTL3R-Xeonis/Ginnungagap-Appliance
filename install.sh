@@ -190,5 +190,7 @@ if [ "$CREATED" = 1 ]; then
   exit 0
 fi
 if [ "$START" = 1 ]; then
-  "$WRAPPER" apply "$CONFIG_DIR/ginnungagap.yml"
+  # not from this folder: python puts the current folder first on its path, so an update run inside the checkout would
+  # apply the checkout's code and render into it, not the program that was just installed
+  (cd / && "$WRAPPER" apply "$CONFIG_DIR/ginnungagap.yml")
 fi

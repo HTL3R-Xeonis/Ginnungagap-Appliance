@@ -215,3 +215,10 @@ def test_install_packages_needs_root(place):
     result = install(place, "--install-packages")
     assert result.returncode == 1 and "needs root" in result.stderr
     assert not place["prefix"].exists()
+
+
+def test_the_final_apply_is_not_run_from_the_folder_the_installer_was_started_in():
+    """From inside a checkout, `python3 -m ginnungagap` imports the checkout (the current folder comes first) and renders into it."""
+    script = (ROOT / "install.sh").read_text()
+    assert '(cd / && "$WRAPPER" apply' in script
+    assert '\n  "$WRAPPER" apply' not in script

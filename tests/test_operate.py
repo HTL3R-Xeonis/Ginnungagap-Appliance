@@ -62,6 +62,7 @@ def run_apply(config_file, bundle, generator_sources, run, **kw):
     lines: list[str] = []
     kw.setdefault("fetch", healthy_fetch)
     kw.setdefault("sleep", lambda s: None)
+    kw.setdefault("inspect", lambda args: None)  # no Docker volume exists
     code = operate.apply(
         config_file, bundle, generator_sources, run=run, out=lines.append, **kw
     )
@@ -274,9 +275,9 @@ def test_docker_is_run_from_the_bundle_folder_by_default(
     """compose reads COMPOSE_FILE relative to the working directory: from any other folder it can't find compose.yml."""
     seen = []
 
-    def fake_run(args, check, cwd):
+    def fake_run(args, check, cwd, **_):
         seen.append((args[:2], cwd))
-        return subprocess.CompletedProcess(args, 0)
+        return subprocess.CompletedProcess(args, 0, stdout="")
 
     monkeypatch.setattr(operate.subprocess, "run", fake_run)
     monkeypatch.chdir(config_file.parent)  # not the bundle
@@ -330,3 +331,104 @@ def test_build_images_needs_the_generators_files(bundle, tmp_path):
         == 1
     )
     assert run.calls == []
+
+
+OLD_NFS_VOLUME = '{"device":":/mnt/pool/templates","o":"addr=10.20.20.180,ro,nfsvers=4,soft,timeo=100","type":"nfs"}'
+
+
+def test_a_template_store_volume_with_old_options_is_recreated_before_start(
+    config_file, bundle, generator_sources
+):
+    run = Recorder()
+    seen = []
+
+    def inspect(args):
+        seen.append(args)
+        return OLD_NFS_VOLUME  # the volume was made for an NFS store, the config now says local
+
+    code, lines = run_apply(
+        config_file, bundle, generator_sources, run, inspect=inspect
+    )
+    assert code == 0
+    assert seen[0][-1] == "ginnungagap_template-store"
+    commands = run.commands()
+    assert commands[0].endswith("rm -sf template-esxi collector-esxi ova-deploy")
+    assert commands[1] == "docker volume rm ginnungagap_template-store"
+    assert commands[2].startswith(
+        "up -d --remove-orphans"
+    )  # only then the services start
+    assert any("template store changed" in line for line in lines)
+
+
+def test_a_template_store_volume_that_matches_is_left_alone(
+    config_file, bundle, generator_sources
+):
+    run_apply(config_file, bundle, generator_sources, Recorder())
+    wanted = operate._wanted_store_options(bundle / "rendered")
+    assert wanted is not None and wanted["type"] == "none"
+    run = Recorder()
+    run_apply(
+        config_file,
+        bundle,
+        generator_sources,
+        run,
+        inspect=lambda args: __import__("json").dumps(wanted),
+    )
+    assert len(run.calls) == 1  # just the up
+
+
+def test_a_failing_volume_removal_stops_before_the_start(
+    config_file, bundle, generator_sources
+):
+    run = Recorder([0, 1])  # rm of the containers works, removing the volume does not
+    code, lines = run_apply(
+        config_file, bundle, generator_sources, run, inspect=lambda args: OLD_NFS_VOLUME
+    )
+    assert code == 1
+    assert "recreating the template store volume failed" in lines
+    assert not any("up -d" in c for c in run.commands())
+
+
+def test_the_services_stopped_for_the_store_volume_are_exactly_the_ones_that_mount_it():
+    compose = yaml.safe_load(
+        (Path(operate.__file__).resolve().parent.parent / "compose.yml").read_text()
+    )
+    users = {
+        name
+        for name, service in compose["services"].items()
+        if any(
+            str(volume).startswith(f"{operate.STORE_VOLUME}:")
+            for volume in service.get("volumes", [])
+        )
+    }
+    assert users == set(operate.STORE_USERS)
+
+
+def test_a_changed_fallback_password_recreates_the_ova_deploy_service(
+    config_file, bundle, generator_sources
+):
+    """The service reads the secret file once at its start, so an apply that only changes the password must restart it."""
+    own = yaml.safe_load(config_file.read_text())
+    own["services"]["ova_deploy"] = True  # runs here, so it has the secret file
+    config_file.write_text(yaml.safe_dump(own))
+
+    def fetch(url):
+        if url.endswith("/ova/health"):
+            return 200, '{"status": "ok", "hosts_with_password": 0}', None
+        return healthy_fetch(url)
+
+    run_apply(config_file, bundle, generator_sources, Recorder(), fetch=fetch)
+    changed = yaml.safe_load(config_file.read_text())
+    changed["ova_deploy"]["esxi_password"] = "another-lab-password"
+    config_file.write_text(yaml.safe_dump(changed))
+    run = Recorder()
+    code, lines = run_apply(config_file, bundle, generator_sources, run, fetch=fetch)
+    assert code == 0
+    assert run.calls[1][6:] == [
+        "up",
+        "-d",
+        "--force-recreate",
+        "--no-deps",
+        "ova-deploy",
+    ]
+    assert "another-lab-password" not in "\n".join(lines)  # never printed

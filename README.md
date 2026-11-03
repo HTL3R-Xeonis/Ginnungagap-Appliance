@@ -48,6 +48,11 @@ python -m ginnungagap restore /var/backups/ginnungagap-backup-20261102-123005 --
 * `apply` stops at the first invalid setting without touching anything. It recreates only the services whose own rendered
   file changed (the gateway for the `Caddyfile`, the generator for its three files); the app and its data are never
   recreated by a change elsewhere. `--no-start` only renders, `--no-build` skips rebuilding the images.
+  The OVA deploy service is recreated when its fallback password changes (it reads it once at its start), and the template
+  store's volume is recreated when the store changes (NFS to a local folder, or another export): Docker never changes an
+  existing volume's options, so without that the services would keep reading the old store. It is read-only, nothing is lost.
+  On an appliance image without internet use `apply --no-build` (the image carries every service image; a build downloads
+  the Python packages again).
 * `status` exits non-zero if anything is down or degraded, so it can be used from a monitor or a script. Behind a login
   (`appliance.auth`) pass `--user NAME`; the password is asked for or read from `GINNUNGAGAP_PASSWORD`.
 * `backup` writes a folder (mode 0700) with a copy of the config file and `data.tgz`, the app's data volume (host profiles,
