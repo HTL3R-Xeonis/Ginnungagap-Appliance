@@ -26,6 +26,7 @@ def place(tmp_path):
         "config": tmp_path / "etc",
         "bin": tmp_path / "bin",
         "units": tmp_path / "units",
+        "staging": tmp_path / "staging",
     }
 
 
@@ -37,6 +38,7 @@ def install(place, *extra, check=True, path=None):
         "--config-dir", str(place["config"]),
         "--bin-dir", str(place["bin"]),
         "--unit-dir", str(place["units"]),
+        "--staging-dir", str(place["staging"]),
         "--repos-dir", str(place["repos"]),
         "--no-start",
         *extra,

@@ -71,9 +71,25 @@ def test_the_ova_deploy_service_is_its_own_container_with_the_password_as_a_secr
 
 
 def test_services_with_a_health_endpoint_have_a_health_check(compose):
-    for name in ("ginnungagap", "template-esxi", "template-gns3", "generator"):
+    for name in ("ginnungagap", "template-esxi", "template-gns3", "generator", "setup"):
         assert "healthcheck" in compose["services"][name], name
         assert "/health" in " ".join(compose["services"][name]["healthcheck"]["test"])
+
+
+def test_the_setup_wizard_is_its_own_container_with_no_extra_privilege(compose):
+    service = compose["services"]["setup"]
+    assert service["profiles"] == ["setup"]
+    assert "depends_on" not in service and "ports" not in service
+    volumes = service["volumes"]
+    assert any(
+        v.endswith(":/etc/ginnungagap:ro") for v in volumes
+    )  # read-only: show, never write
+    staging = next(v for v in volumes if v.endswith(":/staging"))
+    assert not staging.endswith(
+        ":ro"
+    )  # the one writable path it has: the staging folder
+    assert "docker.sock" not in " ".join(volumes)
+    assert service["build"]["additional_contexts"]["caddy"] == "docker-image://caddy:2"
 
 
 def test_the_store_is_mounted_read_only_and_the_collector_data_read_only_for_the_apis(

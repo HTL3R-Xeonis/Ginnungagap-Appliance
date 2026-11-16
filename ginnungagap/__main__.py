@@ -10,8 +10,9 @@ from pathlib import Path
 
 import yaml
 
+from ginnungagap import bootstrap as bootstrap_module
 from ginnungagap import config as config_module
-from ginnungagap import firstboot, operate
+from ginnungagap import firstboot, operate, setup_watcher
 from ginnungagap import render as render_module
 from ginnungagap import status as status_module
 
@@ -99,6 +100,30 @@ def _parser() -> argparse.ArgumentParser:
     restore.add_argument(
         "--yes", action="store_true", help="confirm that the current data is replaced"
     )
+
+    boot = commands.add_parser(
+        "bootstrap",
+        help="bring up only the gateway and the setup wizard, for a machine with no configuration yet",
+    )
+    boot.add_argument(
+        "--no-build", action="store_true", help="do not rebuild the images"
+    )
+
+    staged = commands.add_parser(
+        "apply-staged",
+        help="apply the configuration the setup wizard staged, if any (run by the systemd path unit)",
+    )
+    staged.add_argument(
+        "--staging-dir",
+        default=os.environ.get(
+            "GINNUNGAGAP_SETUP_STAGING_DIR", "/var/lib/ginnungagap/setup"
+        ),
+    )
+    staged.add_argument(
+        "--config-dir",
+        default=os.environ.get("GINNUNGAGAP_CONFIG_DIR", "/etc/ginnungagap"),
+    )
+    staged.add_argument("--generator-config", default=DEFAULT_GENERATOR_CONFIG)
     return parser
 
 
@@ -127,6 +152,15 @@ def main(argv: list[str] | None = None) -> int:
         return operate.build_images(bundle, args.generator_config)
     if args.command == "firstboot":
         return firstboot.run(args.config_dir)
+    if args.command == "bootstrap":
+        return bootstrap_module.run(bundle, build=not args.no_build)
+    if args.command == "apply-staged":
+        return setup_watcher.apply_staged(
+            args.staging_dir,
+            Path(args.config_dir) / "ginnungagap.yml",
+            bundle,
+            args.generator_config,
+        )
     if args.command == "apply":
         return operate.apply(
             args.file,

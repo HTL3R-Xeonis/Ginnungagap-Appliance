@@ -52,6 +52,7 @@ def test_the_profiles_follow_the_enabled_services(make_config, out, generator_so
         "template-gns3",
         "collector-gns3",
         "generator",
+        "setup",
     ]
     render(
         make_config(
@@ -63,7 +64,7 @@ def test_the_profiles_follow_the_enabled_services(make_config, out, generator_so
     )
     assert (
         env_of(read(out, "compose.env"))["COMPOSE_PROFILES"]
-        == "gateway,ginnungagap,template-esxi,collector-esxi"
+        == "gateway,ginnungagap,template-esxi,collector-esxi,setup"
     )
 
 
@@ -153,6 +154,7 @@ def test_the_gateway_routes_only_enabled_services(make_config, out, generator_so
         ("/templates/gns3/*", "template-gns3:8000"),
         ("/generator/*", "generator:8000"),
         ("/ova/*", "http://10.20.20.172:8003"),
+        ("/setup/*", "setup:8000"),
         ("handle {", "ginnungagap:8123"),
     ):
         assert path in caddy
@@ -171,6 +173,41 @@ def test_the_gateway_routes_only_enabled_services(make_config, out, generator_so
         and "/ova/" not in caddy
         and "/templates/esxi/" in caddy
     )
+    assert (
+        "/setup/*" in caddy
+    )  # the wizard is always routed, even with other services off
+
+
+def test_the_setup_wizard_is_reached_through_the_same_basic_auth_as_everything_else(
+    make_config, out, generator_sources
+):
+    config = make_config(
+        appliance={
+            "auth": {"mode": "basic", "user": "admin", "password_hash": "$2a$14$x"}
+        }
+    )
+    render(config, out, generator_sources)
+    caddy = read(out, "Caddyfile")
+    # one basic_auth block for the whole site (see caddyfile()): /setup/* has no auth directive of its own
+    assert caddy.count("basic_auth") == 1
+    assert caddy.index("basic_auth") < caddy.index("/setup/*")
+
+
+def test_the_env_file_carries_the_setup_wizards_host_paths(
+    make_config, out, generator_sources, monkeypatch
+):
+    monkeypatch.delenv("GINNUNGAGAP_CONFIG_DIR", raising=False)
+    monkeypatch.delenv("GINNUNGAGAP_SETUP_STAGING_DIR", raising=False)
+    render(make_config(), out, generator_sources)
+    env = env_of(read(out, "compose.env"))
+    assert env["GINNUNGAGAP_CONFIG_DIR"] == "/etc/ginnungagap"
+    assert env["GINNUNGAGAP_SETUP_STAGING_DIR"] == "/var/lib/ginnungagap/setup"
+    monkeypatch.setenv("GINNUNGAGAP_CONFIG_DIR", "/custom/config")
+    monkeypatch.setenv("GINNUNGAGAP_SETUP_STAGING_DIR", "/custom/staging")
+    render(make_config(), out, generator_sources)
+    env = env_of(read(out, "compose.env"))
+    assert env["GINNUNGAGAP_CONFIG_DIR"] == "/custom/config"
+    assert env["GINNUNGAGAP_SETUP_STAGING_DIR"] == "/custom/staging"
 
 
 def test_self_signed_tls_and_basic_auth_in_the_gateway(

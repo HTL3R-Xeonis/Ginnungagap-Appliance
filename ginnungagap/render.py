@@ -80,7 +80,36 @@ def profiles(config: dict[str, Any]) -> list[str]:
         result.append("generator")
     if services["ova_deploy"] is True:
         result.append("ova-deploy")
+    # the setup wizard always runs, same as the gateway and the app themselves: once a configuration exists it is still
+    # reachable at /setup/ (behind the same basic_auth as everything else, see caddyfile() below) so the appliance can
+    # be reconfigured later without a terminal; before a configuration exists it is brought up on its own, with a
+    # static bootstrap Caddyfile instead of this profile list - see ginnungagap/bootstrap.py.
+    result.append("setup")
     return result
+
+
+def project_name() -> str:
+    """The compose project name the volumes are prefixed with (also read by `operate._project`)."""
+    project = os.environ.get("GINNUNGAGAP_PROJECT") or "ginnungagap"
+    if not re.fullmatch(r"[a-z0-9][a-z0-9_-]*", project):
+        raise RenderError(
+            f"GINNUNGAGAP_PROJECT={project!r} is not a valid compose project name (lowercase letters, digits, - and _)"
+        )
+    return project
+
+
+def host_paths() -> dict[str, str]:
+    """
+    The two host folders the setup wizard's container is bind-mounted onto (config, read-only; a staging folder,
+    read-write) - install.sh writes these into install.env so they match what it actually created; the defaults here
+    are only for a manual `ginnungagap render`/`apply` run outside install.sh.
+    """
+    return {
+        "GINNUNGAGAP_CONFIG_DIR": os.environ.get("GINNUNGAGAP_CONFIG_DIR")
+        or "/etc/ginnungagap",
+        "GINNUNGAGAP_SETUP_STAGING_DIR": os.environ.get("GINNUNGAGAP_SETUP_STAGING_DIR")
+        or "/var/lib/ginnungagap/setup",
+    }
 
 
 def _env_file(values: dict[str, str]) -> str:
@@ -108,14 +137,9 @@ def compose_env(config: dict[str, Any]) -> str:
         if appliance["legacy_ports"]
         else "compose.yml"
     )
-    project = os.environ.get("GINNUNGAGAP_PROJECT") or "ginnungagap"
-    if not re.fullmatch(r"[a-z0-9][a-z0-9_-]*", project):
-        raise RenderError(
-            f"GINNUNGAGAP_PROJECT={project!r} is not a valid compose project name (lowercase letters, digits, - and _)"
-        )
     return _env_file(
         {
-            "COMPOSE_PROJECT_NAME": project,
+            "COMPOSE_PROJECT_NAME": project_name(),
             "COMPOSE_FILE": files,
             "COMPOSE_PROFILES": ",".join(profiles(config)),
             "TZ": appliance["timezone"],
@@ -125,6 +149,7 @@ def compose_env(config: dict[str, Any]) -> str:
             "ESXI_REFRESH_SECONDS": str(templates["esxi_refresh_minutes"] * 60),
             "GNS3_REFRESH_SECONDS": str(templates["gns3_refresh_minutes"] * 60),
             "LOG_LEVEL": config["logging"]["level"],
+            **host_paths(),
         }
     )
 
@@ -158,6 +183,9 @@ def caddyfile(config: dict[str, Any]) -> str:
         routes.append(("/ova/*", "ova-deploy:8000"))
     elif services["ova_deploy"] == "external":
         routes.append(("/ova/*", urls["ova"]))
+    # always routed, same as the app itself: reachable at /setup/ to reconfigure later, behind the basic_auth below
+    # exactly like every other route (nothing about it is special-cased: see ginnungagap/setup_wizard.py)
+    routes.append(("/setup/*", "setup:8000"))
 
     lines = [HEADER.rstrip("\n"), ""]
     if appliance["tls"]["mode"] == "self-signed":

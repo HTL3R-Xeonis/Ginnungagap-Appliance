@@ -8,7 +8,8 @@
 #   sudo ./install.sh --uninstall                      # remove program, command and units; config and data are kept
 #
 # Options: --prefix DIR (/opt/ginnungagap)  --config-dir DIR (/etc/ginnungagap)  --bin-dir DIR (/usr/local/bin)
-#          --unit-dir DIR (/etc/systemd/system)  --repos-dir DIR  --no-systemd  --no-start
+#          --unit-dir DIR (/etc/systemd/system)  --repos-dir DIR  --staging-dir DIR (/var/lib/ginnungagap/setup)
+#          --no-systemd  --no-start
 #          --install-packages   first install what is needed with apt (Debian 13 / Ubuntu: Docker, compose, python3-yaml, ...)
 #          --image              for building an appliance image: also enable the first-boot unit (see image/prepare-image.sh)
 set -euo pipefail
@@ -18,6 +19,7 @@ PREFIX=/opt/ginnungagap
 CONFIG_DIR=/etc/ginnungagap
 BIN_DIR=/usr/local/bin
 UNIT_DIR=/etc/systemd/system
+STAGING_DIR=/var/lib/ginnungagap/setup
 REPOS_DIR=
 SYSTEMD=1
 START=1
@@ -33,6 +35,7 @@ while [ $# -gt 0 ]; do
     --config-dir) CONFIG_DIR=${2:?}; shift 2 ;;
     --bin-dir) BIN_DIR=${2:?}; shift 2 ;;
     --unit-dir) UNIT_DIR=${2:?}; shift 2 ;;
+    --staging-dir) STAGING_DIR=${2:?}; shift 2 ;;
     --repos-dir) REPOS_DIR=${2:?}; shift 2 ;;
     --no-systemd) SYSTEMD=0; shift ;;
     --no-start) START=0; shift ;;
@@ -46,6 +49,9 @@ done
 
 UNIT="$UNIT_DIR/ginnungagap.service"
 FIRSTBOOT_UNIT="$UNIT_DIR/ginnungagap-firstboot.service"
+BOOTSTRAP_UNIT="$UNIT_DIR/ginnungagap-bootstrap.service"
+SETUP_APPLY_PATH_UNIT="$UNIT_DIR/ginnungagap-setup-apply.path"
+SETUP_APPLY_SERVICE_UNIT="$UNIT_DIR/ginnungagap-setup-apply.service"
 # systemctl is only touched when installing into the real unit folder of a running systemd (not for a test --unit-dir)
 REAL_SYSTEMD=0
 if [ "$SYSTEMD" = 1 ] && [ "$UNIT_DIR" = /etc/systemd/system ] && command -v systemctl >/dev/null 2>&1 && [ -d /run/systemd/system ]; then
@@ -55,12 +61,12 @@ WRAPPER="$BIN_DIR/ginnungagap"
 APP="$PREFIX/app"
 
 if [ "$UNINSTALL" = 1 ]; then
-  [ "$REAL_SYSTEMD" = 1 ] && systemctl disable ginnungagap.service ginnungagap-firstboot.service >/dev/null 2>&1 || true
-  rm -f "$UNIT" "$FIRSTBOOT_UNIT" "$WRAPPER"
+  [ "$REAL_SYSTEMD" = 1 ] && systemctl disable ginnungagap.service ginnungagap-firstboot.service ginnungagap-bootstrap.service ginnungagap-setup-apply.path >/dev/null 2>&1 || true
+  rm -f "$UNIT" "$FIRSTBOOT_UNIT" "$BOOTSTRAP_UNIT" "$SETUP_APPLY_PATH_UNIT" "$SETUP_APPLY_SERVICE_UNIT" "$WRAPPER"
   rm -rf "$APP"
   rmdir "$PREFIX" 2>/dev/null || true  # only when nothing else lives there
   [ "$REAL_SYSTEMD" = 1 ] && systemctl daemon-reload || true
-  echo "Removed the program, the command and the unit. Kept: $CONFIG_DIR (your configuration) and the containers' data volumes."
+  echo "Removed the program, the command and the unit. Kept: $CONFIG_DIR (your configuration), $STAGING_DIR (the setup wizard's staging folder) and the containers' data volumes."
   echo "Stop the containers with: docker compose --project-name ginnungagap down"
   exit 0
 fi
@@ -106,12 +112,17 @@ if [ ! -f "$CONFIG_DIR/ginnungagap.yml" ] && [ "$IMAGE" = 0 ]; then  # an image 
   install -m 0600 "$HERE/ginnungagap.example.yml" "$CONFIG_DIR/ginnungagap.yml"
   CREATED=1
 fi
+# the setup wizard's only writable path (its container mounts nothing else): a submitted configuration and the marker
+# ginnungagap-setup-apply.path watches for, see ginnungagap/setup_wizard.py and ginnungagap/setup_watcher.py
+install -d -m 0700 "$STAGING_DIR"
+
 cat >"$CONFIG_DIR/install.env" <<ENV
 # Written by install.sh; where the program and the repositories it builds from are.
 PYTHONPATH=$APP
 REPOS_DIR=$REPOS_DIR
 GINNUNGAGAP_GENERATOR_CONFIG=$REPOS_DIR/topology-generator/config
 GINNUNGAGAP_CONFIG_DIR=$CONFIG_DIR
+GINNUNGAGAP_SETUP_STAGING_DIR=$STAGING_DIR
 ENV
 
 # ---- the command
@@ -165,6 +176,50 @@ SuccessExitStatus=1
 [Install]
 WantedBy=multi-user.target
 FIRSTBOOT
+  # bootstrap: gateway + setup wizard only, reachable without a configuration at all - see ginnungagap/bootstrap.py.
+  # Skipped at boot the moment a configuration exists (ginnungagap.service takes over); harmless to leave enabled.
+  cat >"$BOOTSTRAP_UNIT" <<BOOTSTRAP
+[Unit]
+Description=Ginnungagap bootstrap (gateway + setup wizard, until a configuration exists)
+Requires=docker.service
+After=docker.service network-online.target ginnungagap-firstboot.service
+Wants=network-online.target
+ConditionPathExists=!$CONFIG_DIR/ginnungagap.yml
+Before=ginnungagap.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+TimeoutStartSec=300
+ExecStart=$WRAPPER bootstrap --no-build
+
+[Install]
+WantedBy=multi-user.target
+BOOTSTRAP
+  # the setup wizard's hand-off: the moment its container stages a configuration (a marker file in $STAGING_DIR), this
+  # path unit runs the service unit, which re-validates it and runs the real `apply` - see ginnungagap/setup_watcher.py.
+  # Always armed, not only for a fresh appliance: resubmitting the wizard later works the same way, no reboot needed.
+  cat >"$SETUP_APPLY_PATH_UNIT" <<SETUPPATH
+[Unit]
+Description=Watch for a configuration submitted through the setup wizard
+
+[Path]
+PathExists=$STAGING_DIR/apply.request
+
+[Install]
+WantedBy=multi-user.target
+SETUPPATH
+  cat >"$SETUP_APPLY_SERVICE_UNIT" <<SETUPSERVICE
+[Unit]
+Description=Apply a configuration submitted through the setup wizard
+Requires=docker.service
+After=docker.service
+
+[Service]
+Type=oneshot
+TimeoutStartSec=600
+ExecStart=$WRAPPER apply-staged --staging-dir $STAGING_DIR --config-dir $CONFIG_DIR
+SETUPSERVICE
   if [ "$REAL_SYSTEMD" = 1 ]; then
     systemctl daemon-reload
     if [ "$IMAGE" = 1 ]; then
@@ -175,6 +230,7 @@ FIRSTBOOT
     if [ "$CREATED" = 0 ]; then
       systemctl enable ginnungagap.service >/dev/null 2>&1 || true
     fi
+    systemctl enable ginnungagap-bootstrap.service ginnungagap-setup-apply.path >/dev/null 2>&1 || true
   fi
 fi
 

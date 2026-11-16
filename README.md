@@ -71,6 +71,49 @@ are built from. A systemd unit (`ginnungagap.service`) applies the configuration
 themselves, so this only picks up an edited file. Running `install.sh` again updates the program and keeps your
 configuration; `sudo ./install.sh --uninstall` removes program, command and unit and keeps the configuration and the data.
 
+It also installs three more units for the setup wizard below: `ginnungagap-bootstrap.service` (brings the wizard up
+before a configuration exists), `ginnungagap-setup-apply.path` and `.service` (apply what the wizard staged). `--staging-dir
+DIR` (default `/var/lib/ginnungagap/setup`) is the one folder the wizard's own container may write to.
+
+## Setup wizard
+
+A fresh appliance (or one whose guestinfo configuration did not validate) has no `ginnungagap.yml` at all - instead of a
+terminal and `ginnungagap.example.yml`, open the VM's address in a browser: a plain HTML form (`setup`, no JavaScript)
+covering the same fields as the YAML file, grouped the same way. It builds the file, checks it with the exact same
+`ginnungagap validate` logic (never a second copy of the rules), shows the same problem list on failure, and offers
+"Download the YAML instead" at any point for config-as-code. It also hashes a typed password with `caddy hash-password`
+server-side - the one step that otherwise needs a terminal.
+
+**How a fresh VM gets from nothing to a running appliance** (the chicken-and-egg this solves: the gateway's Caddyfile is
+normally *rendered from* the configuration, so before one exists there is nothing to tell the gateway to route anywhere -
+not even to the wizard itself):
+
+1. **Before any configuration exists**, `ginnungagap bootstrap` (`ginnungagap-bootstrap.service`, boots whenever
+   `/etc/ginnungagap/ginnungagap.yml` does not exist) writes a fixed, static `Caddyfile` - plain HTTP, no auth, every
+   request routed to the wizard - and a minimal `compose.env` (`COMPOSE_PROFILES=gateway,setup`) into the same
+   `rendered/` folder `apply` normally renders into, then starts just those two containers. The wizard container itself
+   stays unprivileged throughout: no Docker socket, no sudo, no other host path mounted.
+2. The admin opens the VM's address (the console hint, `/etc/issue.d/ginnungagap.issue`, says so), fills in the form.
+3. On submit the wizard's container writes the validated YAML and a marker file into its one writable path (a folder
+   it shares with the host, nothing else) and tells the admin it is being applied.
+4. A systemd path unit on the host (`ginnungagap-setup-apply.path`) notices the marker, triggers
+   `ginnungagap-setup-apply.service`, which **re-validates independently** (never trusts the container), writes
+   `/etc/ginnungagap/ginnungagap.yml` and runs the real `ginnungagap apply` - the same `render()`/`docker compose up`
+   pipeline as always. This overwrites both `compose.env` (the real profile list) and `Caddyfile` (the real routes, the
+   real TLS/auth); the gateway is recreated because its own file changed (see `apply`'s file-ownership check above), and
+   the app and the other services come up for the first time. No reboot is needed, and resubmitting the wizard later
+   works exactly the same way.
+5. The setup wizard itself is **never torn down** - `services.*` toggles aside, it always runs (`render.profiles()`
+   always includes `setup`) and stays reachable at `/setup/`, so the appliance can be reconfigured later from a browser
+   too. Once a configuration exists it needs no logic of its own for this: the rendered `Caddyfile` wraps the *entire*
+   site, `/setup/*` included, in the same `basic_auth` as everything else (`appliance.auth`) - unauthenticated access is
+   only ever the single first-boot window before any configuration exists at all.
+
+Out of scope (see the plan in the project's handoff repository): it never touches TopologyOperator's own user store -
+the appliance's `admin`/`admin` bootstrap login is unrelated and mentioned only in the console hint once setup is done.
+ESXi/GNS3 host profiles are not configured here either; that is the app's own "Design a host" dialog, after the first
+login.
+
 ## TLS
 
 `appliance.tls.mode: self-signed` (with an `https://` `public_url`) makes the gateway serve HTTPS with a certificate from its own
@@ -111,7 +154,8 @@ VM options > Advanced > configuration parameters, or `image/set_guestinfo.py`):
 It creates the SSH host keys, creates the template folder of a local store, validates the configuration (an invalid one is kept as `ginnungagap.yml.rejected`, the reasons
 are shown at the console login and in `/var/lib/ginnungagap/firstboot.problems`, and the next boot tries again), and
 `ginnungagap.service` then applies it. A configuration that is already in `/etc/ginnungagap/` wins over guestinfo. With no
-configuration at all the VM boots, shows at the console what to do and starts no service.
+configuration at all the VM boots, the console hint gives its address to open in a browser (the setup wizard, see below -
+`ginnungagap-bootstrap.service` brings the gateway and the wizard up for exactly this case), and nothing else starts yet.
 
 The login of the underlying Debian image is the one of the template it was built from; **change it** (guestinfo
 `admin_password_hash`, or `ssh_authorized_key` and then switch password login off) before the VM is reachable by others.
@@ -140,6 +184,7 @@ docker compose --env-file rendered/compose.env ps
 | GNS3 template API | `template-gns3` | `template-gns3:8000` | `/health` |
 | GNS3 template collector (hosts from the app's profiles) | `collector-gns3` | - (writes `gns3_templates.yml`) | - |
 | topology generator | `generator` | `generator:8000` | `/health` |
+| setup wizard (see "Setup wizard" above) | `setup` | `setup:8000`, at `/setup/` | `/health` |
 
 The **OVA deploy API** is a service too (`ova-deploy`, `/ova/health`), built from the TopologyBuilderServices repository when
 `services.ova_deploy` is `true`; with `external` the existing one (`ova_deploy.external_url`) is reached through the gateway at `/ova/`.

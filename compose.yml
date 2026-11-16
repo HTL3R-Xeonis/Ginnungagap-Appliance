@@ -144,6 +144,26 @@ services:
       <<: *probe
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=4)"]
 
+  setup:
+    profiles: [setup]
+    build:
+      context: .
+      dockerfile: docker/setup.Dockerfile
+      additional_contexts:
+        caddy: "docker-image://caddy:2"  # only for its `caddy hash-password`, see docker/setup.Dockerfile
+    restart: unless-stopped
+    environment:
+      TZ: ${TZ:-UTC}
+    volumes:
+      # read-only: only to show that a configuration already exists, never to write it (see ginnungagap/setup_wizard.py)
+      - ${GINNUNGAGAP_CONFIG_DIR:-/etc/ginnungagap}:/etc/ginnungagap:ro
+      # the only writable path this container has anywhere: a submitted configuration and its "apply me" marker, read by
+      # the host's own ginnungagap-setup-apply.path/.service (install.sh), never by another container
+      - ${GINNUNGAGAP_SETUP_STAGING_DIR:-/var/lib/ginnungagap/setup}:/staging
+    healthcheck:
+      <<: *probe
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=4)"]
+
 secrets:
   # the fallback ESXi password for a host that has none stored in the app (may be empty); a file in rendered/, never an environment variable
   esxi_password:

@@ -27,6 +27,7 @@ import binascii
 import os
 import pwd
 import re
+import socket
 import subprocess
 from collections.abc import Callable
 from pathlib import Path
@@ -66,6 +67,19 @@ def vmtools_guestinfo(key: str) -> str | None:
 
 def default_runner(args: list[str]) -> int:
     return subprocess.run(args, check=False).returncode
+
+
+def _local_address() -> str | None:
+    """This machine's own address on its default route, None when there isn't one (no network yet). Never sends
+    anything: a UDP "connect" only asks the kernel which local address a packet to that address would leave from."""
+    try:
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as probe:
+            probe.connect(
+                ("198.51.100.1", 80)
+            )  # TEST-NET-2 (RFC 5737): reserved, never actually reached
+            return probe.getsockname()[0]
+    except OSError:
+        return None
 
 
 def decode_config(value: str, encoding: str | None) -> str:
@@ -162,6 +176,7 @@ def run(
     install_key: Callable[[str, str], None] = _install_ssh_key,
     make_dir: Callable[[Path], None] = _make_dir,
     sudoers_dir: str | Path = SUDOERS_DIR,
+    local_address: Callable[[], str | None] = _local_address,
     out: Callable[[str], None] = print,
 ) -> int:
     """
@@ -224,11 +239,14 @@ def run(
                 "no configuration in guestinfo.ginnungagap.config and none in "
                 f"{config_file}"
             )
+            address = local_address() or "<this machine's address>"
             _write_issue(
                 issue_file,
                 [
-                    "No configuration yet. Either set guestinfo.ginnungagap.config",
-                    "(base64 of ginnungagap.yml) on this VM and reboot, or, as root:",
+                    f"No configuration yet. Open http://{address}/ in a browser to",
+                    "finish setup (the setup wizard) - or set",
+                    "guestinfo.ginnungagap.config (base64 of ginnungagap.yml) and reboot,",
+                    "or, as root:",
                     f"  cp {config_dir}/ginnungagap.example.yml {config_file}",
                     f"  edit {config_file}; ginnungagap apply {config_file}",
                 ],
@@ -271,7 +289,16 @@ def run(
                 out(
                     f"configuration accepted, {url} will answer once the services are up"
                 )
-                _write_issue(issue_file, [f"Web interface: {url}"])
+                _write_issue(
+                    issue_file,
+                    [
+                        f"Web interface: {url}",
+                        (
+                            "First login: admin / admin - change it once you are in "
+                            "(Admin panel > User accounts)."
+                        ),
+                    ],
+                )
 
     if (
         result == 0
