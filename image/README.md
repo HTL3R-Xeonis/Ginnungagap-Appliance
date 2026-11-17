@@ -4,15 +4,18 @@ Tools to turn a prepared VM on an ESXi host into an `.ova`, describe it for the 
 with its configuration. The VM is prepared by `prepare-image.sh` and shut down before it is exported.
 
 They are plain scripts (not a package) and need `pyvmomi` and `PyYAML`; `describe_template.py` needs only `PyYAML`.
+Git preserves LF for the shell scripts, including when a source archive is created on Windows and unpacked on Debian.
 
 ## The ESXi password
 
 Every script that talks to ESXi reads the password **only from the environment variable `ESXI_PASSWORD`**. There is no
-argument for it (it would end up in the shell history and the process list), and it is never printed or logged. Load it where
-it already lives, for example from the live app's `.env` on the testbox:
+argument for it (it would end up in the shell history and the process list), and it is never printed or logged.
+For a manual run, read the selected host's password into the current shell and export it for the tools:
 
 ```bash
-set -a; . ~/TopologyOperator-livetest/.env; set +a
+read -rs -p 'ESXi password: ' ESXI_PASSWORD
+printf '\n'
+export ESXI_PASSWORD
 ```
 
 ## Scripts
@@ -34,11 +37,12 @@ set -a; . ~/TopologyOperator-livetest/.env; set +a
 ## Example
 
 ```bash
-set -a; . ~/TopologyOperator-livetest/.env; set +a        # ESXI_PASSWORD
+# Set ESXI_PASSWORD for this host as shown above.
 python export_ova.py --host 10.20.20.202 --vm ginnungagap-image --out /data/ova --name Ginnungagap_Appliance
 python describe_template.py /data/ova/Ginnungagap_Appliance.ova --cpu 2 --memory 4 --disk 20 --rename --write
 # the .ova and the .yml now go into a folder of the template share; after the template API has listed it:
 python set_guestinfo.py --host 10.20.20.202 --vm my-appliance --config ginnungagap.yml --ssh-key-file ~/.ssh/id_ed25519.pub --power-on
+unset ESXI_PASSWORD
 ```
 
 The tests (`tests/test_export_ova.py`) run without an ESXi: every step that does not need one is a plain function.
