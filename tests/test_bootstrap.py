@@ -55,7 +55,7 @@ def test_it_writes_a_minimal_env_and_a_static_caddyfile_then_starts_gateway_and_
 def test_no_build_is_honoured(bundle):
     run = Recorder()
     bootstrap.run(bundle, runner=run, build=False)
-    assert "--build" not in run.calls[0]
+    assert run.calls[0][-3:] == ["--no-build", "--pull", "never"]
 
 
 def test_a_failed_compose_up_is_reported(bundle):

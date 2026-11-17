@@ -66,6 +66,8 @@ def apply_staged(
     generator_config: str | Path | None,
     apply: Apply = operate_module.apply,
     out: Callable[[str], None] = print,
+    *,
+    build: bool = True,
 ) -> int:
     """
     0: nothing was staged, or it was and is now the live configuration, applied. 1: something was staged but was not
@@ -115,4 +117,4 @@ def apply_staged(
     out(
         f"configuration from the setup wizard accepted, writing {config_file} and applying it"
     )
-    return apply(config_file, bundle, generator_config, out=out)
+    return apply(config_file, bundle, generator_config, out=out, build=build)

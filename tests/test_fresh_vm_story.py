@@ -64,6 +64,7 @@ def test_no_config_wizard_apply_the_app_takes_over(bundle, tmp_path, monkeypatch
     # 2. the admin fills in the wizard; everything runs elsewhere so no sibling generator-config checkout is needed
     values = {
         "public_url": "https://ginn.lab",
+        "tls_mode": "self-signed",
         "esxi_mode": "external",
         "esxi_url": "http://10.0.0.1:8000",
         "gns3_mode": "external",
@@ -88,6 +89,7 @@ def test_no_config_wizard_apply_the_app_takes_over(bundle, tmp_path, monkeypatch
         config_dir / "ginnungagap.yml",
         bundle,
         None,
+        build=False,
         apply=lambda *a, **k: operate.apply(
             *a,
             run=apply_run,
@@ -107,9 +109,15 @@ def test_no_config_wizard_apply_the_app_takes_over(bundle, tmp_path, monkeypatch
     assert "COMPOSE_PROFILES=gateway,ginnungagap,setup" in real_env
     real_caddy = (bundle / "rendered" / "Caddyfile").read_text()
     assert "ginnungagap:8123" in real_caddy and "handle_path /setup/*" not in real_caddy
+    assert "tls internal" in real_caddy
     assert (
         real_caddy != bootstrap_caddy
     )  # Caddyfile is in operate.FILE_OWNERS: gateway gets recreated for this
     assert any(
         "up" in call for call in apply_run.calls
     )  # the real `docker compose up` really ran (recorder only)
+    assert all(
+        "--no-build" in call and call[call.index("--pull") + 1] == "never"
+        for call in apply_run.calls
+        if "up" in call
+    )

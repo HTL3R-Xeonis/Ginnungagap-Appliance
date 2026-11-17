@@ -202,6 +202,15 @@ def test_image_mode_creates_no_configuration_and_does_not_start_anything(place):
     ).exists()  # the first boot brings it
     assert (place["config"] / "ginnungagap.example.yml").is_file()
     assert "appliance image" in result.stdout
+    wizard = place["units"] / "ginnungagap-setup-apply.service"
+    apply_line = next(
+        line
+        for line in wizard.read_text().splitlines()
+        if line.startswith("ExecStart=")
+    )
+    assert apply_line.endswith(" --no-build")
+    assert install(place).returncode == 0
+    assert apply_line in wizard.read_text()
 
 
 def test_uninstall_removes_both_units(place):

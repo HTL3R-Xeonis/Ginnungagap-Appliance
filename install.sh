@@ -209,6 +209,10 @@ PathExists=$STAGING_DIR/apply.request
 [Install]
 WantedBy=multi-user.target
 SETUPPATH
+  wizard_image_flag=
+  if [ "$IMAGE" = 1 ] || grep -Eq '^ExecStart=.*apply-staged .* --no-build$' "$SETUP_APPLY_SERVICE_UNIT" 2>/dev/null; then
+    wizard_image_flag=" --no-build"
+  fi
   cat >"$SETUP_APPLY_SERVICE_UNIT" <<SETUPSERVICE
 [Unit]
 Description=Apply a configuration submitted through the setup wizard
@@ -218,7 +222,7 @@ After=docker.service
 [Service]
 Type=oneshot
 TimeoutStartSec=600
-ExecStart=$WRAPPER apply-staged --staging-dir $STAGING_DIR --config-dir $CONFIG_DIR
+ExecStart=$WRAPPER apply-staged --staging-dir $STAGING_DIR --config-dir $CONFIG_DIR$wizard_image_flag
 SETUPSERVICE
   if [ "$REAL_SYSTEMD" = 1 ]; then
     systemctl daemon-reload

@@ -25,6 +25,8 @@ def test_the_dry_run_lists_every_step_and_changes_nothing():
                  "SSH host keys, the machine id", "authorized SSH keys, passwordless sudo", "clean logs"):  # fmt: skip
         assert part in text
     assert "zeros" not in text  # only on request
+    assert "stop the setup watcher" in text
+    assert "remove staged and rejected setup files" in text
     assert "zeros" in run("--dry-run", "--zero-free-space").stdout
 
 

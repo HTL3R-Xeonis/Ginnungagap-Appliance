@@ -44,6 +44,10 @@ act() {  # description, then the function to run
 
 build_images() { ginnungagap build-images; }
 
+stop_setup() {
+  systemctl stop ginnungagap-setup-apply.path ginnungagap-setup-apply.service
+}
+
 remove_services() {
   docker ps -aq --filter "label=com.docker.compose.project=$PROJECT" | xargs -r docker rm -f >/dev/null
   docker volume ls -q | grep "^${PROJECT}_" | xargs -r docker volume rm -f >/dev/null || true
@@ -52,9 +56,20 @@ remove_services() {
 }
 
 remove_configuration() {
-  rm -f /etc/ginnungagap/ginnungagap.yml /etc/ginnungagap/ginnungagap.yml.rejected
+  rm -f /etc/ginnungagap/ginnungagap.yml /etc/ginnungagap/ginnungagap.yml.new /etc/ginnungagap/ginnungagap.yml.rejected
   rm -rf /opt/ginnungagap/app/rendered
   rm -f /var/lib/ginnungagap/firstboot.done /var/lib/ginnungagap/firstboot.problems /etc/issue.d/ginnungagap.issue
+}
+
+remove_staged_configuration() {
+  local staging_dir=""
+  if [ -r /etc/ginnungagap/install.env ]; then
+    staging_dir=$(sed -n 's/^GINNUNGAGAP_SETUP_STAGING_DIR=//p' /etc/ginnungagap/install.env)
+  fi
+  staging_dir=${staging_dir:-/var/lib/ginnungagap/setup}
+  case "$staging_dir" in /*) ;; *) die "setup staging directory must be absolute" ;; esac
+  rm -f -- "$staging_dir/apply.request" "$staging_dir/ginnungagap.yml" \
+    "$staging_dir/ginnungagap.yml.new" "$staging_dir/ginnungagap.yml.rejected"
 }
 
 remove_identity() {
@@ -65,9 +80,14 @@ remove_identity() {
 }
 
 remove_access() {
+  local rule
   find /root /home -name authorized_keys -type f -delete 2>/dev/null || true
   # passwordless sudo is for the person who built the image, not for everybody who gets a copy
-  grep -l NOPASSWD /etc/sudoers.d/* 2>/dev/null | grep -v README | xargs -r rm -f
+  for rule in /etc/sudoers.d/*; do
+    if [ -f "$rule" ] && [ "${rule##*/}" != README ] && grep -q NOPASSWD "$rule"; then
+      rm -f -- "$rule"
+    fi
+  done
   rm -f /root/.bash_history /home/*/.bash_history /root/.viminfo /home/*/.viminfo
 }
 
@@ -86,9 +106,11 @@ zero_free_space() {
   rm -f /zero.fill
 }
 
+act "stop the setup watcher" stop_setup
 act "build and pull the images of every service" build_images
 act "remove the containers and volumes of the project '$PROJECT'" remove_services
 act "remove the configuration, the rendered files and the first-boot marker" remove_configuration
+act "remove staged and rejected setup files" remove_staged_configuration
 act "remove the SSH host keys, the machine id and DHCP leases" remove_identity
 act "remove authorized SSH keys, passwordless sudo rules and shell histories" remove_access
 act "clean logs, package caches and temporary files" clean_logs

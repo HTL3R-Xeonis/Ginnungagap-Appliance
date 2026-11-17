@@ -52,7 +52,7 @@ def _parser() -> argparse.ArgumentParser:
     apply.add_argument("--generator-config", default=DEFAULT_GENERATOR_CONFIG)
     apply.add_argument("--no-start", action="store_true", help="only render")
     apply.add_argument(
-        "--no-build", action="store_true", help="do not rebuild the images"
+        "--no-build", action="store_true", help="use the images already on disk"
     )
     apply.add_argument(
         "--wait",
@@ -106,7 +106,7 @@ def _parser() -> argparse.ArgumentParser:
         help="bring up only the gateway and the setup wizard, for a machine with no configuration yet",
     )
     boot.add_argument(
-        "--no-build", action="store_true", help="do not rebuild the images"
+        "--no-build", action="store_true", help="use the images already on disk"
     )
 
     staged = commands.add_parser(
@@ -124,6 +124,9 @@ def _parser() -> argparse.ArgumentParser:
         default=os.environ.get("GINNUNGAGAP_CONFIG_DIR", "/etc/ginnungagap"),
     )
     staged.add_argument("--generator-config", default=DEFAULT_GENERATOR_CONFIG)
+    staged.add_argument(
+        "--no-build", action="store_true", help="use the images already on disk"
+    )
     return parser
 
 
@@ -160,6 +163,7 @@ def main(argv: list[str] | None = None) -> int:
             Path(args.config_dir) / "ginnungagap.yml",
             bundle,
             args.generator_config,
+            build=not args.no_build,
         )
     if args.command == "apply":
         return operate.apply(

@@ -37,6 +37,7 @@ FILE_OWNERS = {
 }
 
 DATA_VOLUME = "data"
+OFFLINE_UP_ARGS = ("--no-build", "--pull", "never")
 APP_SERVICES = (
     "ginnungagap",
     "collector-gns3",
@@ -236,9 +237,10 @@ def apply(
             out("recreating the template store volume failed")
             return 1
 
-    up = compose_args(bundle, "up", "-d", "--remove-orphans")
-    if build:
-        up.append("--build")
+    offline = () if build else OFFLINE_UP_ARGS
+    up = compose_args(
+        bundle, "up", "-d", "--remove-orphans", *(("--build",) if build else offline)
+    )
     if run(up) != 0:
         out("docker compose up failed")
         return 1
@@ -246,7 +248,9 @@ def apply(
     if (
         recreate
         and run(
-            compose_args(bundle, "up", "-d", "--force-recreate", "--no-deps", *recreate)
+            compose_args(
+                bundle, "up", "-d", "--force-recreate", "--no-deps", *offline, *recreate
+            )
         )
         != 0
     ):

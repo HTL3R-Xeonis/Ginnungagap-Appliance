@@ -92,7 +92,7 @@ def test_apply_renders_then_starts_with_a_build_and_removes_orphans(
 def test_no_build_and_no_start_are_honoured(config_file, bundle, generator_sources):
     run = Recorder()
     run_apply(config_file, bundle, generator_sources, run, build=False)
-    assert "--build" not in run.calls[0]
+    assert run.calls[0][-3:] == ["--no-build", "--pull", "never"]
     run = Recorder()
     code, _ = run_apply(
         config_file, bundle / "other", generator_sources, run, start=False

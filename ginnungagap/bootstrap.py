@@ -77,8 +77,7 @@ def run(
     # the bootstrap files are what runs now: the next apply must compare against THESE, not against an older real configuration
     (rendered / operate_module.APPLIED).unlink(missing_ok=True)
     up = operate_module.compose_args(bundle, "up", "-d", "--remove-orphans")
-    if build:
-        up.append("--build")
+    up.extend(("--build",) if build else operate_module.OFFLINE_UP_ARGS)
     if runner(up) != 0:
         out("docker compose up failed (gateway + setup wizard)")
         return 1

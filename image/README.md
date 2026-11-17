@@ -50,11 +50,11 @@ What was done (and verified on the lab ESXi) to get the OVA, in order:
 1. A Debian 13 VM, installed with `sudo ./install.sh --repos-dir /srv/repos --install-packages --image --no-start`
    (Docker, compose, buildx, `python3-yaml`, `open-vm-tools`, `nfs-common`; the first-boot unit is enabled, there is no
    configuration).
-2. `sudo image/prepare-image.sh --yes --zero-free-space` builds and pulls the images of **every** service (so the VM starts
-   without internet and without a build), then removes everything that belongs to this machine: configuration, containers and
-   volumes, SSH host keys, machine id, DHCP leases, authorized keys, passwordless-sudo rules, shell histories, logs. It does
-   not boot again: shut the VM down (`systemctl poweroff`) and do not start it before the export, or it creates new keys and
-   a new machine id inside the image. `--dry-run` lists the steps.
+2. `sudo image/prepare-image.sh --yes --zero-free-space` stops the setup watcher, then builds and pulls the images of
+   every service for offline startup. It removes the configuration, staged and rejected Wizard submissions, containers,
+   volumes, SSH keys, machine ID, DHCP leases, passwordless sudo rules, histories and logs. Shut the VM down with
+   `systemctl poweroff` and keep it off until export to avoid creating new keys and a machine ID inside the image.
+   `--dry-run` lists the steps.
 3. `export_ova.py` on a machine that can reach the ESXi host. It also removes the CPU/memory allocation settings
    (`cpuAllocation.*`, `memoryAllocation.*`) from the descriptor: a host that is managed by a vCenter refuses them on import
    ("access to resource settings on the host is restricted to the server that is managing it"). `--os-type debian12_64Guest`

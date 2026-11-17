@@ -49,8 +49,8 @@ def test_a_valid_staged_configuration_becomes_the_live_one_and_apply_is_called(
     stage(staging, yaml.safe_dump(VALID))
     calls = []
 
-    def fake_apply(file, bundle, generator_config, out=print):
-        calls.append((Path(file), bundle, generator_config))
+    def fake_apply(file, bundle, generator_config, *, out, build):
+        calls.append((Path(file), bundle, generator_config, build))
         return 0
 
     code = watcher.apply_staged(
@@ -59,7 +59,7 @@ def test_a_valid_staged_configuration_becomes_the_live_one_and_apply_is_called(
     assert code == 0
     assert yaml.safe_load(config_file.read_text()) == VALID
     assert config_file.stat().st_mode & 0o777 == 0o600
-    assert calls == [(config_file, tmp_path, "/gen/config")]
+    assert calls == [(config_file, tmp_path, "/gen/config", True)]
     assert not (staging / watcher.MARKER).exists()
     assert not (staging / watcher.STAGED).exists()
 

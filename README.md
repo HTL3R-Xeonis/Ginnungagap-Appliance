@@ -117,6 +117,10 @@ not even to the wizard itself):
    enforce those credentials. This also protects the wizard while Caddy switches from bootstrap routing. If Basic Auth
    is disabled, use the configuration file and `ginnungagap apply` for later changes.
 
+Appliances installed with `--image` use the prebuilt images for both startup and Wizard submissions. Docker Compose
+skips pulls and builds in this mode. Build the images on the preparation VM before exporting the OVA, and use
+`ginnungagap build-images` to refresh them on an installed appliance with network access.
+
 Out of scope (see the plan in the project's handoff repository): it never touches TopologyOperator's own user store -
 the appliance's `admin`/`admin` bootstrap login is unrelated and mentioned only in the console hint once setup is done.
 ESXi/GNS3 host profiles are not configured here either; that is the app's own "Design a host" dialog, after the first
