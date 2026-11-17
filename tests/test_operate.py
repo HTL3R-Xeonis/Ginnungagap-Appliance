@@ -352,7 +352,9 @@ def test_a_template_store_volume_with_old_options_is_recreated_before_start(
     assert code == 0
     assert seen[0][-1] == "ginnungagap_template-store"
     commands = run.commands()
-    assert commands[0].endswith("rm -sf template-esxi collector-esxi ova-deploy")
+    assert commands[0].endswith(
+        "rm -sf template-esxi collector-esxi ova-deploy ginnungagap"
+    )
     assert commands[1] == "docker volume rm ginnungagap_template-store"
     assert commands[2].startswith(
         "up -d --remove-orphans"
@@ -390,12 +392,13 @@ def test_a_failing_volume_removal_stops_before_the_start(
 
 
 def test_the_services_stopped_for_the_store_volume_are_exactly_the_ones_that_mount_it():
-    compose = yaml.safe_load(
-        (Path(operate.__file__).resolve().parent.parent / "compose.yml").read_text()
-    )
+    bundle = Path(operate.__file__).resolve().parent.parent
     users = {
         name
-        for name, service in compose["services"].items()
+        for file in ("compose.yml", "compose.template-share.yml")
+        for name, service in yaml.safe_load((bundle / file).read_text())[
+            "services"
+        ].items()
         if any(
             str(volume).startswith(f"{operate.STORE_VOLUME}:")
             for volume in service.get("volumes", [])

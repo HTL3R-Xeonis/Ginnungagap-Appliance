@@ -55,6 +55,7 @@ def test_installs_program_command_config_and_unit(place):
         "ginnungagap/__main__.py",
         "compose.yml",
         "compose.legacy-ports.yml",
+        "compose.template-share.yml",
         "docker/operator.Dockerfile",
         "ginnungagap.example.yml",
     ):

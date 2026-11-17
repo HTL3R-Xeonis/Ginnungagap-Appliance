@@ -93,6 +93,35 @@ def test_the_template_store_volume_for_a_local_folder_and_for_nfs(
     assert env["TEMPLATE_STORE_VOLUME_DEVICE"] == ":/mnt/t"
 
 
+@pytest.mark.parametrize("kind", ["local", "nfs"])
+def test_optional_template_management_mounts_the_same_store_writable(
+    make_config, out, generator_sources, kind
+):
+    config = make_config(
+        templates={
+            "store": {
+                "type": kind,
+                "manage": True,
+                "nfs": {"server": "nfs.test", "export": "/templates"},
+            },
+            "esxi_refresh_minutes": 5,
+        }
+    )
+    render(config, out, generator_sources)
+    compose = env_of(read(out, "compose.env"))
+    operator = env_of(read(out, "operator.env"))
+    assert compose["COMPOSE_FILE"] == "compose.yml:compose.template-share.yml"
+    assert "rw" in compose["TEMPLATE_STORE_VOLUME_OPTS"].split(",")
+    assert operator["TOPOLOGYOPERATOR_TEMPLATE_SHARE_DIR"] == "/template-share"
+    assert operator["TOPOLOGYOPERATOR_TEMPLATE_REFRESH_MINUTES"] == "5"
+
+    render(make_config(), out, generator_sources)
+    assert "TOPOLOGYOPERATOR_TEMPLATE_SHARE_DIR" not in env_of(
+        read(out, "operator.env")
+    )
+    assert env_of(read(out, "compose.env"))["COMPOSE_FILE"] == "compose.yml"
+
+
 def test_refresh_intervals_ports_and_legacy_ports(make_config, out, generator_sources):
     render(
         make_config(templates={"esxi_refresh_minutes": 10, "gns3_refresh_minutes": 2}),

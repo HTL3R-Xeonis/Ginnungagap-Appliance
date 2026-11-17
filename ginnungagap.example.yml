@@ -23,9 +23,10 @@ services:                               # every service is its own container and
   ova_deploy: external                  # true (runs here, own container) | external (the existing one, see ova_deploy below) | off
   filebrowser: false                    # not available yet
 
-templates:                              # where the OVAs and their *.yml descriptions live (read-only)
+templates:                              # where the OVAs and their *.yml descriptions live
   store:
     type: local                         # local | nfs
+    manage: false                       # enable admin import/edit on a writable store
     local: { path: /srv/templates }
     # nfs: { server: 10.20.20.180, export: /mnt/pool/templates }
   esxi_refresh_minutes: 15

@@ -163,7 +163,7 @@ volumes:
   data: {}
   template-data: {}
   caddy-data: {}
-  # the template store: a local folder or an NFS export, always read-only; chosen in ginnungagap.yml
+  # Local/NFS store. Readers have read-only mounts. Admin management can enable a writable mount.
   template-store:
     driver: local
     driver_opts:

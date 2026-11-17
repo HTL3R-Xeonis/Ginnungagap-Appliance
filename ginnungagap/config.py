@@ -54,6 +54,7 @@ DEFAULTS: dict[str, Any] = {
     "templates": {
         "store": {
             "type": "local",
+            "manage": False,
             "local": {"path": "/srv/templates"},
             "nfs": {"server": "", "export": ""},
         },
@@ -188,6 +189,8 @@ def _check(config: dict[str, Any]) -> list[str]:
         )
 
     store = templates["store"]
+    if not isinstance(store.get("manage"), bool):
+        problems.append("templates.store.manage: must be true or false")
     if store.get("type") not in ("local", "nfs"):
         problems.append("templates.store.type: must be local or nfs")
     elif store["type"] == "local":

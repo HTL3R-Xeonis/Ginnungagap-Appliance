@@ -39,6 +39,16 @@ def test_a_minimal_submission_normalises_cleanly():
     assert config["services"]["ova_deploy"] == "off"
 
 
+def test_template_store_management_is_opt_in_and_prefilled_on_reconfigure():
+    assert normalised({})["templates"]["store"]["manage"] is False
+    config = normalised({"store_manage": "on"})
+    assert config["templates"]["store"]["manage"] is True
+    assert wizard.prefill_from(config)["store_manage"] == "on"
+    assert 'name="store_manage" checked' in wizard.render_page(
+        wizard.prefill_from(config)
+    )
+
+
 def test_bundled_services_need_no_url_and_the_url_fields_are_ignored():
     config = normalised(
         {

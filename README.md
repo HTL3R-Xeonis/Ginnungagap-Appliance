@@ -106,6 +106,9 @@ not even to the wizard itself):
    After the wizard starts, bootstrap checks the address again and asks Debian's login console to refresh the prompt.
    If invalid guestinfo configuration was supplied, the console keeps its validation errors.
    When choosing an external service, enter its actual URL in the revealed field.
+   Under **Template store**, select the local path or NFS export and enable **Allow admins to manage ESXi templates in
+   the Admin Panel** to let admins import OVAs and edit their YAML metadata. For NFS, use an export writable by the
+   Appliance. External catalog services should read the same share if they are used.
 3. On submit the wizard's container writes the validated YAML and a marker file into its one writable path (a folder
    it shares with the host, nothing else) and tells the admin it is being applied.
 4. A systemd path unit on the host (`ginnungagap-setup-apply.path`) notices the marker, triggers

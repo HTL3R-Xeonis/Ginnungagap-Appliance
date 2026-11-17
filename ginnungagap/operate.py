@@ -62,9 +62,9 @@ def default_inspect(args: list[str], cwd: Path | None = None) -> str | None:
     return result.stdout if result.returncode == 0 else None
 
 
-# The services that mount the template store (a read-only volume that is a bind mount or an NFS export).
+# The services that can mount the template store (a bind mount or an NFS export).
 STORE_VOLUME = "template-store"
-STORE_USERS = ("template-esxi", "collector-esxi", "ova-deploy")
+STORE_USERS = ("template-esxi", "collector-esxi", "ova-deploy", "ginnungagap")
 
 
 def _wanted_store_options(rendered: Path) -> dict[str, str] | None:
@@ -227,9 +227,7 @@ def apply(
     _ensure_local_store(config, make_store_dir or _make_store_dir, out)
     project = _project(bundle)
     if _store_volume_is_stale(project, rendered, inspect):
-        out(
-            "The template store changed: recreating its volume (it is read-only, nothing is lost)"
-        )
+        out("The template store changed: recreating its Docker mount")
         if run(compose_args(bundle, "rm", "-sf", *STORE_USERS)) != 0 or (
             run(["docker", "volume", "rm", f"{project}_{STORE_VOLUME}"]) != 0
         ):

@@ -1,0 +1,5 @@
+# Enabled by templates.store.manage. Catalogue readers keep their read-only mounts in compose.yml.
+services:
+  ginnungagap:
+    volumes:
+      - template-store:/template-share

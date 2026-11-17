@@ -128,6 +128,7 @@ def build_raw_config(
         "templates": {
             "store": {
                 "type": store_type,
+                "manage": _checked(values, "store_manage"),
                 "local": {"path": _get(values, "store_local_path", "/srv/templates")},
                 "nfs": {
                     "server": _get(values, "store_nfs_server"),
@@ -252,6 +253,7 @@ def prefill_from(config: dict[str, Any] | None) -> dict[str, str]:
         "ova_external_url": ova["external_url"],
         "ova_timeout_seconds": str(ova["timeout_seconds"]),
         "store_type": store["type"],
+        "store_manage": "on" if store.get("manage") else "",
         "store_local_path": store.get("local", {}).get("path", ""),
         "store_nfs_server": store.get("nfs", {}).get("server", ""),
         "store_nfs_export": store.get("nfs", {}).get("export", ""),
@@ -437,6 +439,7 @@ def render_page(
         <label>NFS export {_field(values, "store_nfs_export")}</label>
       </div>
       <label>ESXi refresh (minutes) {_field(values, "esxi_refresh_minutes", kind="number")}</label>
+      <label><input type="checkbox" name="store_manage" {"checked" if _checked(values, "store_manage") else ""}> Allow admins to manage ESXi templates in the Admin Panel</label>
       <label>GNS3 refresh (minutes) {_field(values, "gns3_refresh_minutes", kind="number")}</label>
     </fieldset>
 

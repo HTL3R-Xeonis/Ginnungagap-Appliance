@@ -102,7 +102,7 @@ install -d -m 0755 "$APP"
 rm -rf "$APP/ginnungagap" "$APP/docker"
 cp -r "$HERE/ginnungagap" "$HERE/docker" "$APP/"
 find "$APP" -name __pycache__ -type d -prune -exec rm -rf {} +
-cp "$HERE/compose.yml" "$HERE/compose.legacy-ports.yml" "$HERE/ginnungagap.example.yml" "$APP/"
+cp "$HERE/compose.yml" "$HERE/compose.legacy-ports.yml" "$HERE/compose.template-share.yml" "$HERE/ginnungagap.example.yml" "$APP/"
 
 # ---- configuration folder: never overwrite what the operator has edited
 install -d -m 0750 "$CONFIG_DIR"

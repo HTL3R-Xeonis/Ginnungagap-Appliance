@@ -116,28 +116,29 @@ def _env_file(values: dict[str, str]) -> str:
 def compose_env(config: dict[str, Any]) -> str:
     appliance, templates = config["appliance"], config["templates"]
     store = templates["store"]
+    access = "rw" if store["manage"] else "ro"
     if store["type"] == "nfs":
         nfs = store["nfs"]
         volume = {
             "TEMPLATE_STORE_VOLUME_TYPE": "nfs",
-            "TEMPLATE_STORE_VOLUME_OPTS": f"addr={nfs['server']},ro,nfsvers=4,soft,timeo=100",
+            "TEMPLATE_STORE_VOLUME_OPTS": f"addr={nfs['server']},{access},nfsvers=4,soft,timeo=100",
             "TEMPLATE_STORE_VOLUME_DEVICE": f":{nfs['export']}",
         }
     else:
         volume = {
             "TEMPLATE_STORE_VOLUME_TYPE": "none",
-            "TEMPLATE_STORE_VOLUME_OPTS": "bind,ro",
+            "TEMPLATE_STORE_VOLUME_OPTS": f"bind,{access}",
             "TEMPLATE_STORE_VOLUME_DEVICE": store["local"]["path"],
         }
-    files = (
-        "compose.yml:compose.legacy-ports.yml"
-        if appliance["legacy_ports"]
-        else "compose.yml"
-    )
+    files = ["compose.yml"]
+    if appliance["legacy_ports"]:
+        files.append("compose.legacy-ports.yml")
+    if store["manage"]:
+        files.append("compose.template-share.yml")
     return _env_file(
         {
             "COMPOSE_PROJECT_NAME": project_name(),
-            "COMPOSE_FILE": files,
+            "COMPOSE_FILE": ":".join(files),
             "COMPOSE_PROFILES": ",".join(profiles(config)),
             "TZ": appliance["timezone"],
             "HTTP_PORT": str(appliance["http_port"]),
@@ -153,10 +154,22 @@ def compose_env(config: dict[str, Any]) -> str:
 
 def operator_env(config: dict[str, Any]) -> str:
     urls = service_urls(config)
+    templates = config["templates"]
+    share = (
+        {
+            "TOPOLOGYOPERATOR_TEMPLATE_SHARE_DIR": "/template-share",
+            "TOPOLOGYOPERATOR_TEMPLATE_REFRESH_MINUTES": str(
+                templates["esxi_refresh_minutes"]
+            ),
+        }
+        if templates["store"]["manage"]
+        else {}
+    )
     return _env_file(
         {
             "TZ": config["appliance"]["timezone"],
             **_OPERATOR_PATHS,
+            **share,
             # the service addresses TopologyBuilder reads (below the settings file, above its built-in lab addresses)
             "ESXI_TEMPLATE_SERVER_URL": urls["esxi"],
             "GNS3_TEMPLATE_SERVER_URL": urls["gns3"],
