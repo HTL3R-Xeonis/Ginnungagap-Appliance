@@ -22,7 +22,8 @@ def test_the_dry_run_lists_every_step_and_changes_nothing():
     assert all(line.startswith("would: ") for line in steps)
     text = result.stdout
     for part in ("build and pull the images", "containers and volumes of the project 'ginnungagap'", "first-boot marker and the generated SSH password",
-                 "SSH host keys, the machine id", "authorized SSH keys, passwordless sudo", "clean logs"):  # fmt: skip
+                 "SSH host keys, the machine id", "remove the login password hash, shadow backups",
+                 "authorized SSH keys, passwordless sudo", "clean logs"):  # fmt: skip
         assert part in text
     assert "zeros" not in text  # only on request
     assert "stop the setup watcher" in text

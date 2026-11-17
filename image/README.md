@@ -56,7 +56,9 @@ What was done (and verified on the lab ESXi) to get the OVA, in order:
    login is switched on by a drop-in, there is no configuration).
 2. `sudo image/prepare-image.sh --yes --zero-free-space` stops the setup watcher, then builds and pulls the images of
    every service for offline startup. It removes the configuration, staged and rejected Wizard submissions, containers,
-   volumes, SSH keys, the generated admin SSH password, machine ID, DHCP leases, passwordless sudo rules, histories and logs. Shut the VM down with
+   volumes, SSH keys, the generated admin SSH password, the login account's password hash and shadow backups, machine ID,
+   DHCP leases, passwordless sudo rules, histories and logs. The login account stays in the image so each clone can set up
+   its own SSH access at first boot. Shut the VM down with
    `systemctl poweroff` and keep it off until export to avoid creating new keys and a machine ID inside the image.
    `--dry-run` lists the steps.
 3. `export_ova.py` on a machine that can reach the ESXi host. It also removes the CPU/memory allocation settings

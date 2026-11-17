@@ -3,7 +3,7 @@
 # (image/export_ova.py). It builds the images of every service (so the image starts without internet and without a build)
 # and removes everything that belongs to one particular machine: the configuration, the services' data, the SSH host keys,
 # the machine id, every authorized SSH key, passwordless sudo rules, shell histories and logs, and the admin's generated
-# initial SSH password (the next first boot makes a new one; the sshd drop-in that allows password login stays).
+# initial SSH password and the login account's password hash. The sshd drop-in stays for the next first boot.
 #
 # Run it on a machine on which `install.sh --install-packages --image --no-start` was run. It is DESTRUCTIVE for what it
 # removes, so it asks for --yes; --dry-run only lists what it would do.
@@ -83,7 +83,13 @@ remove_identity() {
 }
 
 remove_access() {
-  local rule
+  local account rule
+  # Match the UID used by firstboot. Replace the hash entirely so it cannot be recovered by unlocking the account.
+  if account=$(getent passwd 1000); then
+    usermod --password '!' "${account%%:*}"
+  fi
+  # usermod keeps the previous shadow file; Debian can also make a daily backup.
+  rm -f /etc/shadow- /var/backups/shadow.bak
   find /root /home -name authorized_keys -type f -delete 2>/dev/null || true
   # passwordless sudo is for the person who built the image, not for everybody who gets a copy
   for rule in /etc/sudoers.d/*; do
@@ -115,7 +121,7 @@ act "remove the containers and volumes of the project '$PROJECT'" remove_service
 act "remove the configuration, the rendered files, the first-boot marker and the generated SSH password" remove_configuration
 act "remove staged and rejected setup files" remove_staged_configuration
 act "remove the SSH host keys, the machine id and DHCP leases" remove_identity
-act "remove authorized SSH keys, passwordless sudo rules and shell histories" remove_access
+act "remove the login password hash, shadow backups, authorized SSH keys, passwordless sudo rules and shell histories" remove_access
 act "clean logs, package caches and temporary files" clean_logs
 [ "$ZERO" = 1 ] && act "fill the free disk space with zeros" zero_free_space
 if [ "$DRY" = 0 ]; then
