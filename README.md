@@ -55,6 +55,9 @@ python -m ginnungagap restore /var/backups/ginnungagap-backup-20261102-123005 --
   the Python packages again).
 * `status` exits non-zero if anything is down or degraded, so it can be used from a monitor or a script. Behind a login
   (`appliance.auth`) pass `--user NAME`; the password is asked for or read from `GINNUNGAGAP_PASSWORD`.
+* `GET /appliance/health` through Caddy reports the bundled services as JSON. It returns HTTP 200 when healthy
+  and HTTP 503 before setup or when a bundled service is down or degraded. Services configured to run elsewhere
+  are listed without probing them. This endpoint follows the site's Basic Auth setting.
 * `backup` writes a folder (mode 0700) with a copy of the config file and `data.tgz`, the app's data volume (host profiles,
   projects, designs, notes). `restore` stops the app, replaces that volume and starts it again; it needs `--yes`.
 
@@ -201,7 +204,5 @@ today; `services.monitoring` in the config is refused with that explanation rath
 
 ## Not available yet
 
-The file browser (the config refuses `true` instead of ignoring it),
-TLS from a file or ACME, single sign-on (basic auth at the gateway exists in the config but is neither wanted nor tested)
-and an aggregate health endpoint (`ginnungagap status` is the one view over every service). The design and the decisions
-still open are in the project's handoff repository.
+The remaining items are the file browser, TLS from a file or ACME, and single sign-on.
+The design and open decisions are in the project's handoff repository.

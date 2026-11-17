@@ -7,7 +7,7 @@ ginnungagap/setup_watcher.py for what happens on the host side of that staging f
 path unit that watches it.
 
 The first-boot Caddyfile reaches this service before a configuration exists. Once the config has been written, the
-service requires its Basic Auth credentials on every request, including while Caddy switches away from bootstrap
+service requires its Basic Auth credentials on every setup form request, including while Caddy switches away from bootstrap
 routing. A configured appliance without Basic Auth has no web setup route.
 """
 
@@ -23,9 +23,9 @@ from typing import Annotated
 
 import bcrypt
 from fastapi import Depends, FastAPI, HTTPException, Request
-from fastapi.responses import HTMLResponse, Response
+from fastapi.responses import HTMLResponse, JSONResponse, Response
 
-from ginnungagap import setup_wizard
+from ginnungagap import setup_wizard, status
 from ginnungagap.config import ConfigError, normalise
 
 # fixed in-container mount points (compose.yml binds the real host paths onto these two); the test-only overrides let
@@ -39,6 +39,22 @@ app = FastAPI()
 @app.get("/health")
 def health() -> dict:
     return {"status": "ok"}
+
+
+@app.get("/appliance/health")
+def appliance_health() -> JSONResponse:
+    config = setup_wizard.existing_config(CONFIG_DIR)
+    if config is None:
+        return JSONResponse({"status": "unconfigured", "services": {}}, status_code=503)
+    rows = status.check(config, None, status.make_fetch(timeout=2.0))
+    ready = status.healthy(rows)
+    return JSONResponse(
+        {
+            "status": "ok" if ready else "degraded",
+            "services": {row.name: row.state for row in rows},
+        },
+        status_code=200 if ready else 503,
+    )
 
 
 def _hash_password(plaintext: str) -> str:

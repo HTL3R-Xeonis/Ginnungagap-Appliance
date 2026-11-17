@@ -106,7 +106,7 @@ def test_no_config_wizard_apply_the_app_takes_over(bundle, tmp_path, monkeypatch
     real_env = (bundle / "rendered" / "compose.env").read_text()
     assert "COMPOSE_PROFILES=gateway,ginnungagap,setup" in real_env
     real_caddy = (bundle / "rendered" / "Caddyfile").read_text()
-    assert "ginnungagap:8123" in real_caddy and "setup:8000" not in real_caddy
+    assert "ginnungagap:8123" in real_caddy and "handle_path /setup/*" not in real_caddy
     assert (
         real_caddy != bootstrap_caddy
     )  # Caddyfile is in operate.FILE_OWNERS: gateway gets recreated for this

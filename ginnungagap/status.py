@@ -104,11 +104,17 @@ def _row(
     return Row(name, "down", f"unexpected answer {status}")
 
 
-def check(config: dict[str, Any], base: str, fetch: Fetch) -> list[Row]:
+def check(config: dict[str, Any], base: str | None, fetch: Fetch) -> list[Row]:
+    """Probe through the gateway, or directly on the Compose network when base is None."""
     services, ova = config["services"], config["ova_deploy"]
     rows: list[Row] = []
 
-    status, body, error = fetch(f"{base}/health")
+    def probe(name: str, path: str, port: int = 8000):
+        return fetch(
+            f"{base}{path}" if base is not None else f"http://{name}:{port}/health"
+        )
+
+    status, body, error = probe("ginnungagap", "/health", 8123)
     rows.append(
         _row(
             "ginnungagap",
@@ -145,10 +151,10 @@ def check(config: dict[str, Any], base: str, fetch: Fetch) -> list[Row]:
                 Row(label, "off", "not running here (configured to run elsewhere)")
             )
             continue
-        status, body, error = fetch(base + path)
+        status, body, error = probe(label, path)
         rows.append(_row(label, status, body, error, summary))
     if services["ova_deploy"] is True:
-        status, body, error = fetch(f"{base}/ova/health")
+        status, body, error = probe("ova-deploy", "/ova/health")
         rows.append(
             _row(
                 "ova-deploy",

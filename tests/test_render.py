@@ -150,6 +150,7 @@ def test_the_gateway_routes_only_enabled_services(make_config, out, generator_so
     render(make_config(), out, generator_sources)
     caddy = read(out, "Caddyfile")
     for path, upstream in (
+        ("/appliance/health", "setup:8000"),
         ("/templates/esxi/*", "template-esxi:8000"),
         ("/templates/gns3/*", "template-gns3:8000"),
         ("/generator/*", "generator:8000"),
@@ -172,7 +173,7 @@ def test_the_gateway_routes_only_enabled_services(make_config, out, generator_so
         and "/ova/" not in caddy
         and "/templates/esxi/" in caddy
     )
-    assert "setup:8000" not in caddy
+    assert "handle_path /setup/*" not in caddy
 
 
 def test_the_setup_wizard_is_reached_through_the_same_basic_auth_as_everything_else(

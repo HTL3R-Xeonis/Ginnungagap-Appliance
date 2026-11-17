@@ -69,6 +69,64 @@ def test_health(app):
     assert client.get("/health").json() == {"status": "ok"}
 
 
+def test_unconfigured_appliance_reports_not_ready(app):
+    _module, client, _config_dir, _staging_dir = app
+    response = client.get("/appliance/health")
+    assert response.status_code == 503
+    assert response.json() == {"status": "unconfigured", "services": {}}
+
+
+@pytest.mark.parametrize("generator_available", [True, False])
+def test_appliance_health_checks_bundled_services(
+    app, monkeypatch, generator_available
+):
+    module, client, config_dir, _staging_dir = app
+    (config_dir / "ginnungagap.yml").write_text(
+        yaml.safe_dump(
+            {
+                "services": {
+                    "template_esxi": False,
+                    "template_gns3": False,
+                    "generator": True,
+                    "ova_deploy": "off",
+                },
+                "templates": {"esxi_url": "http://t:8000", "gns3_url": "http://t:8001"},
+                "generator": {
+                    "llm_servers": [
+                        {"name": "test", "url": "http://model:11434", "model": "m"}
+                    ],
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    requested = []
+
+    def fetch(url):
+        requested.append(url)
+        if url == "http://generator:8000/health" and not generator_available:
+            return 503, '{"detail":"private diagnostic"}', None
+        return 200, '{"status":"ok"}', None
+
+    monkeypatch.setattr(module.status, "make_fetch", lambda *, timeout: fetch)
+    response = client.get("/appliance/health")
+    assert response.status_code == (200 if generator_available else 503)
+    assert response.json() == {
+        "status": "ok" if generator_available else "degraded",
+        "services": {
+            "ginnungagap": "ok",
+            "template-esxi": "off",
+            "template-gns3": "off",
+            "generator": "ok" if generator_available else "degraded",
+            "ova-deploy": "off",
+        },
+    }
+    assert requested == [
+        "http://ginnungagap:8123/health",
+        "http://generator:8000/health",
+    ]
+
+
 def test_the_form_page_shows_the_defaults_and_no_javascript(app):
     _module, client, _c, _s = app
     response = client.get("/")

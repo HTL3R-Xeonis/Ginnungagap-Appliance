@@ -218,6 +218,7 @@ def caddyfile(config: dict[str, Any]) -> str:
             f"\t\t{auth['user']} {auth['password_hash']}",
             "\t}",
         ]
+    lines += ["\thandle /appliance/health {", "\t\treverse_proxy setup:8000", "\t}"]
     for path, upstream in routes:
         lines += [f"\thandle_path {path} {{", f"\t\treverse_proxy {upstream}", "\t}"]
     lines += ["\thandle {", "\t\treverse_proxy ginnungagap:8123", "\t}", "}", ""]
