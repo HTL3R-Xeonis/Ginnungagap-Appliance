@@ -5,6 +5,7 @@ import pytest
 import yaml
 
 from ginnungagap import config as config_module
+from ginnungagap import operate as operate_module
 
 ROOT = Path(__file__).resolve().parent.parent
 
@@ -40,3 +41,9 @@ def generator_sources(tmp_path) -> Path:
     (folder / "prompt_template.txt").write_text("PROMPT {request}\n")
     (folder / "example_topology.yml").write_text("nodes: []\n")
     return folder
+
+
+@pytest.fixture(autouse=True)
+def no_real_store_folder(monkeypatch):
+    """apply() creates a missing local template store folder; a test must never create /srv/templates on the machine."""
+    monkeypatch.setattr(operate_module, "_make_store_dir", lambda path: None)

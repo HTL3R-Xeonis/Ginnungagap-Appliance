@@ -53,6 +53,13 @@ python -m ginnungagap restore /var/backups/ginnungagap-backup-20261102-123005 --
   existing volume's options, so without that the services would keep reading the old store. It is read-only, nothing is lost.
   On an appliance image without internet use `apply --no-build` (the image carries every service image; a build downloads
   the Python packages again).
+  A local template store (`templates.store.type: local`) is a bind mount, and Docker refuses to mount a folder that does not
+  exist - so `apply` creates a missing store folder (empty, mode 0755; the default is `/srv/templates`) before it starts anything.
+  "Which service needs recreating" is decided against what the last *successful* apply started (`rendered/.applied-digests.json`),
+  not against the previous run: an apply that fails half-way (for example `docker compose up`) cannot make the next one believe
+  nothing changed and leave the gateway on an old `Caddyfile`. With `appliance.auth` set, `apply` only knows the password's hash,
+  so it can not look behind the login: a gateway that answers 401 counts as success (with a note to run `status --user`) as long
+  as nothing else is down.
 * `status` exits non-zero if anything is down or degraded, so it can be used from a monitor or a script. Behind a login
   (`appliance.auth`) pass `--user NAME`; the password is asked for or read from `GINNUNGAGAP_PASSWORD`.
 * `GET /appliance/health` through Caddy reports the bundled services as JSON. It returns HTTP 200 when healthy

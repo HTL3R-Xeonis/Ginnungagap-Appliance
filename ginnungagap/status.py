@@ -184,6 +184,16 @@ def healthy(rows: list[Row]) -> bool:
     return all(row.state in ("ok", "external", "off") for row in rows)
 
 
+def healthy_behind_login(rows: list[Row]) -> bool:
+    """
+    Everything that could be checked is fine and the rest sits behind the gateway's login. `apply` only knows the password's
+    hash, so it can not look behind it - that is not a failure (`ginnungagap status --user` does the full check).
+    """
+    return any(row.state == "login" for row in rows) and all(
+        row.state in ("ok", "external", "off", "login") for row in rows
+    )
+
+
 def render_table(rows: list[Row]) -> str:
     width = max(len(row.name) for row in rows)
     return "\n".join(

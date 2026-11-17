@@ -74,6 +74,8 @@ def run(
     (rendered / "compose.env").chmod(0o644)
     (rendered / "Caddyfile").write_text(BOOTSTRAP_CADDYFILE, encoding="utf-8")
     (rendered / "Caddyfile").chmod(0o644)
+    # the bootstrap files are what runs now: the next apply must compare against THESE, not against an older real configuration
+    (rendered / operate_module.APPLIED).unlink(missing_ok=True)
     up = operate_module.compose_args(bundle, "up", "-d", "--remove-orphans")
     if build:
         up.append("--build")

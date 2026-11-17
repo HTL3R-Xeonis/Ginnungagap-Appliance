@@ -432,3 +432,93 @@ def test_a_changed_fallback_password_recreates_the_ova_deploy_service(
         "ova-deploy",
     ]
     assert "another-lab-password" not in "\n".join(lines)  # never printed
+
+
+def test_apply_creates_a_missing_local_template_store_folder(
+    config_file, bundle, generator_sources, tmp_path
+):
+    made = []
+    code, lines = run_apply(
+        config_file, bundle, generator_sources, Recorder(), make_store_dir=made.append
+    )
+    assert code == 0
+    assert made == [tmp_path / "store"]
+    assert any("template store folder" in line for line in lines)
+
+
+def test_apply_leaves_an_existing_local_store_alone(
+    config_file, bundle, generator_sources, tmp_path
+):
+    (tmp_path / "store").mkdir()
+    made = []
+    run_apply(
+        config_file, bundle, generator_sources, Recorder(), make_store_dir=made.append
+    )
+    assert made == []
+
+
+def test_apply_does_not_create_a_folder_for_an_nfs_store(
+    config_file, bundle, generator_sources
+):
+    data = yaml.safe_load(config_file.read_text())
+    data["templates"]["store"] = {
+        "type": "nfs",
+        "nfs": {"server": "10.0.0.1", "export": "/templates"},
+    }
+    config_file.write_text(yaml.safe_dump(data))
+    made = []
+    run_apply(
+        config_file, bundle, generator_sources, Recorder(), make_store_dir=made.append
+    )
+    assert made == []
+
+
+def test_a_failed_up_does_not_make_the_next_apply_skip_recreating_the_gateway(
+    config_file, bundle, generator_sources
+):
+    rendered = bundle / "rendered"
+    rendered.mkdir()
+    (rendered / "Caddyfile").write_text("# bootstrap\n", encoding="utf-8")
+    (rendered / "compose.env").write_text(
+        "COMPOSE_PROFILES=gateway,setup\n", encoding="utf-8"
+    )
+
+    code, _ = run_apply(config_file, bundle, generator_sources, Recorder(codes=[1]))
+    assert code == 1  # `docker compose up` failed after the files were already rendered
+
+    run = Recorder()
+    code, lines = run_apply(config_file, bundle, generator_sources, run)
+    assert code == 0
+    assert any("--force-recreate" in c and "gateway" in c for c in run.commands())
+    assert any("Recreated because" in line and "gateway" in line for line in lines)
+
+    run = Recorder()
+    run_apply(config_file, bundle, generator_sources, run)
+    assert not any("--force-recreate" in c for c in run.commands())  # now it is applied
+
+
+def test_apply_behind_a_login_is_not_a_failure(config_file, bundle, generator_sources):
+    def behind_login(url):
+        return 401, "", None
+
+    code, lines = run_apply(
+        config_file, bundle, generator_sources, Recorder(), fetch=behind_login
+    )
+    assert code == 0
+    assert any("ginnungagap status --user" in line for line in lines)
+
+
+def test_apply_still_fails_when_a_service_is_down_behind_a_login(
+    config_file, bundle, generator_sources
+):
+    def mixed(url):
+        return (
+            (401, "", None)
+            if url.endswith("/health") and "/templates" not in url
+            else (502, "", None)
+        )
+
+    code, _ = run_apply(
+        config_file, bundle, generator_sources, Recorder(), fetch=mixed, wait_seconds=0
+    )
+    assert code == 1

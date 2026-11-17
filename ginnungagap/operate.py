@@ -114,14 +114,27 @@ def _runner(run: Runner | None, bundle: Path) -> Runner:
     return run or (lambda args: default_runner(args, cwd=bundle))
 
 
+# What the running containers were last started with: written only after an apply went through, so a run that failed
+# half-way (e.g. `up` aborted) cannot make the next run believe "nothing changed" and skip recreating a service.
+APPLIED = ".applied-digests.json"
+
+
 def _digests(folder: Path) -> dict[str, str]:
     if not folder.is_dir():
         return {}
     return {
         p.relative_to(folder).as_posix(): hashlib.sha256(p.read_bytes()).hexdigest()
         for p in sorted(folder.rglob("*"))
-        if p.is_file() and p.name != render_module.MANIFEST
+        if p.is_file() and p.name not in (render_module.MANIFEST, APPLIED)
     }
+
+
+def _applied_digests(folder: Path) -> dict[str, str]:
+    try:
+        data = json.loads((folder / APPLIED).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    return data if isinstance(data, dict) else {}
 
 
 def compose_args(bundle: Path, *more: str) -> list[str]:
@@ -136,6 +149,34 @@ def compose_args(bundle: Path, *more: str) -> list[str]:
     ]
 
 
+def _make_store_dir(path: Path) -> None:
+    path.mkdir(parents=True, mode=0o755, exist_ok=True)
+
+
+def _ensure_local_store(
+    config: dict,
+    make_dir: Callable[[Path], None],
+    out: Callable[[str], None],
+) -> None:
+    """
+    A local template store is bind-mounted from a folder on this machine; Docker refuses to mount one that does not exist,
+    which is exactly the state of a fresh VM (the wizard's default is /srv/templates). The folder is created empty - the
+    templates in it are the admin's to put there.
+    """
+    store = config["templates"]["store"]
+    if store["type"] != "local":
+        return
+    path = Path(store["local"]["path"])
+    if path.exists():
+        return
+    try:
+        make_dir(path)
+    except OSError as exc:
+        out(f"could not create the template store folder {path}: {exc}")
+        return
+    out(f"created the (empty) template store folder {path}")
+
+
 def apply(
     config_file: str | Path,
     bundle: Path,
@@ -148,6 +189,7 @@ def apply(
     sleep: Callable[[float], None] = time.sleep,
     out: Callable[[str], None] = print,
     inspect: Inspect | None = None,
+    make_store_dir: Callable[[Path], None] | None = None,
 ) -> int:
     """Validate, render, start what is needed and wait until it is healthy. Returns the exit code (0 = all healthy)."""
     run = _runner(run, bundle)
@@ -160,7 +202,13 @@ def apply(
             out(f"  - {problem}")
         return 1
     rendered = bundle / "rendered"
-    before = _digests(rendered)
+    before = _applied_digests(rendered)
+    if not before:
+        # nothing recorded yet: what is in the folder now is what the running containers use - remember it BEFORE
+        # rendering over it, so even a first run that fails half-way leaves a reference for the next one
+        before = _digests(rendered)
+        if before:
+            (rendered / APPLIED).write_text(json.dumps(before), encoding="utf-8")
     try:
         written = render_module.render(config, rendered, generator_config)
     except render_module.RenderError as exc:
@@ -176,6 +224,7 @@ def apply(
     if not start:
         return 0
 
+    _ensure_local_store(config, make_store_dir or _make_store_dir, out)
     project = _project(bundle)
     if _store_volume_is_stale(project, rendered, inspect):
         out(
@@ -205,16 +254,27 @@ def apply(
         return 1
     if recreate:
         out(f"Recreated because their configuration changed: {', '.join(recreate)}")
+    (rendered / APPLIED).write_text(json.dumps(after), encoding="utf-8")
 
     base = status_module.base_url(config)
     asking = fetch or status_module.make_fetch()
     deadline = time.monotonic() + wait_seconds
     while True:
         rows = status_module.check(config, base, asking)
-        if status_module.healthy(rows) or time.monotonic() >= deadline:
+        if (
+            status_module.healthy(rows)
+            or status_module.healthy_behind_login(rows)
+            or time.monotonic() >= deadline
+        ):
             break
         sleep(3)
     out(status_module.render_table(rows))
+    if status_module.healthy_behind_login(rows):
+        out(
+            "The gateway is up and asks for a login, so the services behind it were not checked here - "
+            "run `ginnungagap status --user <name>` for the full check."
+        )
+        return 0
     return 0 if status_module.healthy(rows) else 1
 
 

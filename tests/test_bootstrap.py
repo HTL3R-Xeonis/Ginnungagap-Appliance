@@ -81,3 +81,13 @@ def test_host_paths_from_the_environment_reach_the_bootstrap_env_too(
     env = (bundle / "rendered" / "compose.env").read_text()
     assert "GINNUNGAGAP_CONFIG_DIR=/custom/config" in env
     assert "GINNUNGAGAP_SETUP_STAGING_DIR=/custom/staging" in env
+
+
+def test_bootstrap_forgets_what_an_earlier_apply_recorded(tmp_path):
+    from ginnungagap import operate
+
+    rendered = tmp_path / "rendered"
+    rendered.mkdir()
+    (rendered / operate.APPLIED).write_text('{"Caddyfile": "old"}', encoding="utf-8")
+    bootstrap.run(tmp_path, runner=lambda args: 0, build=False, out=lambda line: None)
+    assert not (rendered / operate.APPLIED).exists()
