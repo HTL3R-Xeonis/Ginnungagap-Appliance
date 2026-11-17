@@ -80,10 +80,7 @@ def profiles(config: dict[str, Any]) -> list[str]:
         result.append("generator")
     if services["ova_deploy"] is True:
         result.append("ova-deploy")
-    # the setup wizard always runs, same as the gateway and the app themselves: once a configuration exists it is still
-    # reachable at /setup/ (behind the same basic_auth as everything else, see caddyfile() below) so the appliance can
-    # be reconfigured later without a terminal; before a configuration exists it is brought up on its own, with a
-    # static bootstrap Caddyfile instead of this profile list - see ginnungagap/bootstrap.py.
+    # Keep the wizard available for the gateway's authenticated setup route.
     result.append("setup")
     return result
 
@@ -183,9 +180,9 @@ def caddyfile(config: dict[str, Any]) -> str:
         routes.append(("/ova/*", "ova-deploy:8000"))
     elif services["ova_deploy"] == "external":
         routes.append(("/ova/*", urls["ova"]))
-    # always routed, same as the app itself: reachable at /setup/ to reconfigure later, behind the basic_auth below
-    # exactly like every other route (nothing about it is special-cased: see ginnungagap/setup_wizard.py)
-    routes.append(("/setup/*", "setup:8000"))
+    auth = appliance["auth"]
+    if auth["mode"] == "basic":
+        routes.append(("/setup/*", "setup:8000"))
 
     lines = [HEADER.rstrip("\n"), ""]
     if appliance["tls"]["mode"] == "self-signed":
@@ -215,7 +212,6 @@ def caddyfile(config: dict[str, Any]) -> str:
     lines.append(f"{site} {{")
     lines += [f"\t{line}" for line in tls]
     lines += ["\tencode zstd gzip"]
-    auth = appliance["auth"]
     if auth["mode"] == "basic":
         lines += [
             "\tbasic_auth {",

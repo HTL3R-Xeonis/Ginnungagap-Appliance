@@ -37,7 +37,7 @@ MAX_STAGED_BYTES = 1_000_000
 def _read_regular(path: Path) -> str | None:
     """The file's text, or None when it is a symlink, not a regular file or too large - never follows a link."""
     try:
-        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
+        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
     except OSError:
         return None
     with os.fdopen(fd, "rb") as handle:
@@ -45,7 +45,8 @@ def _read_regular(path: Path) -> str | None:
         if not stat.S_ISREG(info.st_mode) or info.st_size > MAX_STAGED_BYTES:
             return None
         try:
-            return handle.read().decode("utf-8")
+            raw = handle.read(MAX_STAGED_BYTES + 1)
+            return raw.decode("utf-8") if len(raw) <= MAX_STAGED_BYTES else None
         except UnicodeDecodeError:
             return None
 
@@ -89,8 +90,8 @@ def apply_staged(
     try:
         config = config_module.normalise(yaml.safe_load(text))
         problems: list[str] = []
-    except yaml.YAMLError as exc:
-        config, problems = None, [f"isn't valid YAML ({exc})"]
+    except yaml.YAMLError:
+        config, problems = None, ["The submitted configuration is not valid YAML."]
     except config_module.ConfigError as exc:
         config, problems = None, list(exc.problems)
 

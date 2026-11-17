@@ -103,11 +103,9 @@ not even to the wizard itself):
    real TLS/auth); the gateway is recreated because its own file changed (see `apply`'s file-ownership check above), and
    the app and the other services come up for the first time. No reboot is needed, and resubmitting the wizard later
    works exactly the same way.
-5. The setup wizard itself is **never torn down** - `services.*` toggles aside, it always runs (`render.profiles()`
-   always includes `setup`) and stays reachable at `/setup/`, so the appliance can be reconfigured later from a browser
-   too. Once a configuration exists it needs no logic of its own for this: the rendered `Caddyfile` wraps the *entire*
-   site, `/setup/*` included, in the same `basic_auth` as everything else (`appliance.auth`) - unauthenticated access is
-   only ever the single first-boot window before any configuration exists at all.
+5. Browser reconfiguration at `/setup/` is available when `appliance.auth.mode` is `basic`. Both Caddy and the wizard
+   enforce those credentials. This also protects the wizard while Caddy switches from bootstrap routing. If Basic Auth
+   is disabled, use the configuration file and `ginnungagap apply` for later changes.
 
 Out of scope (see the plan in the project's handoff repository): it never touches TopologyOperator's own user store -
 the appliance's `admin`/`admin` bootstrap login is unrelated and mentioned only in the console hint once setup is done.
@@ -184,7 +182,7 @@ docker compose --env-file rendered/compose.env ps
 | GNS3 template API | `template-gns3` | `template-gns3:8000` | `/health` |
 | GNS3 template collector (hosts from the app's profiles) | `collector-gns3` | - (writes `gns3_templates.yml`) | - |
 | topology generator | `generator` | `generator:8000` | `/health` |
-| setup wizard (see "Setup wizard" above) | `setup` | `setup:8000`, at `/setup/` | `/health` |
+| setup wizard (see "Setup wizard" above) | `setup` | `setup:8000`, at `/setup/` with Basic Auth after configuration | `/health` |
 
 The **OVA deploy API** is a service too (`ova-deploy`, `/ova/health`), built from the TopologyBuilderServices repository when
 `services.ova_deploy` is `true`; with `external` the existing one (`ova_deploy.external_url`) is reached through the gateway at `/ova/`.

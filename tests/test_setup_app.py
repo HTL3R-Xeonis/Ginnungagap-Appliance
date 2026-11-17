@@ -14,6 +14,7 @@ import yaml
 
 pytest.importorskip("fastapi")
 pytest.importorskip("httpx")
+bcrypt = pytest.importorskip("bcrypt")
 from fastapi.testclient import TestClient
 
 APP_FILE = Path(__file__).resolve().parent.parent / "docker" / "setup_app.py"
@@ -140,10 +141,18 @@ def test_an_existing_configuration_is_shown_as_already_set_without_its_secrets(
 ):
     config_dir = tmp_path / "etc-ginnungagap"
     config_dir.mkdir()
+    password_hash = bcrypt.hashpw(b"local-password", bcrypt.gensalt(rounds=4)).decode()
     (config_dir / "ginnungagap.yml").write_text(
         yaml.safe_dump(
             {
-                "appliance": {"public_url": "https://already.lab"},
+                "appliance": {
+                    "public_url": "https://already.lab",
+                    "auth": {
+                        "mode": "basic",
+                        "user": "test-admin",
+                        "password_hash": password_hash,
+                    },
+                },
                 "services": {
                     "template_esxi": False,
                     "template_gns3": False,
@@ -158,7 +167,20 @@ def test_an_existing_configuration_is_shown_as_already_set_without_its_secrets(
         encoding="utf-8",
     )
     _module, client = load(monkeypatch, config_dir, tmp_path / "staging")
-    response = client.get("/")
+    assert client.get("/").status_code == 401
+    assert client.get("/", auth=("test-admin", "wrong-password")).status_code == 401
+    response = client.get("/", auth=("test-admin", "local-password"))
+    assert response.status_code == 200
     assert "https://already.lab" in response.text
     assert "super-secret" not in response.text
     assert "already applied" in response.text
+
+
+def test_configured_appliance_without_basic_auth_has_no_wizard(app):
+    _module, client, config_dir, staging_dir = app
+    (config_dir / "ginnungagap.yml").write_text(
+        "appliance: {auth: {mode: none}}\n", encoding="utf-8"
+    )
+    assert client.get("/").status_code == 404
+    assert client.post("/", data=MINIMAL_FORM).status_code == 404
+    assert not (staging_dir / "apply.request").exists()

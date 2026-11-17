@@ -9,7 +9,7 @@ FROM python:3.12-slim
 
 ENV PYTHONUNBUFFERED=1 PIP_NO_CACHE_DIR=1
 WORKDIR /app
-RUN pip install fastapi "uvicorn[standard]" python-multipart pyyaml
+RUN pip install fastapi "uvicorn[standard]" python-multipart pyyaml bcrypt
 COPY --from=caddy /usr/bin/caddy /usr/local/bin/caddy
 COPY ginnungagap ./ginnungagap
 COPY docker/setup_app.py ./setup_app.py
