@@ -164,8 +164,8 @@ VM options > Advanced > configuration parameters, or `image/set_guestinfo.py`):
 |---|---|
 | `config` | the whole `ginnungagap.yml`, base64 (`config.encoding = plain` for plain text) |
 | `hostname` | optional, the VM's host name |
-| `ssh_authorized_key` | optional, one public key for the login user |
-| `admin_password_hash` | optional, a crypt hash (`openssl passwd -6`) for the login user - never the password itself |
+| `ssh_authorized_key` | optional, one public key for the login user (then no initial password is made and the template's own password is locked) |
+| `admin_password_hash` | optional, a crypt hash (`openssl passwd -6`) for the login user - never the password itself (then no initial password is made) |
 | `admin_sudo_nopasswd` | optional, `true` lets the login user use `sudo` without a password (automation; the image is delivered without it) |
 
 It creates the SSH host keys, creates the template folder of a local store, validates the configuration (an invalid one is kept as `ginnungagap.yml.rejected`, the reasons
@@ -174,8 +174,39 @@ are shown at the console login and in `/var/lib/ginnungagap/firstboot.problems`,
 configuration at all the VM boots, the console hint gives its address to open in a browser (the setup wizard, see below -
 `ginnungagap-bootstrap.service` brings the gateway and the wizard up for exactly this case), and nothing else starts yet.
 
-The login of the underlying Debian image is the one of the template it was built from; **change it** (guestinfo
-`admin_password_hash`, or `ssh_authorized_key` and then switch password login off) before the VM is reachable by others.
+### Admin SSH access
+
+The image comes with a preconfigured admin SSH access and shows it on the VM console:
+
+```
+Ginnungagap appliance
+SSH: ssh junioradmin@10.20.20.57 -p 22
+Password: <16 random characters> (you must change it at the first login)
+```
+
+- **Who**: the image's login user (the first ordinary account, `junioradmin` in the current image). No extra account.
+- **The password** is made at the first boot of every VM (random, 16 letters and digits, set with `chpasswd` through its standard
+  input, never logged) and expired (`chage -d 0`), so SSH asks for a new one at the first login. The console shows it only
+  while it is still the initial one; afterwards the SSH line stays without a password. It is kept in
+  `/var/lib/ginnungagap/ssh-access.json` (mode 0600) so a later boot does not make a new one.
+- **Address and port** come from the machine itself (the address on its default route, the first `Port` of the sshd
+  configuration, 22 by default). `ginnungagap-issue.service` rewrites the text at every boot once the network is up, and
+  bootstrap, `apply`, the setup wizard's hand-off and the first boot rewrite it too (`ginnungagap issue` does it by hand), so a DHCP
+  address that changed is shown right.
+- **Text console**: `install.sh --image` sets the default boot target to `multi-user.target`. The Debian template ships a
+  desktop login (GDM), and `/etc/issue.d` is only shown on text consoles, so without this the console would show a graphical
+  login with no address. `systemctl set-default graphical.target` brings the desktop back.
+- **After a password change** `ginnungagap-issue.path` (`PathChanged=/etc/shadow`) starts `ginnungagap-issue-changed.service`
+  (`ginnungagap issue --clear-screens`): the text is rewritten without the password and the idle login screens are wiped, so
+  the initial password does not stay readable above the new text. At boot nothing is wiped.
+- **Deployer-set access**: with `admin_password_hash` or `ssh_authorized_key` in guestinfo nothing is generated and the console
+  says `(password/key set by the deployer)`. With only a key, the password of the login user is locked, otherwise the
+  template's own Debian password would still open SSH.
+- **Password login** is switched on by the drop-in `/etc/ssh/sshd_config.d/10-ginnungagap.conf` (`PasswordAuthentication yes`)
+  that `install.sh --image` writes; sshd takes the first value it reads, so it wins over a later `50-cloud-init.conf`.
+  `image/prepare-image.sh` removes the generated password (and the decision that it was generated) but keeps the drop-in.
+
+Change the password at the first login, or switch password login off once a key is in place.
 
 Reaching it: the gateway answers for the name in `appliance.public_url`, for `localhost`, and for **any other name or address**
 (so `https://<the VM's IP>` shows the web interface too; the certificate is the gateway's own either way). Without that

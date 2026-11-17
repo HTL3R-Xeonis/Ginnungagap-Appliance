@@ -2,7 +2,8 @@
 # Prepares THIS machine to become the appliance image, as the last step before it is shut down and exported
 # (image/export_ova.py). It builds the images of every service (so the image starts without internet and without a build)
 # and removes everything that belongs to one particular machine: the configuration, the services' data, the SSH host keys,
-# the machine id, every authorized SSH key, passwordless sudo rules, shell histories and logs.
+# the machine id, every authorized SSH key, passwordless sudo rules, shell histories and logs, and the admin's generated
+# initial SSH password (the next first boot makes a new one; the sshd drop-in that allows password login stays).
 #
 # Run it on a machine on which `install.sh --install-packages --image --no-start` was run. It is DESTRUCTIVE for what it
 # removes, so it asks for --yes; --dry-run only lists what it would do.
@@ -59,6 +60,8 @@ remove_configuration() {
   rm -f /etc/ginnungagap/ginnungagap.yml /etc/ginnungagap/ginnungagap.yml.new /etc/ginnungagap/ginnungagap.yml.rejected
   rm -rf /opt/ginnungagap/app/rendered
   rm -f /var/lib/ginnungagap/firstboot.done /var/lib/ginnungagap/firstboot.problems /etc/issue.d/ginnungagap.issue
+  # the admin's generated initial password and the decision that it was generated: every copy of the image makes its own
+  rm -f /var/lib/ginnungagap/ssh-access.json
 }
 
 remove_staged_configuration() {
@@ -109,7 +112,7 @@ zero_free_space() {
 act "stop the setup watcher" stop_setup
 act "build and pull the images of every service" build_images
 act "remove the containers and volumes of the project '$PROJECT'" remove_services
-act "remove the configuration, the rendered files and the first-boot marker" remove_configuration
+act "remove the configuration, the rendered files, the first-boot marker and the generated SSH password" remove_configuration
 act "remove staged and rejected setup files" remove_staged_configuration
 act "remove the SSH host keys, the machine id and DHCP leases" remove_identity
 act "remove authorized SSH keys, passwordless sudo rules and shell histories" remove_access

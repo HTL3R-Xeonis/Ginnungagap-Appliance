@@ -27,6 +27,7 @@ def place(tmp_path):
         "bin": tmp_path / "bin",
         "units": tmp_path / "units",
         "staging": tmp_path / "staging",
+        "sshd": tmp_path / "sshd_config.d",
     }
 
 
@@ -39,6 +40,7 @@ def install(place, *extra, check=True, path=None):
         "--bin-dir", str(place["bin"]),
         "--unit-dir", str(place["units"]),
         "--staging-dir", str(place["staging"]),
+        "--sshd-dropin-dir", str(place["sshd"]),
         "--repos-dir", str(place["repos"]),
         "--no-start",
         *extra,
@@ -236,3 +238,57 @@ def test_the_final_apply_is_not_run_from_the_folder_the_installer_was_started_in
     script = (ROOT / "install.sh").read_text()
     assert '(cd / && "$WRAPPER" apply' in script
     assert '\n  "$WRAPPER" apply' not in script
+
+
+def test_every_install_gets_the_console_text_unit_that_runs_after_the_network(place):
+    assert install(place).returncode == 0
+    unit = (place["units"] / "ginnungagap-issue.service").read_text()
+    assert f"ExecStart={place['bin']}/ginnungagap issue" in unit
+    assert "After=network-online.target ginnungagap-firstboot.service" in unit
+    assert "Type=oneshot" in unit and "WantedBy=multi-user.target" in unit
+
+
+def test_a_changed_password_rewrites_the_console_text_through_a_path_unit(place):
+    assert install(place).returncode == 0
+    unit = (place["units"] / "ginnungagap-issue.path").read_text()
+    assert "PathChanged=/etc/shadow" in unit
+    assert "Unit=ginnungagap-issue-changed.service" in unit
+    assert "WantedBy=multi-user.target" in unit
+    changed = (place["units"] / "ginnungagap-issue-changed.service").read_text()
+    assert f"ExecStart={place['bin']}/ginnungagap issue --clear-screens" in changed
+
+
+def test_an_image_boots_to_the_text_console_where_the_login_text_is_shown():
+    script = (ROOT / "install.sh").read_text()
+    image_branch = script[
+        script.index('if [ "$IMAGE" = 1 ]; then\n      # an appliance') :
+    ]
+    assert "systemctl set-default multi-user.target" in image_branch[:400]
+
+
+def test_an_image_switches_ssh_password_login_on_through_a_drop_in(place):
+    assert install(place, "--image").returncode == 0
+    dropin = place["sshd"] / "10-ginnungagap.conf"
+    assert "PasswordAuthentication yes" in dropin.read_text()
+    assert dropin.stat().st_mode & 0o777 == 0o644
+
+
+def test_a_plain_install_leaves_sshd_alone(place):
+    assert install(place).returncode == 0
+    assert not place["sshd"].exists()
+
+
+def test_uninstall_removes_the_console_unit_and_the_drop_in(place):
+    install(place, "--image")
+    install(place, "--uninstall")
+    assert not (place["units"] / "ginnungagap-issue.service").exists()
+    assert not (place["units"] / "ginnungagap-issue.path").exists()
+    assert not (place["units"] / "ginnungagap-issue-changed.service").exists()
+    assert not (place["sshd"] / "10-ginnungagap.conf").exists()
+
+
+def test_the_script_keeps_the_install_of_the_drop_in_to_image_mode():
+    script = (ROOT / "install.sh").read_text()
+    assert (
+        'if [ "$IMAGE" = 1 ]; then\n  install -d -m 0755 "$SSHD_DROPIN_DIR"' in script
+    )

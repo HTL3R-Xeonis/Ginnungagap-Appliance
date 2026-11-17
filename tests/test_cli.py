@@ -50,7 +50,7 @@ def test_firstboot_command_hands_the_config_folder_to_the_first_boot(
 
 @pytest.mark.parametrize("status", [0, 1])
 def test_bootstrap_refreshes_the_console_only_after_starting(
-    tmp_path, monkeypatch, status
+    tmp_path, monkeypatch, status, console_refreshes
 ):
     steps = []
 
@@ -60,16 +60,10 @@ def test_bootstrap_refreshes_the_console_only_after_starting(
 
     monkeypatch.setenv("GINNUNGAGAP_CONFIG_DIR", str(tmp_path))
     monkeypatch.setattr(cli.bootstrap_module, "run", start)
-    monkeypatch.setattr(
-        cli.firstboot,
-        "refresh_setup_issue",
-        lambda folder: steps.append(("issue", folder)),
-    )
 
     assert cli.main(["bootstrap", "--no-build"]) == status
-    assert steps == [("bootstrap", False)] + (
-        [("issue", tmp_path)] if status == 0 else []
-    )
+    assert steps == [("bootstrap", False)]
+    assert console_refreshes == ([tmp_path] if status == 0 else [])
 
 
 def test_build_images_command_is_wired(tmp_path, monkeypatch):
@@ -79,3 +73,30 @@ def test_build_images_command_is_wired(tmp_path, monkeypatch):
     )
     assert cli.main(["build-images", "--generator-config", str(tmp_path)]) == 0
     assert seen == [str(tmp_path)]
+
+
+def test_issue_command_rewrites_the_console_text(tmp_path, console_refreshes):
+    assert cli.main(["issue", "--config-dir", str(tmp_path)]) == 0
+    assert console_refreshes == [tmp_path]
+
+
+def test_apply_staged_refreshes_the_console_whatever_the_result(
+    tmp_path, monkeypatch, console_refreshes
+):
+    monkeypatch.setattr(cli.setup_watcher, "apply_staged", lambda *a, **k: 1)
+    assert cli.main(["apply-staged", "--config-dir", str(tmp_path)]) == 1
+    assert console_refreshes == [tmp_path]
+
+
+def test_the_login_prompt_reload_clears_screens_only_when_asked(monkeypatch):
+    import subprocess
+
+    from ginnungagap import console
+
+    cleared = []
+    monkeypatch.setattr(console, "clear_idle_terminals", lambda: cleared.append(True))
+    monkeypatch.setattr(subprocess, "run", lambda *a, **k: None)
+    console.reload_login_prompt()
+    assert cleared == []
+    console.reload_login_prompt(clear_screens=True)
+    assert cleared == [True]

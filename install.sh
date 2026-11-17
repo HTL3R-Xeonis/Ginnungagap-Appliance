@@ -9,9 +9,11 @@
 #
 # Options: --prefix DIR (/opt/ginnungagap)  --config-dir DIR (/etc/ginnungagap)  --bin-dir DIR (/usr/local/bin)
 #          --unit-dir DIR (/etc/systemd/system)  --repos-dir DIR  --staging-dir DIR (/var/lib/ginnungagap/setup)
+#          --sshd-dropin-dir DIR (/etc/ssh/sshd_config.d)
 #          --no-systemd  --no-start
 #          --install-packages   first install what is needed with apt (Debian 13 / Ubuntu: Docker, compose, python3-yaml, ...)
-#          --image              for building an appliance image: also enable the first-boot unit (see image/prepare-image.sh)
+#          --image              for building an appliance image: also enable the first-boot unit and switch SSH password login
+#                               on (the admin's random initial password is shown on the console; see image/prepare-image.sh)
 set -euo pipefail
 
 HERE=$(cd "$(dirname "$0")" && pwd)
@@ -20,6 +22,7 @@ CONFIG_DIR=/etc/ginnungagap
 BIN_DIR=/usr/local/bin
 UNIT_DIR=/etc/systemd/system
 STAGING_DIR=/var/lib/ginnungagap/setup
+SSHD_DROPIN_DIR=/etc/ssh/sshd_config.d
 REPOS_DIR=
 SYSTEMD=1
 START=1
@@ -36,13 +39,14 @@ while [ $# -gt 0 ]; do
     --bin-dir) BIN_DIR=${2:?}; shift 2 ;;
     --unit-dir) UNIT_DIR=${2:?}; shift 2 ;;
     --staging-dir) STAGING_DIR=${2:?}; shift 2 ;;
+    --sshd-dropin-dir) SSHD_DROPIN_DIR=${2:?}; shift 2 ;;
     --repos-dir) REPOS_DIR=${2:?}; shift 2 ;;
     --no-systemd) SYSTEMD=0; shift ;;
     --no-start) START=0; shift ;;
     --uninstall) UNINSTALL=1; shift ;;
     --install-packages) PACKAGES=1; shift ;;
     --image) IMAGE=1; shift ;;
-    -h|--help) sed -n '2,13p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    -h|--help) sed -n '2,16p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
     *) die "unknown option $1 (see --help)" ;;
   esac
 done
@@ -52,6 +56,10 @@ FIRSTBOOT_UNIT="$UNIT_DIR/ginnungagap-firstboot.service"
 BOOTSTRAP_UNIT="$UNIT_DIR/ginnungagap-bootstrap.service"
 SETUP_APPLY_PATH_UNIT="$UNIT_DIR/ginnungagap-setup-apply.path"
 SETUP_APPLY_SERVICE_UNIT="$UNIT_DIR/ginnungagap-setup-apply.service"
+ISSUE_UNIT="$UNIT_DIR/ginnungagap-issue.service"
+ISSUE_PATH_UNIT="$UNIT_DIR/ginnungagap-issue.path"
+ISSUE_CHANGE_UNIT="$UNIT_DIR/ginnungagap-issue-changed.service"
+SSHD_DROPIN="$SSHD_DROPIN_DIR/10-ginnungagap.conf"
 # systemctl is only touched when installing into the real unit folder of a running systemd (not for a test --unit-dir)
 REAL_SYSTEMD=0
 if [ "$SYSTEMD" = 1 ] && [ "$UNIT_DIR" = /etc/systemd/system ] && command -v systemctl >/dev/null 2>&1 && [ -d /run/systemd/system ]; then
@@ -61,8 +69,8 @@ WRAPPER="$BIN_DIR/ginnungagap"
 APP="$PREFIX/app"
 
 if [ "$UNINSTALL" = 1 ]; then
-  [ "$REAL_SYSTEMD" = 1 ] && systemctl disable ginnungagap.service ginnungagap-firstboot.service ginnungagap-bootstrap.service ginnungagap-setup-apply.path >/dev/null 2>&1 || true
-  rm -f "$UNIT" "$FIRSTBOOT_UNIT" "$BOOTSTRAP_UNIT" "$SETUP_APPLY_PATH_UNIT" "$SETUP_APPLY_SERVICE_UNIT" "$WRAPPER"
+  [ "$REAL_SYSTEMD" = 1 ] && systemctl disable ginnungagap.service ginnungagap-firstboot.service ginnungagap-bootstrap.service ginnungagap-setup-apply.path ginnungagap-issue.path ginnungagap-issue.service >/dev/null 2>&1 || true
+  rm -f "$UNIT" "$FIRSTBOOT_UNIT" "$BOOTSTRAP_UNIT" "$SETUP_APPLY_PATH_UNIT" "$SETUP_APPLY_SERVICE_UNIT" "$ISSUE_UNIT" "$ISSUE_PATH_UNIT" "$ISSUE_CHANGE_UNIT" "$SSHD_DROPIN" "$WRAPPER"
   rm -rf "$APP"
   rmdir "$PREFIX" 2>/dev/null || true  # only when nothing else lives there
   [ "$REAL_SYSTEMD" = 1 ] && systemctl daemon-reload || true
@@ -136,6 +144,20 @@ set +a
 exec python3 -m ginnungagap "\$@"
 WRAP
 chmod 0755 "$WRAPPER"
+
+# ---- an image: SSH password login for the admin whose random initial password the console shows (see ginnungagap/console.py).
+# A drop-in, so the distribution's own sshd_config stays untouched; sshd takes the FIRST value it reads, and the Debian
+# main file includes its drop-ins before its own settings, so this wins over a later one (e.g. 50-cloud-init.conf).
+if [ "$IMAGE" = 1 ]; then
+  install -d -m 0755 "$SSHD_DROPIN_DIR"
+  cat >"$SSHD_DROPIN" <<'SSHDDROPIN'
+# Written by the Ginnungagap installer (--image): the admin logs in with the initial password shown on the VM console.
+PasswordAuthentication yes
+SSHDDROPIN
+  chmod 0644 "$SSHD_DROPIN"
+  [ "$SYSTEMD" = 1 ] && [ "$UNIT_DIR" = /etc/systemd/system ] && command -v systemctl >/dev/null 2>&1 && [ -d /run/systemd/system ] \
+    && { systemctl reload ssh.service >/dev/null 2>&1 || true; }
+fi
 
 # ---- the unit: applies the configuration at boot (containers restart by themselves, this also picks up an edited file)
 if [ "$SYSTEMD" = 1 ]; then
@@ -225,9 +247,46 @@ Type=oneshot
 TimeoutStartSec=600
 ExecStart=$WRAPPER apply-staged --staging-dir $STAGING_DIR --config-dir $CONFIG_DIR$wizard_image_flag
 SETUPSERVICE
+  # the console login text (SSH address and port, web interface) is rewritten at every boot, once the network is up: the
+  # address of a DHCP machine can change between boots, and first boot runs before there is one.
+  cat >"$ISSUE_UNIT" <<ISSUESERVICE
+[Unit]
+Description=Ginnungagap console login text (SSH address and port, web interface)
+After=network-online.target ginnungagap-firstboot.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=$WRAPPER issue
+
+[Install]
+WantedBy=multi-user.target
+ISSUESERVICE
+  # the initial SSH password stays on the console only until it is changed: a change rewrites /etc/shadow, which rewrites the text
+  cat >"$ISSUE_PATH_UNIT" <<ISSUEPATH
+[Unit]
+Description=Rewrite the console login text when a password changes
+
+[Path]
+PathChanged=/etc/shadow
+Unit=ginnungagap-issue-changed.service
+
+[Install]
+WantedBy=multi-user.target
+ISSUEPATH
+  cat >"$ISSUE_CHANGE_UNIT" <<ISSUECHANGED
+[Unit]
+Description=Ginnungagap console login text after a password change (also wipes the idle login screens)
+
+[Service]
+Type=oneshot
+ExecStart=$WRAPPER issue --clear-screens
+ISSUECHANGED
   if [ "$REAL_SYSTEMD" = 1 ]; then
     systemctl daemon-reload
     if [ "$IMAGE" = 1 ]; then
+      # an appliance has no use for a desktop login: the text console is where /etc/issue.d (SSH address, port, password) is shown
+      systemctl set-default multi-user.target >/dev/null 2>&1 || true
       systemctl enable ginnungagap-firstboot.service >/dev/null 2>&1 || true
       systemctl enable ginnungagap.service >/dev/null 2>&1 || true  # it only runs once a configuration exists
     fi
@@ -235,13 +294,13 @@ SETUPSERVICE
     if [ "$CREATED" = 0 ]; then
       systemctl enable ginnungagap.service >/dev/null 2>&1 || true
     fi
-    systemctl enable ginnungagap-bootstrap.service ginnungagap-setup-apply.path >/dev/null 2>&1 || true
+    systemctl enable ginnungagap-bootstrap.service ginnungagap-setup-apply.path ginnungagap-issue.service ginnungagap-issue.path >/dev/null 2>&1 || true
   fi
 fi
 
 echo "Installed: program in $APP, command $WRAPPER, configuration in $CONFIG_DIR."
 if [ "$IMAGE" = 1 ]; then
-  echo "Prepared for an appliance image: the first-boot unit is enabled, there is no configuration yet (image/prepare-image.sh is the next step)."
+  echo "Prepared for an appliance image: the first-boot unit is enabled, SSH password login is on, the console is text mode (systemctl set-default graphical.target brings the desktop back), there is no configuration yet (image/prepare-image.sh is the next step)."
   exit 0
 fi
 if [ "$CREATED" = 1 ]; then

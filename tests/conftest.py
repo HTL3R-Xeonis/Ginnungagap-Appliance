@@ -4,7 +4,9 @@ from pathlib import Path
 import pytest
 import yaml
 
+from ginnungagap import __main__ as cli_module
 from ginnungagap import config as config_module
+from ginnungagap import firstboot as firstboot_module
 from ginnungagap import operate as operate_module
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -47,3 +49,21 @@ def generator_sources(tmp_path) -> Path:
 def no_real_store_folder(monkeypatch):
     """apply() creates a missing local template store folder; a test must never create /srv/templates on the machine."""
     monkeypatch.setattr(operate_module, "_make_store_dir", lambda path: None)
+
+
+@pytest.fixture(autouse=True)
+def no_real_password_change(monkeypatch):
+    """First boot sets the login user's password with chpasswd; a test must never do that to the machine it runs on."""
+    monkeypatch.setattr(firstboot_module, "_set_password", lambda user, password: 0)
+
+
+@pytest.fixture(autouse=True)
+def console_refreshes(monkeypatch):
+    """The command line rewrites the console login text after bootstrap/apply; tests record it instead of touching /etc."""
+    calls = []
+    monkeypatch.setattr(
+        cli_module,
+        "_refresh_console",
+        lambda config_dir, clear_screens=False: calls.append(Path(config_dir)),
+    )
+    return calls

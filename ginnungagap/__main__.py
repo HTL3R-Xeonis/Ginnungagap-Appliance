@@ -1,4 +1,4 @@
-"""Command line: python -m ginnungagap validate|show|render|apply|status|backup|restore|build-images|firstboot."""
+"""Command line: python -m ginnungagap validate|show|render|apply|status|backup|restore|build-images|firstboot|issue."""
 
 from __future__ import annotations
 
@@ -12,7 +12,7 @@ import yaml
 
 from ginnungagap import bootstrap as bootstrap_module
 from ginnungagap import config as config_module
-from ginnungagap import firstboot, operate, setup_watcher
+from ginnungagap import console, firstboot, operate, setup_watcher
 from ginnungagap import render as render_module
 from ginnungagap import status as status_module
 
@@ -92,6 +92,20 @@ def _parser() -> argparse.ArgumentParser:
         default=os.environ.get("GINNUNGAGAP_CONFIG_DIR", "/etc/ginnungagap"),
     )
 
+    issue = commands.add_parser(
+        "issue",
+        help="rewrite the text of the console login (SSH address and port, web interface) for the machine as it is now",
+    )
+    issue.add_argument(
+        "--config-dir",
+        default=os.environ.get("GINNUNGAGAP_CONFIG_DIR", "/etc/ginnungagap"),
+    )
+    issue.add_argument(
+        "--clear-screens",
+        action="store_true",
+        help="also wipe the idle login screens (after a password change, so the initial password does not stay on them)",
+    )
+
     restore = commands.add_parser(
         "restore",
         help="replace the app's data by a backup (stops the app for a moment)",
@@ -140,6 +154,12 @@ def _load(path: str):
         return None
 
 
+def _refresh_console(config_dir: str | Path, clear_screens: bool = False) -> None:
+    """The console login text always describes the machine as it is now (SSH address and port, web interface)."""
+    console.refresh(config_dir)
+    console.reload_login_prompt(clear_screens=clear_screens)
+
+
 def main(argv: list[str] | None = None) -> int:
     args = _parser().parse_args(argv)
     bundle = operate.bundle_dir()
@@ -155,23 +175,26 @@ def main(argv: list[str] | None = None) -> int:
         return operate.build_images(bundle, args.generator_config)
     if args.command == "firstboot":
         return firstboot.run(args.config_dir)
+    if args.command == "issue":
+        _refresh_console(args.config_dir, clear_screens=args.clear_screens)
+        return 0
     if args.command == "bootstrap":
         result = bootstrap_module.run(bundle, build=not args.no_build)
         if result == 0:
-            firstboot.refresh_setup_issue(
-                Path(render_module.host_paths()["GINNUNGAGAP_CONFIG_DIR"])
-            )
+            _refresh_console(render_module.host_paths()["GINNUNGAGAP_CONFIG_DIR"])
         return result
     if args.command == "apply-staged":
-        return setup_watcher.apply_staged(
+        result = setup_watcher.apply_staged(
             args.staging_dir,
             Path(args.config_dir) / "ginnungagap.yml",
             bundle,
             args.generator_config,
             build=not args.no_build,
         )
+        _refresh_console(args.config_dir)
+        return result
     if args.command == "apply":
-        return operate.apply(
+        result = operate.apply(
             args.file,
             bundle,
             args.generator_config,
@@ -179,6 +202,11 @@ def main(argv: list[str] | None = None) -> int:
             build=not args.no_build,
             wait_seconds=args.wait,
         )
+        if result == 0 and not args.no_start:
+            _refresh_console(
+                os.environ.get("GINNUNGAGAP_CONFIG_DIR", console.CONFIG_DIR)
+            )
+        return result
 
     config = _load(args.file)
     if config is None:

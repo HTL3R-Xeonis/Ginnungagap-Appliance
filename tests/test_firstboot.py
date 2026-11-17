@@ -4,6 +4,7 @@ from pathlib import Path
 import pytest
 import yaml
 
+from ginnungagap import console
 from ginnungagap import firstboot as fb
 
 VALID = {"generator": {"llm_servers": [{"name": "o", "url": "http://10.0.0.1:11434", "model": "m"}]}, "appliance": {"public_url": "http://ginn.lab"}, "ova_deploy": {"external_url": "http://10.0.0.2:8003"}}  # fmt: skip
@@ -38,6 +39,13 @@ class Machine:
         self.made: list[Path] = []
         self.sudoers_dir = tmp_path / "sudoers.d"
         self.sudoers_dir.mkdir(parents=True, exist_ok=True)
+        self.passwords: list[tuple[str, str]] = []
+        self.password_status = 0
+        self.changed = False
+
+    def set_password(self, user, password):
+        self.passwords.append((user, password))
+        return self.password_status
 
     def runner(self, args):
         self.commands.append(args)
@@ -57,6 +65,9 @@ class Machine:
             sudoers_dir=self.sudoers_dir,
             local_address=lambda: None,
             out=self.lines.append,
+            set_password=self.set_password,
+            new_password=lambda: "Abcd1234Efgh5678",
+            password_changed=lambda user: self.changed,
         )
 
 
@@ -121,34 +132,37 @@ def test_without_any_configuration_the_console_says_what_to_do_and_the_next_boot
     assert m.run() == 0 and (m.config_dir / "ginnungagap.yml").exists()
 
 
+def _refresh(m, address):
+    return console.refresh(
+        m.config_dir,
+        state_dir=m.state_dir,
+        issue_file=m.issue,
+        ssh_dir=m.ssh_dir,
+        local_address_fn=lambda: address,
+        login_user_fn=lambda: "junioradmin",
+        password_changed=lambda user: m.changed,
+    )
+
+
 def test_setup_issue_uses_the_address_received_after_firstboot(machine):
     m = machine()
     assert m.run() == 1
     assert "<this machine's address>" in m.issue.read_text()
 
-    fb.refresh_setup_issue(
-        m.config_dir,
-        state_dir=m.state_dir,
-        issue_file=m.issue,
-        local_address=lambda: "192.0.2.17",
-    )
+    _refresh(m, "192.0.2.17")
 
     assert "http://192.0.2.17/" in m.issue.read_text()
+    assert "ssh junioradmin@192.0.2.17 -p 22" in m.issue.read_text()
     assert "<this machine's address>" not in m.issue.read_text()
 
 
 @pytest.mark.parametrize("config", [VALID, {"servises": {}}])
-def test_setup_issue_refresh_preserves_guestinfo_result(machine, config):
+def test_a_refresh_keeps_the_guestinfo_result_on_the_console(machine, config):
     m = machine({"config": b64(config)})
     m.run()
     before = m.issue.read_text()
 
-    fb.refresh_setup_issue(
-        m.config_dir,
-        state_dir=m.state_dir,
-        issue_file=m.issue,
-        local_address=lambda: pytest.fail("must preserve the existing console message"),
-    )
+    _refresh(m, None)
 
     assert m.issue.read_text() == before
 
@@ -296,3 +310,97 @@ def test_a_login_name_that_could_be_more_than_a_name_gets_no_sudoers_entry(machi
     m = machine({"config": b64(VALID), "admin_sudo_nopasswd": "true"})
     m.run(user="x ALL=(ALL) NOPASSWD:ALL #")
     assert not list(m.sudoers_dir.iterdir())
+
+
+# ---- the admin SSH access ----------------------------------------------------------------------------------------
+
+
+def test_a_random_initial_password_is_set_through_stdin_and_expired(machine):
+    m = machine()
+    m.run()
+    assert m.passwords == [("junioradmin", "Abcd1234Efgh5678")]
+    assert ["chage", "-d", "0", "junioradmin"] in m.commands
+    assert all("Abcd1234Efgh5678" not in " ".join(c) for c in m.commands)
+    assert all("Abcd1234Efgh5678" not in line for line in m.lines)
+    state = m.state_dir / console.ACCESS
+    assert state.stat().st_mode & 0o777 == 0o600
+    assert console.read_access(m.state_dir) == {
+        "mode": "generated",
+        "password": "Abcd1234Efgh5678",
+    }
+
+
+def test_the_default_generator_makes_16_letters_and_digits_that_differ_every_time():
+    first, second = fb._random_password(), fb._random_password()
+    assert len(first) == 16 and first.isalnum() and first != second
+
+
+def test_the_password_is_not_generated_again_at_a_later_boot(machine):
+    m = machine()
+    assert m.run() == 1  # no configuration yet: the next boot runs first boot again
+    m.run()
+    assert len(m.passwords) == 1
+
+
+def test_a_given_hash_or_key_means_nothing_is_generated(machine):
+    hashed = machine({"admin_password_hash": "$6$salt$hash"})
+    hashed.run()
+    assert hashed.passwords == []
+    assert console.read_access(hashed.state_dir) == {"mode": "deployer"}
+    assert ["passwd", "-l", "junioradmin"] not in hashed.commands
+
+    keyed = machine({"ssh_authorized_key": "ssh-ed25519 AAAA test"})
+    keyed.run()
+    assert keyed.passwords == []
+    assert console.read_access(keyed.state_dir) == {"mode": "deployer"}
+    assert [
+        "passwd",
+        "-l",
+        "junioradmin",
+    ] in keyed.commands  # the template's own password must not stay valid
+
+
+def test_a_hash_that_is_not_a_hash_does_not_count_as_given(machine):
+    m = machine({"admin_password_hash": "plaintext-not-a-hash"})
+    m.run()
+    assert len(m.passwords) == 1
+
+
+def test_a_failing_chpasswd_is_reported_without_the_password_and_without_state(machine):
+    m = machine()
+    m.password_status = 1
+    m.run()
+    assert console.read_access(m.state_dir) is None
+    assert any("could not set an initial password" in line for line in m.lines)
+    assert all("Abcd1234Efgh5678" not in line for line in m.lines)
+    assert ["chage", "-d", "0", "junioradmin"] not in m.commands
+
+
+def test_no_login_user_means_no_ssh_section_and_no_password(machine):
+    m = machine()
+    m.run(user=None)
+    assert m.passwords == []
+    assert "SSH:" not in m.issue.read_text()
+
+
+def test_the_console_shows_address_port_and_the_initial_password_until_it_is_changed(
+    machine,
+):
+    m = machine()
+    m.run()
+    text = m.issue.read_text()
+    assert "SSH: ssh junioradmin@<this machine's address> -p 22" in text
+    assert "Password: Abcd1234Efgh5678 (you must change it at the first login)" in text
+
+    m.changed = True
+    _refresh(m, "192.0.2.17")
+    after = m.issue.read_text()
+    assert "SSH: ssh junioradmin@192.0.2.17 -p 22" in after
+    assert "Password:" not in after and "Abcd1234Efgh5678" not in after
+
+
+def test_the_console_says_when_the_deployer_set_the_access(machine):
+    m = machine({"admin_password_hash": "$6$salt$hash"})
+    m.run()
+    assert "(password/key set by the deployer)" in m.issue.read_text()
+    assert "Password:" not in m.issue.read_text()

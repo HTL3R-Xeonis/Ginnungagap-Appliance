@@ -11,7 +11,8 @@ guestinfo (VMware's key/value channel, read with `vmtoolsd`; on ESXi: VM options
   guestinfo.ginnungagap.admin_sudo_nopasswd  optional, "true" lets the login user use sudo without a password (for
                                              automation; off by default, an image is delivered without it)
 
-and prepares the machine: the SSH host keys (the image has none, so no two VMs share them), the configuration file after
+and prepares the machine: the login user's SSH password (a random one shown on the console until it is changed, unless the
+deployer gave a hash or a key - see ginnungagap/console.py for the text), the SSH host keys (the image has none, so no two VMs share them), the configuration file after
 validating it (an invalid one is kept as ginnungagap.yml.rejected and the reasons are shown at the login prompt), and a
 message at the console login. A configuration that is already in place wins over guestinfo. Once a configuration is in
 place the first boot is never done again; without one (nothing given, or an invalid one) the next boot tries again.
@@ -27,7 +28,8 @@ import binascii
 import os
 import pwd
 import re
-import socket
+import secrets
+import string
 import subprocess
 from collections.abc import Callable
 from pathlib import Path
@@ -35,18 +37,17 @@ from pathlib import Path
 import yaml
 
 from ginnungagap import config as config_module
+from ginnungagap import console
+from ginnungagap.console import ISSUE_FILE, PROBLEMS, REJECTED, STATE_DIR
 
 GuestInfo = Callable[[str], str | None]
 Runner = Callable[[list[str]], int]
+PasswordSetter = Callable[[str, str], int]
 
 PREFIX = "guestinfo.ginnungagap."
 DONE_MARKER = "firstboot.done"
-REJECTED = "ginnungagap.yml.rejected"
-PROBLEMS = "firstboot.problems"
-ISSUE_FILE = "/etc/issue.d/ginnungagap.issue"
-STATE_DIR = "/var/lib/ginnungagap"
 SUDOERS_DIR = "/etc/sudoers.d"
-LOGIN_UID = 1000  # the first ordinary account of a Debian image
+PASSWORD_LENGTH = 16
 
 
 def vmtools_guestinfo(key: str) -> str | None:
@@ -69,17 +70,7 @@ def default_runner(args: list[str]) -> int:
     return subprocess.run(args, check=False).returncode
 
 
-def _local_address() -> str | None:
-    """This machine's own address on its default route, None when there isn't one (no network yet). Never sends
-    anything: a UDP "connect" only asks the kernel which local address a packet to that address would leave from."""
-    try:
-        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as probe:
-            probe.connect(
-                ("198.51.100.1", 80)
-            )  # TEST-NET-2 (RFC 5737): reserved, never actually reached
-            return probe.getsockname()[0]
-    except OSError:
-        return None
+_local_address = console.local_address
 
 
 def decode_config(value: str, encoding: str | None) -> str:
@@ -110,51 +101,26 @@ def _write_private(path: Path, text: str) -> None:
     path.chmod(0o600)
 
 
-def _write_issue(issue_file: Path, lines: list[str]) -> None:
-    """The text shown at the console login (Debian reads /etc/issue.d/*.issue)."""
+_login_user = console.login_user
+
+
+def _random_password() -> str:
+    alphabet = string.ascii_letters + string.digits
+    return "".join(secrets.choice(alphabet) for _ in range(PASSWORD_LENGTH))
+
+
+def _set_password(user: str, password: str) -> int:
+    """`chpasswd` with the password on its standard input: it never appears in an argument list or a process listing."""
     try:
-        issue_file.parent.mkdir(parents=True, exist_ok=True)
-        issue_file.write_text(
-            "\n".join(["", "Ginnungagap appliance", *lines, "", ""]), encoding="utf-8"
-        )
-    except OSError:
-        pass  # a missing message must never stop the boot
-
-
-def _write_setup_issue(config_dir: Path, issue_file: Path, address: str | None) -> None:
-    address = address or "<this machine's address>"
-    config_file = config_dir / "ginnungagap.yml"
-    _write_issue(
-        issue_file,
-        [
-            f"No configuration yet. Open http://{address}/ in a browser to",
-            "finish setup (the setup wizard) - or set",
-            "guestinfo.ginnungagap.config (base64 of ginnungagap.yml) and reboot,",
-            "or, as root:",
-            f"  cp {config_dir}/ginnungagap.example.yml {config_file}",
-            f"  edit {config_file}; ginnungagap apply {config_file}",
-        ],
-    )
-
-
-def refresh_setup_issue(
-    config_dir: Path,
-    *,
-    state_dir: Path = Path(STATE_DIR),
-    issue_file: Path = Path(ISSUE_FILE),
-    local_address: Callable[[], str | None] = _local_address,
-) -> None:
-    """Show the address now that the wizard is running. Keep any guestinfo diagnostics."""
-    if (config_dir / "ginnungagap.yml").exists() or (state_dir / PROBLEMS).exists():
-        return
-    _write_setup_issue(config_dir, issue_file, local_address())
-
-
-def _login_user() -> str | None:
-    for entry in pwd.getpwall():
-        if entry.pw_uid == LOGIN_UID:
-            return entry.pw_name
-    return None
+        return subprocess.run(
+            ["chpasswd"],
+            input=f"{user}:{password}\n",
+            text=True,
+            check=False,
+            timeout=30,
+        ).returncode
+    except (OSError, subprocess.TimeoutExpired):
+        return 1
 
 
 def _install_ssh_key(user: str, key: str, home: Path | None = None) -> None:
@@ -207,6 +173,9 @@ def run(
     sudoers_dir: str | Path = SUDOERS_DIR,
     local_address: Callable[[], str | None] = _local_address,
     out: Callable[[str], None] = print,
+    set_password: PasswordSetter | None = None,
+    new_password: Callable[[], str] | None = None,
+    password_changed: Callable[[str], bool] | None = None,
 ) -> int:
     """
     The whole first boot. Returns 0 when the machine is ready to have its configuration applied (or when there is nothing
@@ -255,8 +224,29 @@ def run(
                 "admin_sudo_nopasswd was refused: the sudoers entry did not pass visudo"
             )
 
-    result = 0
     state_dir.mkdir(parents=True, exist_ok=True)
+    if user and console.read_access(state_dir) is None:
+        deployer_hash = bool(password_hash) and password_hash.startswith("$")
+        if key or deployer_hash:
+            console.write_access(state_dir, "deployer")
+            if key and not deployer_hash:
+                # key only: the Debian password of the template must not stay valid now that password login is on
+                out(f"locking the password of {user} (only the given SSH key opens it)")
+                runner(["passwd", "-l", user])
+        else:
+            password = (new_password or _random_password)()
+            if (set_password or _set_password)(user, password) == 0:
+                runner(["chage", "-d", "0", user])
+                console.write_access(state_dir, "generated", password)
+                out(
+                    f"set a random initial password for {user}; it is shown on the console until it is changed"
+                )
+            else:
+                out(
+                    f"could not set an initial password for {user} - SSH password login will not work until one is set"
+                )
+
+    result = 0
     problems_file = state_dir / PROBLEMS
     problems_file.unlink(missing_ok=True)
     if config_file.exists():
@@ -268,7 +258,6 @@ def run(
                 "no configuration in guestinfo.ginnungagap.config and none in "
                 f"{config_file}"
             )
-            _write_setup_issue(config_dir, issue_file, local_address())
             result = 1
         else:
             try:
@@ -282,15 +271,6 @@ def run(
                     out(f"  - {problem}")
                 _write_private(config_dir / REJECTED, text)
                 _write_private(problems_file, "\n".join(problems) + "\n")
-                _write_issue(
-                    issue_file,
-                    [
-                        "The configuration given in guestinfo is not valid:",
-                        *[f"  - {p}" for p in problems[:6]],
-                        f"It is kept as {config_dir / REJECTED}. Fix it, save it as",
-                        f"{config_file} and run: ginnungagap apply {config_file}",
-                    ],
-                )
                 result = 1
             else:
                 _write_private(config_file, text)
@@ -307,17 +287,16 @@ def run(
                 out(
                     f"configuration accepted, {url} will answer once the services are up"
                 )
-                _write_issue(
-                    issue_file,
-                    [
-                        f"Web interface: {url}",
-                        (
-                            "First login: admin / admin - change it once you are in "
-                            "(Admin panel > User accounts)."
-                        ),
-                    ],
-                )
 
+    console.refresh(
+        config_dir,
+        state_dir=state_dir,
+        issue_file=issue_file,
+        ssh_dir=ssh_dir,
+        local_address_fn=local_address,
+        login_user_fn=lambda: user,
+        password_changed=password_changed,
+    )
     if (
         result == 0
     ):  # without a usable configuration the next boot looks at guestinfo again
