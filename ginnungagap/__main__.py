@@ -156,7 +156,12 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "firstboot":
         return firstboot.run(args.config_dir)
     if args.command == "bootstrap":
-        return bootstrap_module.run(bundle, build=not args.no_build)
+        result = bootstrap_module.run(bundle, build=not args.no_build)
+        if result == 0:
+            firstboot.refresh_setup_issue(
+                Path(render_module.host_paths()["GINNUNGAGAP_CONFIG_DIR"])
+            )
+        return result
     if args.command == "apply-staged":
         return setup_watcher.apply_staged(
             args.staging_dir,

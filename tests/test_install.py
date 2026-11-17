@@ -202,6 +202,8 @@ def test_image_mode_creates_no_configuration_and_does_not_start_anything(place):
     ).exists()  # the first boot brings it
     assert (place["config"] / "ginnungagap.example.yml").is_file()
     assert "appliance image" in result.stdout
+    boot = (place["units"] / "ginnungagap-bootstrap.service").read_text()
+    assert "ExecStartPost=-/sbin/agetty --reload" in boot
     wizard = place["units"] / "ginnungagap-setup-apply.service"
     apply_line = next(
         line

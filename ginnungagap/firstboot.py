@@ -121,6 +121,35 @@ def _write_issue(issue_file: Path, lines: list[str]) -> None:
         pass  # a missing message must never stop the boot
 
 
+def _write_setup_issue(config_dir: Path, issue_file: Path, address: str | None) -> None:
+    address = address or "<this machine's address>"
+    config_file = config_dir / "ginnungagap.yml"
+    _write_issue(
+        issue_file,
+        [
+            f"No configuration yet. Open http://{address}/ in a browser to",
+            "finish setup (the setup wizard) - or set",
+            "guestinfo.ginnungagap.config (base64 of ginnungagap.yml) and reboot,",
+            "or, as root:",
+            f"  cp {config_dir}/ginnungagap.example.yml {config_file}",
+            f"  edit {config_file}; ginnungagap apply {config_file}",
+        ],
+    )
+
+
+def refresh_setup_issue(
+    config_dir: Path,
+    *,
+    state_dir: Path = Path(STATE_DIR),
+    issue_file: Path = Path(ISSUE_FILE),
+    local_address: Callable[[], str | None] = _local_address,
+) -> None:
+    """Show the address now that the wizard is running. Keep any guestinfo diagnostics."""
+    if (config_dir / "ginnungagap.yml").exists() or (state_dir / PROBLEMS).exists():
+        return
+    _write_setup_issue(config_dir, issue_file, local_address())
+
+
 def _login_user() -> str | None:
     for entry in pwd.getpwall():
         if entry.pw_uid == LOGIN_UID:
@@ -239,18 +268,7 @@ def run(
                 "no configuration in guestinfo.ginnungagap.config and none in "
                 f"{config_file}"
             )
-            address = local_address() or "<this machine's address>"
-            _write_issue(
-                issue_file,
-                [
-                    f"No configuration yet. Open http://{address}/ in a browser to",
-                    "finish setup (the setup wizard) - or set",
-                    "guestinfo.ginnungagap.config (base64 of ginnungagap.yml) and reboot,",
-                    "or, as root:",
-                    f"  cp {config_dir}/ginnungagap.example.yml {config_file}",
-                    f"  edit {config_file}; ginnungagap apply {config_file}",
-                ],
-            )
+            _write_setup_issue(config_dir, issue_file, local_address())
             result = 1
         else:
             try:

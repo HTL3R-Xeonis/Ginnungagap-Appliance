@@ -192,6 +192,7 @@ Type=oneshot
 RemainAfterExit=yes
 TimeoutStartSec=300
 ExecStart=$WRAPPER bootstrap --no-build
+ExecStartPost=-/sbin/agetty --reload
 
 [Install]
 WantedBy=multi-user.target

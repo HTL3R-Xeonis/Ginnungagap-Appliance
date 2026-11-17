@@ -103,6 +103,8 @@ not even to the wizard itself):
    `rendered/` folder `apply` normally renders into, then starts just those two containers. The wizard container itself
    stays unprivileged throughout: no Docker socket, no sudo, no other host path mounted.
 2. The admin opens the VM's address (shown in the console hint at `/etc/issue.d/ginnungagap.issue`) and fills in the form.
+   After the wizard starts, bootstrap checks the address again and asks Debian's login console to refresh the prompt.
+   If invalid guestinfo configuration was supplied, the console keeps its validation errors.
    When choosing an external service, enter its actual URL in the revealed field.
 3. On submit the wizard's container writes the validated YAML and a marker file into its one writable path (a folder
    it shares with the host, nothing else) and tells the admin it is being applied.

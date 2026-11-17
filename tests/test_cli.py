@@ -48,6 +48,30 @@ def test_firstboot_command_hands_the_config_folder_to_the_first_boot(
     assert seen == [str(tmp_path)]
 
 
+@pytest.mark.parametrize("status", [0, 1])
+def test_bootstrap_refreshes_the_console_only_after_starting(
+    tmp_path, monkeypatch, status
+):
+    steps = []
+
+    def start(bundle, *, build):
+        steps.append(("bootstrap", build))
+        return status
+
+    monkeypatch.setenv("GINNUNGAGAP_CONFIG_DIR", str(tmp_path))
+    monkeypatch.setattr(cli.bootstrap_module, "run", start)
+    monkeypatch.setattr(
+        cli.firstboot,
+        "refresh_setup_issue",
+        lambda folder: steps.append(("issue", folder)),
+    )
+
+    assert cli.main(["bootstrap", "--no-build"]) == status
+    assert steps == [("bootstrap", False)] + (
+        [("issue", tmp_path)] if status == 0 else []
+    )
+
+
 def test_build_images_command_is_wired(tmp_path, monkeypatch):
     seen = []
     monkeypatch.setattr(

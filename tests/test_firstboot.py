@@ -55,6 +55,7 @@ class Machine:
             install_key=lambda u, k: self.keys.append((u, k)),
             make_dir=self.made.append,
             sudoers_dir=self.sudoers_dir,
+            local_address=lambda: None,
             out=self.lines.append,
         )
 
@@ -118,6 +119,38 @@ def test_without_any_configuration_the_console_says_what_to_do_and_the_next_boot
     assert not (m.state_dir / fb.DONE_MARKER).exists()
     m.info["config"] = b64(VALID)  # the deployer sets it and reboots
     assert m.run() == 0 and (m.config_dir / "ginnungagap.yml").exists()
+
+
+def test_setup_issue_uses_the_address_received_after_firstboot(machine):
+    m = machine()
+    assert m.run() == 1
+    assert "<this machine's address>" in m.issue.read_text()
+
+    fb.refresh_setup_issue(
+        m.config_dir,
+        state_dir=m.state_dir,
+        issue_file=m.issue,
+        local_address=lambda: "192.0.2.17",
+    )
+
+    assert "http://192.0.2.17/" in m.issue.read_text()
+    assert "<this machine's address>" not in m.issue.read_text()
+
+
+@pytest.mark.parametrize("config", [VALID, {"servises": {}}])
+def test_setup_issue_refresh_preserves_guestinfo_result(machine, config):
+    m = machine({"config": b64(config)})
+    m.run()
+    before = m.issue.read_text()
+
+    fb.refresh_setup_issue(
+        m.config_dir,
+        state_dir=m.state_dir,
+        issue_file=m.issue,
+        local_address=lambda: pytest.fail("must preserve the existing console message"),
+    )
+
+    assert m.issue.read_text() == before
 
 
 def test_a_configuration_that_is_already_there_wins_over_guestinfo(machine):
