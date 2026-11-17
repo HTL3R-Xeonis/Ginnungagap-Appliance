@@ -30,11 +30,11 @@ for another place).
 
 **OVA deploy service.** `services.ova_deploy` is `true` (own container `ova-deploy`, built from the TopologyBuilderServices
 repository as it is, with a `/health` endpoint added around it), `external` (the existing one, `ova_deploy.external_url`) or
-`off`. With several ESXi hosts each has its own password: the container looks the password up by the requested host's
-address in the host profiles the app stores (read-only, on every request, so a host added in the app works at once).
-`ova_deploy.esxi_password` is only the fallback for a host without a stored password and may stay empty; if set it is written
-to `rendered/ova-deploy/esxi_password` (mode 0600) and mounted as a secret file, never put into an environment variable or
-another file. The service reads the OVAs from the same template store as the ESXi template API (read-only).
+`off`. The container holds no ESXi password: the Operator sends the user name and password of the active host profile with
+every deploy request, so a host added in the app works at once and there is no second, global password that could belong to
+the wrong host. (`ova_deploy.esxi_password`, the old fallback, was removed; a configuration that still has it is refused with
+a message telling you to delete the line.) The service reads the OVAs from the same template store as the ESXi template API
+(read-only).
 
 ## Operate
 
@@ -48,8 +48,7 @@ python -m ginnungagap restore /var/backups/ginnungagap-backup-20261102-123005 --
 * `apply` stops at the first invalid setting without touching anything. It recreates only the services whose own rendered
   file changed (the gateway for the `Caddyfile`, the generator for its three files); the app and its data are never
   recreated by a change elsewhere. `--no-start` only renders, `--no-build` skips rebuilding the images.
-  The OVA deploy service is recreated when its fallback password changes (it reads it once at its start), and the template
-  store's volume is recreated when the store changes (NFS to a local folder, or another export): Docker never changes an
+  The template store's volume is recreated when the store changes (NFS to a local folder, or another export): Docker never changes an
   existing volume's options, so without that the services would keep reading the old store. It is read-only, nothing is lost.
   On an appliance image without internet use `apply --no-build` (the image carries every service image; a build downloads
   the Python packages again).

@@ -317,13 +317,6 @@ def render(
         )
         files["generator.env"] = (generator_env(config), 0o600)  # holds the API keys
         files.update(extra)
-    if config["services"]["ova_deploy"] is True:
-        # the fallback ESXi password (the hosts' own passwords come from the app's profiles) as a file mounted as a
-        # secret, not as an env file: no quoting rules can alter it. An empty file means "no fallback".
-        files["ova-deploy/esxi_password"] = (
-            config["ova_deploy"]["esxi_password"],
-            0o600,
-        )
     if config["services"]["template_gns3"]:
         files["collector-gns3/gns3_config.yml"] = (
             HEADER + yaml.safe_dump(gns3_collector_config(config), sort_keys=False),

@@ -33,7 +33,6 @@ FILE_OWNERS = {
     "generator/topology_config.yml": "generator",
     "generator/prompt_template.txt": "generator",
     "generator/example_topology.yml": "generator",
-    "ova-deploy/esxi_password": "ova-deploy",  # read once at the start of the container
 }
 
 DATA_VOLUME = "data"

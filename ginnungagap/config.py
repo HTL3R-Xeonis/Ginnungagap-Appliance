@@ -69,13 +69,15 @@ DEFAULTS: dict[str, Any] = {
         "max_retries": 3,
         "request_timeout_seconds": 500,
     },
-    "ova_deploy": {"external_url": "", "esxi_password": "", "timeout_seconds": 600},
+    "ova_deploy": {"external_url": "", "timeout_seconds": 600},
     "logging": {"level": "INFO", "max_lines": 100000},
 }
 
 # settings people may expect from the design but that are deliberately not part of the appliance
 _EXCLUDED = {
-    "services.monitoring": "monitoring is not part of the one-VM solution (it runs separately)"
+    "services.monitoring": "monitoring is not part of the one-VM solution (it runs separately)",
+    "ova_deploy.esxi_password": "was removed: the ESXi password now comes from the Operator's host profile with every "
+    "deploy request - delete this line",
 }
 
 _NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,40}$")
@@ -231,11 +233,6 @@ def _check(config: dict[str, Any]) -> list[str]:
         problems.append(
             "ova_deploy.external_url: needed while services.ova_deploy is external"
         )
-    password = ova["esxi_password"]
-    if not isinstance(password, str):
-        problems.append("ova_deploy.esxi_password: must be text")
-    elif "\n" in password or "\r" in password:
-        problems.append("ova_deploy.esxi_password: must not contain a line break")
     if not isinstance(ova["timeout_seconds"], int) or ova["timeout_seconds"] < 1:
         problems.append("ova_deploy.timeout_seconds: must be a positive number")
     if logging_cfg["level"] not in _LEVELS:
@@ -364,8 +361,6 @@ def redacted(config: dict[str, Any]) -> dict[str, Any]:
     for settings in shown["generator"]["hosted"].values():
         if isinstance(settings, dict) and "api_key" in settings:
             settings["api_key"] = "<hidden>"
-    if shown["ova_deploy"].get("esxi_password"):
-        shown["ova_deploy"]["esxi_password"] = "<hidden>"
     if "password_hash" in shown["appliance"]["auth"]:
         shown["appliance"]["auth"]["password_hash"] = "<hidden>"
     return shown

@@ -404,36 +404,6 @@ def test_the_services_stopped_for_the_store_volume_are_exactly_the_ones_that_mou
     assert users == set(operate.STORE_USERS)
 
 
-def test_a_changed_fallback_password_recreates_the_ova_deploy_service(
-    config_file, bundle, generator_sources
-):
-    """The service reads the secret file once at its start, so an apply that only changes the password must restart it."""
-    own = yaml.safe_load(config_file.read_text())
-    own["services"]["ova_deploy"] = True  # runs here, so it has the secret file
-    config_file.write_text(yaml.safe_dump(own))
-
-    def fetch(url):
-        if url.endswith("/ova/health"):
-            return 200, '{"status": "ok", "hosts_with_password": 0}', None
-        return healthy_fetch(url)
-
-    run_apply(config_file, bundle, generator_sources, Recorder(), fetch=fetch)
-    changed = yaml.safe_load(config_file.read_text())
-    changed["ova_deploy"]["esxi_password"] = "another-lab-password"
-    config_file.write_text(yaml.safe_dump(changed))
-    run = Recorder()
-    code, lines = run_apply(config_file, bundle, generator_sources, run, fetch=fetch)
-    assert code == 0
-    assert run.calls[1][6:] == [
-        "up",
-        "-d",
-        "--force-recreate",
-        "--no-deps",
-        "ova-deploy",
-    ]
-    assert "another-lab-password" not in "\n".join(lines)  # never printed
-
-
 def test_apply_creates_a_missing_local_template_store_folder(
     config_file, bundle, generator_sources, tmp_path
 ):

@@ -69,7 +69,6 @@ appliance: {public_url: http://localhost, timezone: UTC, tls: {mode: "off"}, htt
 templates: {store: {type: local, local: {path: $WORK/store}}, esxi_refresh_minutes: 1, gns3_refresh_minutes: 1}
 generator: {llm_servers: [{name: test, url: "http://127.0.0.1:11434", model: m}]}
 services: {ova_deploy: true}
-ova_deploy: {esxi_password: "smoke-test-password-not-real"}
 YML
 # the renderer runs in a throw-away python container, so the machine needs nothing but Docker
 # (as your own user, so that the key file it writes - mode 0600 - stays readable for docker compose)
@@ -114,22 +113,13 @@ say "generator ALONE"
 up generator && sleep 8
 check "/health is 200" "$(status_of generator http://127.0.0.1:8000/health)" "200"
 
-say "ova-deploy ALONE: the service's own code, a health endpoint added around it, the password as a secret file"
-# the app stores a host's password beside its profile; written after the GNS3 steps, whose collector would otherwise log in with it
-docker run --rm -v "${PROJECT}_data:/data" --entrypoint python "${PROJECT}-collector-gns3" -c "
-import json, os
-os.makedirs('/data/settings_profiles/.secrets', exist_ok=True)
-json.dump({'esxi_password': 'host-specific-not-real'}, open('/data/settings_profiles/.secrets/lab.yml.json', 'w'))"
+say "ova-deploy ALONE: the service's own code, a health endpoint added around it, no password of its own"
 up ova-deploy && sleep 8
-check "/health is 200 (password and store present)" "$(status_of ova-deploy http://127.0.0.1:8000/health)" "200"
-check "the password is not in the container's environment" "$(docker inspect --format '{{.Config.Env}}' "$(compose ps -q ova-deploy)" | grep -c 'smoke-test-password-not-real')" "0"
-check "the secret file holds it, exactly" "$(compose exec -T ova-deploy cat /run/secrets/esxi_password)" "smoke-test-password-not-real"
+check "/health is 200 (store present)" "$(status_of ova-deploy http://127.0.0.1:8000/health)" "200"
+check "the container holds no ESXi password" "$(docker inspect --format '{{.Config.Env}}' "$(compose ps -q ova-deploy)" | grep -c -i 'ESXI_PASSWORD')" "0"
+check "no password secret is mounted" "$(compose exec -T ova-deploy sh -c 'ls /run/secrets 2>/dev/null | wc -l')" "0"
 check "the service's own route is there" "$(inside ova-deploy http://127.0.0.1:8000/openapi.json | grep -c '/deploy/ova')" "1"
-check "the host's own password is found by its ESXi address" "$(compose exec -T ova-deploy python -c "import passwords; print(passwords.login_for('10.255.255.1') == ('root', 'host-specific-not-real'))")" "True"
-check "another address gets the fallback" "$(compose exec -T ova-deploy sh -c "ESXI_PASSWORD=\$(cat /run/secrets/esxi_password) python -c \"import passwords; print(passwords.login_for('10.9.9.9') == ('root', 'smoke-test-password-not-real'))\"")" "True"
-check "the health endpoint counts the host" "$(inside ova-deploy http://127.0.0.1:8000/health | grep -c '"hosts_with_password":1')" "1"
 check "it reads the store read-only" "$(compose exec -T ova-deploy sh -c 'touch /templates/esxi/x 2>&1 | grep -c Read-only')" "1"
-docker run --rm -v "${PROJECT}_data:/data" --entrypoint rm "${PROJECT}-collector-gns3" -f /data/settings_profiles/.secrets/lab.yml.json  # the GNS3 collector reads it too
 
 say "gateway ALONE: starts without the app, answers 502 for it, routes to what runs"
 up gateway && sleep 4

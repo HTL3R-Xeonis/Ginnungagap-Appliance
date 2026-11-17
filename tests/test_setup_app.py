@@ -219,7 +219,6 @@ def test_an_existing_configuration_is_shown_as_already_set_without_its_secrets(
                 },
                 "templates": {"esxi_url": "http://t:8000", "gns3_url": "http://t:8001"},
                 "generator": {"url": "http://t:8002"},
-                "ova_deploy": {"esxi_password": "super-secret"},
             }
         ),
         encoding="utf-8",

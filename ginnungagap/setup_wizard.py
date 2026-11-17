@@ -148,7 +148,6 @@ def build_raw_config(
         },
         "ova_deploy": {
             "external_url": _get(values, "ova_external_url"),
-            "esxi_password": _get(values, "ova_esxi_password"),
             "timeout_seconds": _int(values, "ova_timeout_seconds", 600),
         },
         "logging": {
@@ -164,7 +163,7 @@ def keep_existing_secrets(
     """
     The form never shows a stored secret back, and says "leave blank to keep the current one" - this is what makes that
     true: a secret left blank in the submitted form takes the value of the configuration already applied (if it had
-    one), instead of being validated as missing (password hash, API key) or silently wiped (ESXi fallback password).
+    one), instead of being validated as missing (password hash, API key).
     """
     if existing is None:
         return raw
@@ -179,8 +178,6 @@ def keep_existing_secrets(
     for name, entry in raw["generator"]["hosted"].items():
         if not entry["api_key"] and name in old_hosted:
             entry["api_key"] = old_hosted[name].get("api_key", "")
-    if not raw["ova_deploy"]["esxi_password"]:
-        raw["ova_deploy"]["esxi_password"] = existing["ova_deploy"]["esxi_password"]
     return raw
 
 
@@ -430,7 +427,6 @@ def render_page(
       <div class="reveal" data-shows-when="ova_deploy_mode=external">
         <label>Address of the one that runs elsewhere {_field(values, "ova_external_url", placeholder="http://10.20.20.172:8003")}</label>
       </div>
-      <label>Fallback ESXi password <input type="password" name="ova_esxi_password" placeholder="leave blank to keep the current one"></label>
       <label>Timeout (seconds) {_field(values, "ova_timeout_seconds", kind="number")}</label>
     </fieldset>
 

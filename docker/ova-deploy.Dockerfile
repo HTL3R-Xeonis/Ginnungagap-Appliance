@@ -7,7 +7,7 @@ ENV PYTHONUNBUFFERED=1 PIP_NO_CACHE_DIR=1
 WORKDIR /app
 COPY --from=service requirements.txt .
 RUN pip install -r requirements.txt
-COPY --from=service app.py deploy_ova.py progress_stream.py settings.py passwords.py ./
+COPY --from=service app.py deploy_ova.py progress_stream.py settings.py ./
 COPY docker/ova_deploy_health.py ./
 
 CMD ["uvicorn", "ova_deploy_health:app", "--host", "0.0.0.0", "--port", "8000"]

@@ -194,45 +194,11 @@ def test_fetch_reports_a_refused_connection_instead_of_raising():
 
 def test_ova_deploy_as_a_container_is_asked_through_the_gateway(make_config):
     config = make_config(services={"ova_deploy": True})
-    table = {
-        **ALL_OK,
-        "/ova/health": (
-            200,
-            {
-                "status": "ok",
-                "problems": [],
-                "hosts_with_password": 2,
-                "fallback_password": False,
-            },
-            None,
-        ),
-    }
+    table = {**ALL_OK, "/ova/health": (200, {"status": "ok", "problems": []}, None)}
     by = rows_by_name(st.check(config, "http://g", answers(table)))
     assert by["ova-deploy"].state == "ok"
-    assert by["ova-deploy"].detail == "2 host(s) with a stored password"
-    table["/ova/health"] = (
-        200,
-        {"hosts_with_password": 0, "fallback_password": True},
-        None,
-    )
-    by = rows_by_name(st.check(config, "http://g", answers(table)))
-    assert (
-        by["ova-deploy"].detail
-        == "0 host(s) with a stored password, fallback password set"
-    )
-    table["/ova/health"] = (
-        503,
-        {
-            "status": "degraded",
-            "problems": ["the template store /templates/esxi is missing or empty"],
-        },
-        None,
-    )
-    by = rows_by_name(st.check(config, "http://g", answers(table)))
-    assert (
-        by["ova-deploy"].state == "degraded"
-        and "template store" in by["ova-deploy"].detail
-    )
+    assert "ESXi login comes with each deploy request" in by["ova-deploy"].detail
+    assert "password" not in by["ova-deploy"].detail
 
 
 def test_a_200_without_the_services_own_data_is_not_healthy(make_config):

@@ -45,7 +45,6 @@ generator:
 
 ova_deploy:
   external_url: "http://10.20.20.172:8003"   # used while services.ova_deploy is external
-  esxi_password: ""                          # optional, used while services.ova_deploy is true: the password for a host that has none stored in the app (each host's own comes from its profile)
   timeout_seconds: 600
 
 logging:

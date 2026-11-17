@@ -183,7 +183,6 @@ def test_prefill_never_includes_a_secret_value():
                 "auth": {"mode": "basic", "user": "a", "password_hash": "$2a$x"}
             },
             "services": {"ova_deploy": "off"},
-            "ova_deploy": {"esxi_password": "very-secret"},
             "generator": {
                 "llm_servers": [
                     {"name": "o", "url": "http://10.0.0.1:1", "model": "m"}
@@ -193,7 +192,6 @@ def test_prefill_never_includes_a_secret_value():
         }
     )
     values = wizard.prefill_from(config)
-    assert "very-secret" not in str(values.values())
     assert "also-secret" not in str(values.values())
     assert "$2a$x" not in str(values.values())
     assert values["auth_user"] == "a"
@@ -248,7 +246,6 @@ def test_blank_secrets_keep_the_values_of_the_configuration_already_applied():
                 "url": "http://t:8002",
                 "hosted": {"gemini": {"api_key": "old-key"}},
             },
-            "ova_deploy": {"esxi_password": "old-esxi"},
         }
     )
     form = {
@@ -261,13 +258,16 @@ def test_blank_secrets_keep_the_values_of_the_configuration_already_applied():
     config = config_module.normalise(raw)
     assert config["appliance"]["auth"]["password_hash"] == "$2a$old"
     assert config["generator"]["hosted"]["gemini"]["api_key"] == "old-key"
-    assert config["ova_deploy"]["esxi_password"] == "old-esxi"
 
 
 def test_a_typed_secret_replaces_the_existing_one_and_no_existing_config_changes_nothing():
-    raw = wizard.build_raw_config({**MINIMAL, "ova_esxi_password": "new"})
+    form = {**MINIMAL, "hosted_gemini_enabled": "on", "hosted_gemini_api_key": "new"}
+    raw = wizard.build_raw_config(form)
     assert (
-        wizard.keep_existing_secrets(raw, None)["ova_deploy"]["esxi_password"] == "new"
+        wizard.keep_existing_secrets(raw, None)["generator"]["hosted"]["gemini"][
+            "api_key"
+        ]
+        == "new"
     )
     existing = config_module.normalise(
         {
@@ -278,11 +278,21 @@ def test_a_typed_secret_replaces_the_existing_one_and_no_existing_config_changes
                 "ova_deploy": "off",
             },
             "templates": {"esxi_url": "http://t:8000", "gns3_url": "http://t:8001"},
-            "generator": {"url": "http://t:8002"},
-            "ova_deploy": {"esxi_password": "old"},
+            "generator": {
+                "url": "http://t:8002",
+                "hosted": {"gemini": {"api_key": "old"}},
+            },
         }
     )
     assert (
-        wizard.keep_existing_secrets(raw, existing)["ova_deploy"]["esxi_password"]
+        wizard.keep_existing_secrets(raw, existing)["generator"]["hosted"]["gemini"][
+            "api_key"
+        ]
         == "new"
     )
+
+
+def test_the_wizard_has_no_esxi_password_field_and_ignores_a_submitted_one():
+    assert "ova_esxi_password" not in wizard.render_page({})
+    raw = wizard.build_raw_config({**MINIMAL, "ova_esxi_password": "typed"})
+    assert "esxi_password" not in raw["ova_deploy"]

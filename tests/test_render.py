@@ -354,33 +354,19 @@ def test_an_invalid_project_name_is_refused(
         render(make_config(), out, generator_sources)
 
 
-PASSWORD = "p'a$s\"w#rd \\x"
-
-
 def ova_config(make_config):
-    return make_config(
-        services={"ova_deploy": True}, ova_deploy={"esxi_password": PASSWORD}
-    )
+    return make_config(services={"ova_deploy": True})
 
 
-def test_without_a_fallback_password_the_secret_file_is_empty_not_missing(
-    make_config, out, generator_sources
-):
-    render(make_config(services={"ova_deploy": True}), out, generator_sources)
-    assert (out / "ova-deploy" / "esxi_password").read_text(encoding="utf-8") == ""
-
-
-def test_ova_deploy_as_a_container_gets_a_profile_a_route_and_the_password_as_a_file(
+def test_ova_deploy_as_a_container_gets_a_profile_and_a_route_but_no_password_file(
     make_config, out, generator_sources
 ):
     config = ova_config(make_config)
     written = render(config, out, generator_sources)
-    assert "ova-deploy/esxi_password" in written
-    secret = out / "ova-deploy" / "esxi_password"
-    assert (
-        secret.read_text(encoding="utf-8") == PASSWORD
-    )  # exactly, whatever characters it has
-    assert stat.S_IMODE(secret.stat().st_mode) == 0o600
+    assert "ova-deploy/esxi_password" not in written
+    assert not (
+        out / "ova-deploy"
+    ).exists()  # the ESXi login comes with each deploy request
     assert "ova-deploy" in env_of(read(out, "compose.env"))["COMPOSE_PROFILES"].split(
         ","
     )
@@ -391,23 +377,6 @@ def test_ova_deploy_as_a_container_gets_a_profile_a_route_and_the_password_as_a_
     assert "handle_path /ova/* {\n\t\treverse_proxy ova-deploy:8000" in read(
         out, "Caddyfile"
     )
-
-
-def test_the_esxi_password_is_written_nowhere_but_its_own_file(
-    make_config, out, generator_sources
-):
-    render(ova_config(make_config), out, generator_sources)
-    for path in out.rglob("*"):
-        if path.is_file() and path.name != "esxi_password":
-            assert PASSWORD not in path.read_text(encoding="utf-8"), path
-
-
-def test_switching_the_container_off_removes_the_password_file_again(
-    make_config, out, generator_sources
-):
-    render(ova_config(make_config), out, generator_sources)
-    render(make_config(), out, generator_sources)
-    assert not (out / "ova-deploy").exists()
 
 
 def test_external_ova_deploy_still_routes_to_the_configured_address(

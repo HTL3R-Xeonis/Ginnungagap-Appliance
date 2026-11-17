@@ -51,16 +51,10 @@ def test_the_ova_deploy_service_is_its_own_container_with_the_password_as_a_secr
     service = compose["services"]["ova-deploy"]
     assert service["profiles"] == ["ova-deploy"]
     assert "depends_on" not in service
-    assert service["secrets"] == ["esxi_password"]
-    assert (
-        compose["secrets"]["esxi_password"]["file"]
-        == "./rendered/ova-deploy/esxi_password"
-    )
-    assert "template-store:/templates/esxi:ro" in service["volumes"]
-    assert (
-        "data:/host-data:ro" in service["volumes"]
-    )  # the hosts' passwords, as the app stored them
-    assert service["environment"]["HOST_PROFILES_DIR"] == "/host-data/settings_profiles"
+    # the ESXi login comes with each deploy request: no secret, no host profiles, no app data mounted
+    assert "secrets" not in service and "secrets" not in compose
+    assert service["volumes"] == ["template-store:/templates/esxi:ro"]
+    assert "HOST_PROFILES_DIR" not in service["environment"]
     assert "/health" in " ".join(service["healthcheck"]["test"])
     assert service["build"]["additional_contexts"]["service"].endswith(
         "/TopologyBuilderServices"
@@ -168,9 +162,7 @@ def test_the_profiles_the_renderer_selects_all_exist_in_the_compose_file(
     from ginnungagap.render import profiles
 
     declared = {p for s in compose["services"].values() for p in s["profiles"]}
-    everything = make_config(
-        services={"ova_deploy": True}, ova_deploy={"esxi_password": "x"}
-    )
+    everything = make_config(services={"ova_deploy": True})
     assert set(profiles(make_config())) <= declared
     assert (
         set(profiles(everything)) == declared

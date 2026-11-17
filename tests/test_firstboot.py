@@ -173,9 +173,11 @@ def test_a_password_that_is_not_a_hash_is_ignored_and_never_passed_on(machine):
 def test_the_configuration_text_is_never_written_to_the_output(machine):
     secret = {
         **VALID,
-        "ova_deploy": {
-            "external_url": "http://10.0.0.2:8003",
-            "esxi_password": "sehr-geheim",
+        "generator": {
+            "llm_servers": [
+                {"name": "o", "url": "http://10.0.0.1:11434", "model": "m"}
+            ],
+            "hosted": {"gemini": {"api_key": "sehr-geheim"}},
         },
     }
     m = machine({"config": b64(secret)})

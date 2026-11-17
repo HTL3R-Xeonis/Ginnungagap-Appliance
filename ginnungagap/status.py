@@ -161,10 +161,7 @@ def check(config: dict[str, Any], base: str | None, fetch: Fetch) -> list[Row]:
                 status,
                 body,
                 error,
-                lambda d: (
-                    f"{d.get('hosts_with_password', 0)} host(s) with a stored password"
-                    + (", fallback password set" if d.get("fallback_password") else "")
-                ),
+                lambda d: "ready (ESXi login comes with each deploy request)",
             )
         )
     elif services["ova_deploy"] == "external":
