@@ -329,7 +329,7 @@ def render_page(
         <fieldset class="service">
           <legend>{label}</legend>
           {radio(f"{key}_mode", "bundled", "Runs on this appliance")}
-          {radio(f"{key}_mode", "external", "Runs elsewhere")}
+          {radio(f"{key}_mode", "external", "Runs elsewhere", f"{key}-external")}
           <div class="reveal" data-shows-when='{key}_mode=external'>
             <label>Address of the one that runs elsewhere {_field(values, url_field, placeholder="http://10.0.0.1:8000")}</label>
           </div>

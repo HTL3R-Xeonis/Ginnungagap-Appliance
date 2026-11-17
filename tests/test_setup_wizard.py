@@ -217,6 +217,13 @@ def test_render_page_has_no_javascript():
     assert "<script" not in page.lower()
 
 
+def test_external_service_choices_reveal_their_address_fields():
+    page = wizard.render_page(wizard.prefill_from(None))
+    for service in ("esxi", "gns3", "generator"):
+        assert f'name="{service}_mode" value="external" class="toggle"' in page
+        assert f'name="{service}_url"' in page
+
+
 def test_the_form_posts_to_its_own_address_so_it_works_under_setup_too():
     # Caddy's handle_path strips the /setup prefix: an absolute action="/" would land on the main app.
     page = wizard.render_page(wizard.prefill_from(None))
