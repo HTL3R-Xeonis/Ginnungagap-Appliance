@@ -4,6 +4,8 @@ test suite (see tests/test_setup_app.py for the thin FastAPI shim on top, skippe
 
 from __future__ import annotations
 
+import re
+
 import pytest
 import yaml
 
@@ -213,6 +215,17 @@ def test_render_page_shows_problems_and_escapes_user_input():
 def test_render_page_has_no_javascript():
     page = wizard.render_page({})
     assert "<script" not in page.lower()
+
+
+def test_wizard_placeholders_do_not_suggest_example_addresses_or_settings():
+    page = wizard.render_page(wizard.prefill_from(None))
+    placeholders = re.findall(r'placeholder="([^"]*)"', page)
+    for placeholder in placeholders:
+        assert not re.search(
+            r"https?://|(?:\d{1,3}\.){3}\d{1,3}|/|\b(?:example|e\.g\.|admin)\b",
+            placeholder,
+            re.IGNORECASE,
+        )
 
 
 def test_external_service_choices_reveal_their_address_fields():

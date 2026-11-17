@@ -279,12 +279,9 @@ def _esc(value: str) -> str:
     return html.escape(value, quote=True)
 
 
-def _field(
-    values: Mapping[str, str], name: str, *, kind: str = "text", placeholder: str = ""
-) -> str:
+def _field(values: Mapping[str, str], name: str, *, kind: str = "text") -> str:
     value = _esc(_get(values, name))
-    ph = f' placeholder="{_esc(placeholder)}"' if placeholder else ""
-    return f'<input type="{kind}" name="{name}" value="{value}"{ph}>'
+    return f'<input type="{kind}" name="{name}" value="{value}">'
 
 
 def render_page(
@@ -328,7 +325,7 @@ def render_page(
           {radio(f"{key}_mode", "bundled", "Runs on this appliance")}
           {radio(f"{key}_mode", "external", "Runs elsewhere", f"{key}-external")}
           <div class="reveal" data-shows-when='{key}_mode=external'>
-            <label>Address of the one that runs elsewhere {_field(values, url_field, placeholder="http://10.0.0.1:8000")}</label>
+            <label>Service URL {_field(values, url_field)}</label>
           </div>
         </fieldset>"""
 
@@ -336,7 +333,7 @@ def render_page(
         f"""
         <div class="llm-row">
           <input type="text" name="llm_{i}_name" value="{_esc(_get(values, f"llm_{i}_name"))}" placeholder="name">
-          <input type="text" name="llm_{i}_url" value="{_esc(_get(values, f"llm_{i}_url"))}" placeholder="http://10.0.0.1:11434">
+          <input type="text" name="llm_{i}_url" value="{_esc(_get(values, f"llm_{i}_url"))}" placeholder="Ollama URL">
           <input type="text" name="llm_{i}_model" value="{_esc(_get(values, f"llm_{i}_model"))}" placeholder="model">
         </div>"""
         for i in range(1, LLM_ROWS + 1)
@@ -392,8 +389,8 @@ def render_page(
   <form method="post" action="">
     <fieldset>
       <legend>Appliance</legend>
-      <label>Public URL {_field(values, "public_url", placeholder="https://ginnungagap.lab.example")}</label>
-      <label>Timezone {_field(values, "timezone", placeholder="Europe/Vienna")}</label>
+      <label>Public URL {_field(values, "public_url")}</label>
+      <label>Timezone {_field(values, "timezone")}</label>
       <label>TLS
         <select name="tls_mode">
           <option value="off" {"selected" if _get(values, "tls_mode", "off") == "off" else ""}>off</option>
@@ -410,7 +407,7 @@ def render_page(
       {radio("auth_mode", "none", "No login at the gateway")}
       {radio("auth_mode", "basic", "Basic auth at the gateway", "auth")}
       <div class="reveal" data-shows-when="auth_mode=basic">
-        <label>User {_field(values, "auth_user", placeholder="admin")}</label>
+        <label>User {_field(values, "auth_user")}</label>
         <label>Password <input type="password" name="auth_password" placeholder="leave blank to keep the current one"></label>
       </div>
     </fieldset>
@@ -425,7 +422,7 @@ def render_page(
       {radio("ova_deploy_mode", "external", "Runs elsewhere", "ova-ext")}
       {radio("ova_deploy_mode", "off", "Switched off")}
       <div class="reveal" data-shows-when="ova_deploy_mode=external">
-        <label>Address of the one that runs elsewhere {_field(values, "ova_external_url", placeholder="http://10.20.20.172:8003")}</label>
+        <label>Service URL {_field(values, "ova_external_url")}</label>
       </div>
       <label>Timeout (seconds) {_field(values, "ova_timeout_seconds", kind="number")}</label>
     </fieldset>
@@ -434,10 +431,10 @@ def render_page(
       <legend>Template store</legend>
       {radio("store_type", "local", "Local folder")}
       {radio("store_type", "nfs", "NFS export", "nfs")}
-      <label>Local path {_field(values, "store_local_path", placeholder="/srv/templates")}</label>
+      <label>Local path {_field(values, "store_local_path")}</label>
       <div class="reveal" data-shows-when="store_type=nfs">
-        <label>NFS server {_field(values, "store_nfs_server", placeholder="10.20.20.180")}</label>
-        <label>NFS export {_field(values, "store_nfs_export", placeholder="/mnt/pool/templates")}</label>
+        <label>NFS server {_field(values, "store_nfs_server")}</label>
+        <label>NFS export {_field(values, "store_nfs_export")}</label>
       </div>
       <label>ESXi refresh (minutes) {_field(values, "esxi_refresh_minutes", kind="number")}</label>
       <label>GNS3 refresh (minutes) {_field(values, "gns3_refresh_minutes", kind="number")}</label>
