@@ -152,7 +152,9 @@ if [ "$IMAGE" = 1 ]; then
   install -d -m 0755 "$SSHD_DROPIN_DIR"
   cat >"$SSHD_DROPIN" <<'SSHDDROPIN'
 # Written by the Ginnungagap installer (--image): the admin logs in with the initial password shown on the VM console.
+# root never logs in over SSH (Debian's default only allows keys; this keeps it so even if a key is added to root).
 PasswordAuthentication yes
+PermitRootLogin no
 SSHDDROPIN
   chmod 0644 "$SSHD_DROPIN"
   [ "$SYSTEMD" = 1 ] && [ "$UNIT_DIR" = /etc/systemd/system ] && command -v systemctl >/dev/null 2>&1 && [ -d /run/systemd/system ] \

@@ -60,3 +60,13 @@ def test_the_images_of_an_older_bundle_are_removed_after_the_containers_and_befo
     assert order == sorted(order)
     script = SCRIPT.read_text()
     assert "ginnungagap build-images --remove-other-images" in script
+
+
+def test_root_is_locked_and_the_journal_of_the_build_is_deleted_before_the_free_space_is_zeroed():
+    script = SCRIPT.read_text()
+    assert "usermod --password '!' root" in script
+    # journalctl never vacuums the directories of earlier machine ids and keeps active files: everything is deleted
+    assert "rm -rf /var/log/journal/*" in script
+    assert "systemctl stop systemd-journald.socket" in script
+    text = run("--dry-run", "--zero-free-space").stdout
+    assert text.index("delete the logs of every build boot") < text.index("zeros")

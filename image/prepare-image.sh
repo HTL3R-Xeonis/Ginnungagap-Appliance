@@ -4,7 +4,8 @@
 # and removes every Docker image that the current compose project does not use (a service of an older bundle must not stay in
 # the image), and everything that belongs to one particular machine: the configuration, the services' data, the SSH host keys,
 # the machine id, every authorized SSH key, passwordless sudo rules, shell histories and logs, and the admin's generated
-# initial SSH password and the login account's password hash. The sshd drop-in stays for the next first boot.
+# initial SSH password, the login account's password hash and the template's root password hash (root is locked), and the
+# journal of every build boot. The sshd drop-in stays for the next first boot.
 #
 # Run it on a machine on which `install.sh --install-packages --image --no-start` was run. It is DESTRUCTIVE for what it
 # removes, so it asks for --yes; --dry-run only lists what it would do.
@@ -92,6 +93,8 @@ remove_access() {
   if account=$(getent passwd 1000); then
     usermod --password '!' "${account%%:*}"
   fi
+  # root keeps the template's own password hash otherwise; no copy of the image should open a root login with it
+  usermod --password '!' root
   # usermod keeps the previous shadow file; Debian can also make a daily backup.
   rm -f /etc/shadow- /var/backups/shadow.bak
   find /root /home -name authorized_keys -type f -delete 2>/dev/null || true
@@ -113,6 +116,16 @@ clean_logs() {
   rm -rf /tmp/* /var/tmp/* 2>/dev/null || true
 }
 
+clean_journal() {
+  # journalctl only vacuums the directory of the CURRENT machine id, never the ones of earlier builds, and it keeps the
+  # active files, so the logs of every build boot would stay. Stop the journal (and its sockets, or the next message starts
+  # it again), then delete everything; the next boot of a copy creates it from scratch. Nothing logs to it afterwards.
+  journalctl --rotate >/dev/null 2>&1 || true
+  journalctl --vacuum-time=1s >/dev/null 2>&1 || true
+  systemctl stop systemd-journald.socket systemd-journald-dev-log.socket systemd-journald-audit.socket systemd-journald.service >/dev/null 2>&1 || true
+  rm -rf /var/log/journal/* /run/log/journal/* 2>/dev/null || true
+}
+
 zero_free_space() {
   dd if=/dev/zero of=/zero.fill bs=1M status=none 2>/dev/null || true
   sync
@@ -129,6 +142,7 @@ act "remove staged and rejected setup files" remove_staged_configuration
 act "remove the SSH host keys, the machine id and DHCP leases" remove_identity
 act "remove the login password hash, shadow backups, authorized SSH keys, passwordless sudo rules and shell histories" remove_access
 act "clean logs, package caches and temporary files" clean_logs
+act "stop the journal and delete the logs of every build boot (/var/log/journal)" clean_journal
 [ "$ZERO" = 1 ] && act "fill the free disk space with zeros" zero_free_space
 if [ "$DRY" = 0 ]; then
   sync

@@ -58,7 +58,7 @@ What was done (and verified on the lab ESXi) to get the OVA, in order:
    builds and pulls the images of every service for offline startup and removes every other tagged Docker image
    (`ginnungagap build-images --remove-other-images`: a service of an older bundle, such as the dropped `ova-deploy`, must not
    stay in the image). It removes the configuration, staged and rejected Wizard submissions, containers,
-   volumes, SSH keys, the generated admin SSH password, the login account's password hash and shadow backups, machine ID,
+   volumes, SSH keys, the generated admin SSH password, the login account's password hash and shadow backups (root's password is locked too), the journal of the build boots, machine ID,
    DHCP leases, passwordless sudo rules, histories and logs. The login account stays in the image so each clone can set up
    its own SSH access at first boot. Shut the VM down with
    `systemctl poweroff` and keep it off until export to avoid creating new keys and a machine ID inside the image.

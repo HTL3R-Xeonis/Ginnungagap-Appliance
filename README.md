@@ -219,9 +219,10 @@ Password: <16 random characters> (you must change it at the first login)
 - **Deployer-set access**: with `admin_password_hash` or `ssh_authorized_key` in guestinfo nothing is generated and the console
   says `(password/key set by the deployer)`. With only a key, the password of the login user is locked, otherwise the
   template's own Debian password would still open SSH.
-- **Password login** is switched on by the drop-in `/etc/ssh/sshd_config.d/10-ginnungagap.conf` (`PasswordAuthentication yes`)
+- **Password login** is switched on by the drop-in `/etc/ssh/sshd_config.d/10-ginnungagap.conf` (`PasswordAuthentication yes`, `PermitRootLogin no`)
   that `install.sh --image` writes; sshd takes the first value it reads, so it wins over a later `50-cloud-init.conf`.
-  `image/prepare-image.sh` removes the generated password (and the decision that it was generated) but keeps the drop-in.
+  `image/prepare-image.sh` removes the generated password (and the decision that it was generated), locks root's password and
+  deletes the journal of the build boots, but keeps the drop-in.
 
 Change the password at the first login, or switch password login off once a key is in place.
 

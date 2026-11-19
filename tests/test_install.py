@@ -270,6 +270,7 @@ def test_an_image_switches_ssh_password_login_on_through_a_drop_in(place):
     assert install(place, "--image").returncode == 0
     dropin = place["sshd"] / "10-ginnungagap.conf"
     assert "PasswordAuthentication yes" in dropin.read_text()
+    assert "PermitRootLogin no" in dropin.read_text()
     assert dropin.stat().st_mode & 0o777 == 0o644
 
 
