@@ -1,7 +1,7 @@
 # syntax=docker/dockerfile:1
 # The ESXi template collector as its own service: reads the YAML files of the template store and writes templates.yml
 # for the template API, then waits REFRESH_SECONDS and does it again.
-FROM python:3.12-slim
+FROM python:3.15-slim
 
 ENV PYTHONUNBUFFERED=1 PIP_NO_CACHE_DIR=1
 WORKDIR /app

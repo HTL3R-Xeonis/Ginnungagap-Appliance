@@ -1,7 +1,7 @@
 # syntax=docker/dockerfile:1
 # The GNS3 template collector as its own service: takes its hosts (and their ESXi passwords) from the app's host profiles
 # in the read-only mounted data volume, asks each host's GNS3 VM for its templates and writes gns3_templates.yml.
-FROM python:3.12-slim
+FROM python:3.15-slim
 
 ENV PYTHONUNBUFFERED=1 PIP_NO_CACHE_DIR=1
 WORKDIR /app

@@ -5,7 +5,7 @@
 # a second copy of Caddy's hashing code. This container never gets the Docker socket or sudo: see ginnungagap/bootstrap.py
 # (how it is reached before any configuration exists) and ginnungagap/setup_watcher.py (how a submitted configuration
 # reaches the host).
-FROM python:3.12-slim
+FROM python:3.15-slim
 
 ENV PYTHONUNBUFFERED=1 PIP_NO_CACHE_DIR=1
 WORKDIR /app

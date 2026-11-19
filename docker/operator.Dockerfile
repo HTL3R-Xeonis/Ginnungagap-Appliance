@@ -2,7 +2,7 @@
 # Ginnungagap (the app, Igdrasyl) with Mjonyr (the builder library; its Python distribution is still called topologybuilder),
 # built from the two sibling repositories (compose.yml gives them as the named build contexts "operator" and "builder"). Run from /srv/ginnungagap because the app serves its static
 # files and the licence from there.
-FROM python:3.12-slim
+FROM python:3.15-slim
 
 ENV PYTHONUNBUFFERED=1 PIP_NO_CACHE_DIR=1
 
