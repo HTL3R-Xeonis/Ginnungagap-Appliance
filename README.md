@@ -22,7 +22,7 @@ documentation and next to the plain role in the tables of `ginnungagap status`, 
 | Code name | Plain role | Repository | Component key | Services |
 |---|---|---|---|---|
 | **Igdrasyl** | the web app (operator): GUI, gateway, backends | `HTL3R-Xeonis/Igdrasyl` (formerly TopologyOperator) | `operator` | `ginnungagap` |
-| **Mjonyr** | the builder: deploy and orchestration library with its CLI | `HTL3R-Xeonis/Mjonyr` (formerly TopologyBuilder) | `builder` | `ginnungagap` (it is the app's library) |
+| **Mjonyr** | the builder: deploy and orchestration library with its CLI | `HTL3R-Xeonis/TopologyBuilder` (the repository keeps its name) | `builder` | `ginnungagap` (it is the app's library) |
 | **Hugyn and Munyn** | the template services: **Hugyn** is the ESXi side, **Munyn** the GNS3 side | `HTL3R-Xeonis/Hugyn-and-Munyn` (formerly Docker-Server-Files) | `template-services` | Hugyn: `template-esxi`, `collector-esxi`; Munyn: `template-gns3`, `collector-gns3` |
 | **Mimyr** | the generator: LLM topology and configuration drafts | `HTL3R-Xeonis/Mimyr` (formerly TopologyGenerator, checkout folder topology-generator) | `generator` | `generator` |
 | **Idynoun** | the updater: `ginnungagap update` (check, apply, roll back) | this repository | `appliance` | - |
@@ -48,7 +48,7 @@ docker compose --env-file rendered/compose.env up -d --build
 the template store), `Caddyfile`, `operator.env`, `generator/`, `generator.env` (the only file with API keys, mode 0600),
 `collector-gns3/`. Files are rewritten in place because Docker mounts single files by inode.
 
-The compose file builds the services from the sibling checkouts `../Igdrasyl`, `../Mjonyr`, `../Hugyn-and-Munyn` and `../Mimyr`
+The compose file builds the services from the sibling checkouts `../Igdrasyl`, `../TopologyBuilder`, `../Hugyn-and-Munyn` and `../Mimyr`
 (set `REPOS_DIR` for another place; checkouts that still have the old folder names are recorded under the new ones by
 `ginnungagap update --adopt`, see "Names before the code names").
 
@@ -109,7 +109,17 @@ python -m ginnungagap restore /var/backups/ginnungagap-backup-20261102-123005 --
   and HTTP 503 before setup or when a bundled service is down or degraded. Services configured to run elsewhere
   are listed without probing them. This endpoint follows the site's Basic Auth setting.
 * `backup` writes a folder (mode 0700) with a copy of the config file and `data.tgz`, the app's data volume (host profiles,
-  projects, designs, notes). `restore` stops the app, replaces that volume and starts it again; it needs `--yes`.
+  projects, designs, notes, the accounts and the session secret, snippet topics, the audit logs and the app log). It runs a
+  throw-away container of the Operator's own image, so it needs no network. `restore` stops the app, replaces that volume and
+  starts it again; it needs `--yes`.
+* **Everything the Operator keeps is on the `data` volume** (`render.py` sets every `TOPOLOGYOPERATOR_*` file and folder to a path under
+  `/data`; the app log `logs/` in the image is a link to `/data/logs`). Nothing important is in the container's writable layer, so an
+  update, `apply` or a new image that recreates the container loses no account and logs nobody out. An appliance installed
+  before that (accounts in the container) is carried over once, by `apply` and by the update, **before** the container is recreated
+  (`operate.migrate_operator_state`: `docker cp` out, written into the volume only where the file is missing, never overwritten;
+  if it fails nothing is recreated). The first administrator is made by the Operator itself when `users.json` does not exist.
+  Rolling back to a release from before this change brings the old render with it: the files stay on the volume but that
+  Operator does not read them.
 
 ## Install on a machine
 
@@ -120,7 +130,7 @@ sudo ginnungagap apply /etc/ginnungagap/ginnungagap.yml
 ```
 
 It needs Docker with the compose plugin, `python3` (3.12+) with `python3-yaml`, and the four sibling repositories the images
-are built from (Igdrasyl, Mjonyr, Hugyn-and-Munyn, Mimyr). A systemd unit (`ginnungagap.service`) applies the configuration at boot; the containers restart by
+are built from (Igdrasyl, TopologyBuilder, Hugyn-and-Munyn, Mimyr). A systemd unit (`ginnungagap.service`) applies the configuration at boot; the containers restart by
 themselves, so this only picks up an edited file. Running `install.sh` again updates the program and keeps your
 configuration; `sudo ./install.sh --uninstall` removes program, command and unit and keeps the configuration and the data.
 
@@ -368,7 +378,7 @@ ginnungagap versions                      # the same as update --versions
 | `--list`, `--versions`, `--history` | the releases the source offers, the installed release with each component's version, every release installed so far |
 | `--adopt` | records the components installed by hand (`install.sh --repos-dir /srv/repos`) as release `adopted` (copies, links, `install.env`); the first `--apply` does it itself. Nothing in the old folder is changed |
 | `--set-token` | optional GitHub token from stdin into the token file (see the `update:` block); only needed for private repositories or the anonymous rate limit |
-| `--resume` | finishes or rolls back an update that was interrupted (the boot unit runs it): before anything that runs was touched it is discarded, afterwards it is rolled back |
+| `--resume` | finishes or rolls back an update that was interrupted (the boot unit runs it): before anything that runs was touched it is discarded, afterwards it is rolled back. It first stops a `docker compose build` that the killed update left running (it would move the `latest` image tag again), and puts the old images back **by image id**. Also what to run after exit 3: it repeats the rollback until it works |
 
 Exit codes: `0` ok / up to date, `10` update available (`--check`), `1` error before any change (no network, GitHub error or rate
 limit - the message says when to try again, unknown release), `2` the update failed and was **rolled back**, `3` it failed and the
@@ -378,6 +388,12 @@ signature wrong, an older release without `--allow-downgrade`, no confirmation).
 
 Good to know:
 
+* **"Healthy" means healthy.** A restarted service with a health check must report `healthy` (checked every 10 s), one without must stay up
+  for 6 s, and a container that restarts by itself fails the step at once, not only the final 120 s check. After a rollback the
+  Operator's reported version must be the old one again; if it is not the rollback is reported as failed (exit 3), not as done.
+* **Rolling back the first update of a machine that was adopted** (the checkout in `/srv/repos` has an `install.sh` from before the
+  updater): that script is not run (it does not know `--state-dir` and expects the old folder names); the previous program files are
+  copied back. That program has no `update` command, so run the new release's `install.sh` again to get it back.
 * **Anonymous by default.** No `Authorization` header is sent unless the token file exists; a token is only ever sent to the API host, never to the
   download address GitHub redirects to. When GitHub's rate limit (60 requests per hour and address without a token) is hit, the
   message names the time to try again and how to store a token.
@@ -386,7 +402,7 @@ Good to know:
   shows the plan after checking the manifest and the signature and changes nothing.
 * **Names before the code names.** Releases and machines from before the repositories got their code names keep working; the
   old names are only ever read, never written: (1) `--adopt` (and the first `--apply`) finds checkouts under the old folder names:
-  old `TopologyOperator`, `TopologyBuilder`, `Docker-Server-Files`, `topology-generator` or `TopologyGenerator`; it records them under
+  old `TopologyOperator`, `Docker-Server-Files`, `topology-generator` or `TopologyGenerator` (the builder keeps its repository name, `TopologyBuilder`; a folder `Mjonyr` is read too); it records them under
   the current ones, also when only some of them still have the old name; the old folders stay as they were. (2) An update state that
   was written with the old component keys (`docker-server-files`, `topology-generator`) or old folder names under `releases/` and
   `components/` is renamed once, under the update lock, by the next `--apply`, `--rollback`, `--resume` or `--adopt`; the old name
@@ -437,7 +453,7 @@ the app once and mounts them. Tests: `tests/test_update_request.py` (the request
 
 A release of the appliance is a GitHub release of **this** repository whose files are everything the appliance needs:
 `components.json` (the manifest), `SHA256SUMS`, optionally `components.json.sig`, and one source tarball per component
-(`Ginnungagap-Appliance-<v>.tar.gz`, `Igdrasyl-<v>.tar.gz`, `Mjonyr-<v>.tar.gz`, `Hugyn-and-Munyn-<v>.tar.gz`,
+(`Ginnungagap-Appliance-<v>.tar.gz`, `Igdrasyl-<v>.tar.gz`, `TopologyBuilder-<v>.tar.gz`, `Hugyn-and-Munyn-<v>.tar.gz`,
 `Mimyr-<v>.tar.gz`, each with one top folder of its own name). The tooling lives in `release/`; **nothing in it
 publishes or pushes on its own**.
 

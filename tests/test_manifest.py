@@ -358,7 +358,7 @@ def test_a_name_the_program_has_never_heard_of_is_fine_when_the_asset_is_named_a
     [
         (
             "o/Brand-New-Name",
-            "Mjonyr-1.0.0.tar.gz",
+            "TopologyBuilder-1.0.0.tar.gz",
         ),  # the asset belongs to another repository
         ("o/Brand-New-Name", "Brand-New-Name-9.9.9.tar.gz"),  # another version
         ("o/Brand-New-Name", "Brand-New-Name-1.0.0.zip"),

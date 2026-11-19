@@ -2,7 +2,7 @@
 # Installs the Ginnungagap appliance on this machine: the program under PREFIX, the `ginnungagap` command, a configuration
 # folder (your ginnungagap.yml stays where it is on a re-run) and a systemd unit that applies the configuration at boot.
 # The services themselves run as containers, so Docker with compose has to be installed already, and so do the sibling
-# repositories the images are built from (Igdrasyl, Mjonyr, Hugyn-and-Munyn, Mimyr).
+# repositories the images are built from (Igdrasyl, TopologyBuilder, Hugyn-and-Munyn, Mimyr).
 #
 #   sudo ./install.sh --repos-dir /srv/repos           # install (or update) and start
 #   sudo ./install.sh --uninstall                      # remove program, command and units; config and data are kept
@@ -117,7 +117,7 @@ if [ "$START" = 1 ]; then
 fi
 # the current folder name of each checkout, then the names it had before the code names (appliance images up to v1.2.x):
 # those are read, never created
-COMPONENT_REPOS="Igdrasyl:TopologyOperator Mjonyr:TopologyBuilder Hugyn-and-Munyn:Docker-Server-Files Mimyr:topology-generator:TopologyGenerator"
+COMPONENT_REPOS="Igdrasyl:TopologyOperator TopologyBuilder:Mjonyr Hugyn-and-Munyn:Docker-Server-Files Mimyr:topology-generator:TopologyGenerator"
 has_repos() {  # every checkout the images are built from is in folder $1 under its current name (a symlink to a folder counts)
   local entry
   for entry in $COMPONENT_REPOS; do [ -d "$1/${entry%%:*}" ] || return 1; done
@@ -453,7 +453,7 @@ fi
 
 echo "Installed: program in $APP, command $WRAPPER, configuration in $CONFIG_DIR."
 if [ "$LEGACY_LAYOUT" = 1 ]; then
-  echo "The checkouts in $REPOS_DIR still carry the names of before the code names (TopologyOperator, TopologyBuilder, Docker-Server-Files, topology-generator); the images are built from the current ones (Igdrasyl, Mjonyr, Hugyn-and-Munyn, Mimyr)."
+  echo "The checkouts in $REPOS_DIR still carry the names of before the code names (TopologyOperator, Docker-Server-Files, topology-generator); the images are built from the current ones (Igdrasyl, TopologyBuilder, Hugyn-and-Munyn, Mimyr)."
   echo "Run  sudo ginnungagap update --adopt  (copies checkouts under the current names and leaves $REPOS_DIR alone; for the update state's own components folder it renames in place), then  sudo ginnungagap apply $CONFIG_DIR/ginnungagap.yml."
 fi
 if [ "$IMAGE" = 1 ]; then

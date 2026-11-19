@@ -551,3 +551,86 @@ def test_the_update_panels_folders_reach_the_env_files(
     assert operator["TOPOLOGYOPERATOR_UPDATE_STATE_DIR"] == "/update-state"
     assert operator["TOPOLOGYOPERATOR_UPDATE_REQUEST_DIR"] == "/update-requests"
     assert operator["TOPOLOGYOPERATOR_AUDIT_LOG_FILE"] == "/data/audit.log"
+
+
+# ---- the Operator's state lives on the data volume (it was lost on every container recreate) ----
+
+OPERATOR_STATE_ON_THE_VOLUME = {
+    "TOPOLOGYOPERATOR_USERS_FILE": "/data/users.json",
+    "TOPOLOGYOPERATOR_SESSION_SECRET_FILE": "/data/session_secret.key",
+    "TOPOLOGYOPERATOR_AI_CONFIG_FILE": "/data/ai_config.json",
+    "TOPOLOGYOPERATOR_PUSH_AUDIT_FILE": "/data/push_audit.jsonl",
+    "TOPOLOGYOPERATOR_CONFIG_SNIPPETS_DIR": "/data/config_snippets",
+    "TOPOLOGYOPERATOR_SETTINGS_PROFILES_DIR": "/data/settings_profiles",
+    "TOPOLOGYOPERATOR_PROJECTS_DIR": "/data/projects",
+    "TOPOLOGYOPERATOR_DESIGN_FILE": "/data/design_state.json",
+    "TOPOLOGYOPERATOR_LAYOUT_FILE": "/data/layout.json",
+    "TOPOLOGYOPERATOR_LABELS_FILE": "/data/label_layout.json",
+    "TOPOLOGYOPERATOR_NOTES_FILE": "/data/node_notes.json",
+    "TOPOLOGYOPERATOR_HOLDS_FILE": "/data/holds.json",
+    "TOPOLOGYOPERATOR_PROJECT_SELECTIONS": "/data/project_selections.json",
+    "TOPOLOGYOPERATOR_DOWNLOAD_DIR": "/data/downloads",
+    "TOPOLOGYOPERATOR_AUDIT_LOG_FILE": "/data/audit.log",
+}
+
+
+def test_users_session_secret_and_every_other_state_file_of_the_operator_are_on_the_data_volume(
+    make_config, out, generator_sources
+):
+    render(make_config(), out, generator_sources)
+    operator = env_of(read(out, "operator.env"))
+    for name, path in OPERATOR_STATE_ON_THE_VOLUME.items():
+        assert operator.get(name) == path, name
+    # the three paths the Operator insists on being absolute and shared (app/shared_state.py) are among them
+    for name in (
+        "TOPOLOGYOPERATOR_USERS_FILE",
+        "TOPOLOGYOPERATOR_SESSION_SECRET_FILE",
+        "TOPOLOGYOPERATOR_AI_CONFIG_FILE",
+    ):
+        assert os.path.isabs(operator[name])
+
+
+def test_every_file_or_folder_the_operator_may_write_is_rendered_if_the_operator_repository_is_next_to_this_one():
+    """Drift guard: a new TOPOLOGYOPERATOR_*_FILE/_DIR in the app must be put on the volume here, or it is lost on a recreate."""
+    app = rd.Path(__file__).resolve().parents[2] / "TopologyOperator" / "app"
+    if not app.is_dir():
+        pytest.skip("the Operator repository is not next to this one")
+    used = set()
+    for source in app.rglob("*.py"):
+        used |= set(re.findall(r"TOPOLOGYOPERATOR_[A-Z_]+", source.read_text()))
+    state = {n for n in used if re.search(r"_(FILE|DIR|PROFILES_DIR|SELECTIONS)$", n)}
+    # not state of this appliance: the folder of a share the compose file mounts itself, the two update folders it mounts,
+    # the gateway's own files (this appliance runs no gateway), and the settings of the active host profile
+    not_state = {
+        "TOPOLOGYOPERATOR_TEMPLATE_SHARE_DIR",
+        "TOPOLOGYOPERATOR_UPDATE_STATE_DIR",
+        "TOPOLOGYOPERATOR_UPDATE_REQUEST_DIR",
+        "TOPOLOGYOPERATOR_BACKEND_PORTS_FILE",
+        "TOPOLOGYOPERATOR_GATEWAY_LOG_FILE",
+        "TOPOLOGYOPERATOR_SETTINGS",
+    }
+    unrendered = sorted(
+        n for n in state - not_state if n not in OPERATOR_STATE_ON_THE_VOLUME
+    ) + sorted(
+        n
+        for n in rd._OPERATOR_PATHS
+        if n.startswith("TOPOLOGYOPERATOR_")
+        and n not in OPERATOR_STATE_ON_THE_VOLUME
+        and n != "TOPOLOGYOPERATOR_HOST_DEFAULTS"
+    )
+    assert unrendered == []
+
+
+def test_the_legacy_state_names_are_where_the_operator_keeps_them_without_the_variables():
+    # the relative defaults of the app (its working directory is /srv/ginnungagap): what an older appliance has in its container
+    assert rd.OPERATOR_WORKDIR == "/srv/ginnungagap"
+    assert set(rd.OPERATOR_LEGACY_STATE) == {
+        "users.json",
+        "session_secret.key",
+        "ai_config.json",
+        "push_audit.jsonl",
+        "audit.log",
+        "audit.log.1",
+        "config_snippets",
+        "logs",
+    }

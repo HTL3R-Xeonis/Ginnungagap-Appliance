@@ -94,14 +94,11 @@ def test_the_first_apply_adopts_the_old_checkouts_and_updates_everything(world):
     # every component but the operator (1.2.1 = 1.2.1) was 'unknown' and is replaced
     link = world.layout.components
     # (the old checkouts carry the names of before the code names: they are recorded under the current ones)
-    assert os.readlink(link / "Mjonyr") == "../releases/Mjonyr/1.0.0"
+    assert os.readlink(link / "TopologyBuilder") == "../releases/TopologyBuilder/1.0.0"
     assert os.readlink(link / "Mimyr") == "../releases/Mimyr/1.0.0"
     assert os.readlink(link / "Igdrasyl") == "../releases/Igdrasyl/adopted-1"
-    assert (link / "Mjonyr" / "pyproject.toml").is_file()
-    assert (
-        not (link / "TopologyBuilder").exists()
-        and not (link / "topology-generator").exists()
-    )
+    assert (link / "TopologyBuilder" / "pyproject.toml").is_file()
+    assert not (link / "Mjonyr").exists() and not (link / "topology-generator").exists()
     # the old checkout was copied (without .git), never touched
     assert (
         world.layout.releases / "Ginnungagap-Appliance" / "adopted-1" / "install.sh"

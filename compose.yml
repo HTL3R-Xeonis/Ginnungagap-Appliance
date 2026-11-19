@@ -6,8 +6,10 @@
 
 name: ginnungagap
 
+# 10 s, not 30 s: an update waits for the first healthy answer of every restarted service, and a check only runs once per interval
+# (three failed checks in a row still take 30 s to mark a service unhealthy, so a short hiccup is not reported)
 x-healthcheck-python: &probe
-  interval: 30s
+  interval: 10s
   timeout: 5s
   retries: 3
   start_period: 20s
@@ -31,7 +33,7 @@ services:
       dockerfile: docker/operator.Dockerfile
       additional_contexts:
         operator: ${REPOS_DIR:-..}/Igdrasyl
-        builder: ${REPOS_DIR:-..}/Mjonyr
+        builder: ${REPOS_DIR:-..}/TopologyBuilder
     restart: unless-stopped
     env_file: [rendered/operator.env]
     volumes:

@@ -20,5 +20,9 @@ RUN python /tmp/operator_requirements.py pyproject.toml > requirements.txt && pi
 COPY --from=operator /app ./app
 COPY --from=operator /LICENSE ./LICENSE
 
+# The app log (./logs/app.log, relative to the working directory) goes to the data volume like everything else the app keeps, so a
+# recreated container does not lose it; the folder is made at start because the volume is mounted over /data at run time.
+RUN ln -s /data/logs /srv/ginnungagap/logs
+
 EXPOSE 8123
-CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8123"]
+CMD ["sh", "-c", "mkdir -p /data/logs && exec uvicorn app.main:app --host 0.0.0.0 --port 8123"]

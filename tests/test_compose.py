@@ -207,7 +207,7 @@ def test_the_requirements_script_leaves_out_topologybuilder_and_keeps_the_pins(
 ):
     pyproject = tmp_path / "pyproject.toml"
     pyproject.write_text(
-        '[project]\nname = "x"\ndependencies = [\n "topologybuilder @ git+https://example/tb.git@dev",\n "fastapi==0.1.0",\n "uvicorn[standard]==0.2.0",\n]\n'
+        '[project]\nname = "x"\ndependencies = [\n "topologybuilder @ git+https://example/tb.git@Mjonyr",\n "fastapi==0.1.0",\n "uvicorn[standard]==0.2.0",\n]\n'
     )
     result = subprocess.run(
         [
@@ -247,3 +247,16 @@ def test_the_requirements_script_on_the_real_app_if_it_is_next_to_this_repositor
     lines = result.stdout.split()
     assert lines and not any(line.startswith("topologybuilder") for line in lines)
     assert any(line.startswith("fastapi==") for line in lines)
+
+
+def test_a_restarted_service_is_checked_every_ten_seconds_at_most(compose):
+    """An update waits for the first healthy answer of every restart group, and a check only runs once per interval."""
+    probe = compose["x-healthcheck-python"]
+    assert int(probe["interval"].rstrip("s")) <= 10
+
+
+def test_the_operator_image_keeps_its_app_log_on_the_data_volume():
+    dockerfile = (ROOT / "docker" / "operator.Dockerfile").read_text(encoding="utf-8")
+    assert "ln -s /data/logs /srv/ginnungagap/logs" in dockerfile
+    assert "mkdir -p /data/logs" in dockerfile.split("CMD", 1)[1]
+    assert "exec uvicorn app.main:app" in dockerfile

@@ -449,7 +449,8 @@ def test_a_template_store_volume_with_old_options_is_recreated_before_start(
         config_file, bundle, generator_sources, run, inspect=inspect
     )
     assert code == 0
-    assert seen[0][-1] == "ginnungagap_template-store"
+    volume_lookup = next(a for a in seen if a[:3] == ["docker", "volume", "inspect"])
+    assert volume_lookup[-1] == "ginnungagap_template-store"
     commands = run.commands()
     assert commands[0].endswith(
         "rm -sf template-esxi collector-esxi ova-store ginnungagap"

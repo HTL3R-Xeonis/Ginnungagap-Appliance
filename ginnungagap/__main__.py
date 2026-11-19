@@ -332,7 +332,20 @@ def _refresh_console(config_dir: str | Path, clear_screens: bool = False) -> Non
     console.reload_login_prompt(clear_screens=clear_screens)
 
 
+def _line_buffered() -> None:
+    """
+    Print each line when it is written, also when stdout is a pipe or a file (the web panel's update log, a systemd unit): the
+    default there is block buffering, so the steps of an update appeared in one lump at the end, after the output of Docker.
+    """
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(line_buffering=True)  # type: ignore[union-attr]
+        except (AttributeError, ValueError, OSError):
+            pass
+
+
 def main(argv: list[str] | None = None) -> int:
+    _line_buffered()
     args = _parser().parse_args(argv)
     bundle = operate.bundle_dir()
     if args.command in ("update", "versions"):
@@ -428,5 +441,16 @@ def main(argv: list[str] | None = None) -> int:
     return 0
 
 
+def _run() -> int:
+    """`main`, quiet when the reader of the output went away (`ginnungagap ... | head`): no traceback, the usual exit code."""
+    try:
+        return main()
+    except BrokenPipeError:
+        os.dup2(
+            os.open(os.devnull, os.O_WRONLY), sys.stdout.fileno()
+        )  # so the flush at exit does not complain again
+        return 141
+
+
 if __name__ == "__main__":
-    sys.exit(main())
+    sys.exit(_run())

@@ -41,7 +41,7 @@ COMPONENT_NAMES = (
 REPO_NAMES = {
     "appliance": "Ginnungagap-Appliance",
     "operator": "Igdrasyl",
-    "builder": "Mjonyr",
+    "builder": "TopologyBuilder",  # the repository keeps its name; Mjonyr is only the code name (CODE_NAMES)
     "template-services": "Hugyn-and-Munyn",
     "generator": "Mimyr",
 }
@@ -56,7 +56,9 @@ LEGACY_KEYS = {
 LEGACY_NAMES = {
     "appliance": (),
     "operator": ("TopologyOperator",),
-    "builder": ("TopologyBuilder",),
+    "builder": (
+        "Mjonyr",
+    ),  # a state or checkout from while the repository was planned to be renamed
     "template-services": ("Docker-Server-Files",),
     "generator": ("TopologyGenerator", "topology-generator"),
 }

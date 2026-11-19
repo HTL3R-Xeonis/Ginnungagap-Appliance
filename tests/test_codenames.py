@@ -35,7 +35,7 @@ STANDARD_SPELLINGS = [
 ]
 CODE_NAMES = ["Igdrasyl", "Mjonyr", "Mimyr", "Hugyn", "Munyn", "Idynoun", "Haymdal"]
 OLD_NAMES = re.compile(
-    r"TopologyOperator|TopologyBuilder|TopologyGenerator|topology-generator|Docker-Server-Files|docker-server-files"
+    r"TopologyOperator|TopologyGenerator|topology-generator|Docker-Server-Files|docker-server-files"
 )
 # where the old names may stay: the table that reads them, the installer that reads old folders, the README notes that say
 # "formerly", and the tests (and the smoke case) of exactly that
@@ -187,13 +187,16 @@ def test_every_component_has_exactly_one_current_name_and_the_checkout_is_called
     assert list(mf.REPO_NAMES) == list(mf.COMPONENT_NAMES)
     assert len(set(mf.REPO_NAMES.values())) == len(mf.COMPONENT_NAMES)
     assert mf.CHECKOUT_NAMES == mf.REPO_NAMES
-    assert mf.REPO_NAMES == {
-        "appliance": "Ginnungagap-Appliance",
-        "operator": "Igdrasyl",
-        "builder": "Mjonyr",
-        "template-services": "Hugyn-and-Munyn",
-        "generator": "Mimyr",
-    }
+    assert (
+        mf.REPO_NAMES
+        == {
+            "appliance": "Ginnungagap-Appliance",
+            "operator": "Igdrasyl",
+            "builder": "TopologyBuilder",  # the repository keeps its name, Mjonyr is the code name
+            "template-services": "Hugyn-and-Munyn",
+            "generator": "Mimyr",
+        }
+    )
 
 
 def test_the_keys_are_roles_and_none_of_them_is_a_repository_name_old_or_new():

@@ -36,7 +36,32 @@ _OPERATOR_PATHS = {
     "TOPOLOGYOPERATOR_DOWNLOAD_DIR": "/data/downloads",
     # who did what (users, updates): kept on the data volume, so an update that recreates the container does not erase it
     "TOPOLOGYOPERATOR_AUDIT_LOG_FILE": "/data/audit.log",
+    # everything else the app writes: without these it falls back to files next to its code (/srv/ginnungagap), i.e. the
+    # container's writable layer, which is thrown away whenever the container is recreated (an update, a changed compose file,
+    # a new image): the accounts would be reset to the bootstrap admin and every session would be logged out
+    "TOPOLOGYOPERATOR_USERS_FILE": "/data/users.json",
+    "TOPOLOGYOPERATOR_SESSION_SECRET_FILE": "/data/session_secret.key",
+    "TOPOLOGYOPERATOR_AI_CONFIG_FILE": "/data/ai_config.json",
+    "TOPOLOGYOPERATOR_PUSH_AUDIT_FILE": "/data/push_audit.jsonl",
+    "TOPOLOGYOPERATOR_CONFIG_SNIPPETS_DIR": "/data/config_snippets",
+    # optional and never written by the app: the admin may drop a host_defaults.yml there
+    "TOPOLOGYOPERATOR_HOST_DEFAULTS": "/data/host_defaults.yml",
 }
+
+# Where an appliance that was installed BEFORE the paths above were rendered has these files: inside the Operator container,
+# relative to the app's working directory (docker/operator.Dockerfile). `operate.migrate_operator_state` carries them over to
+# /data once, before the container is recreated. `logs` (the app log) is a symlink to /data/logs in the image.
+OPERATOR_WORKDIR = "/srv/ginnungagap"
+OPERATOR_LEGACY_STATE = (
+    "users.json",
+    "session_secret.key",
+    "ai_config.json",
+    "push_audit.jsonl",
+    "audit.log",
+    "audit.log.1",
+    "config_snippets",
+    "logs",
+)
 
 
 class RenderError(RuntimeError):

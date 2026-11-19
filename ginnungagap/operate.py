@@ -13,6 +13,7 @@ import json
 import os
 import shutil
 import subprocess
+import tempfile
 import time
 from collections.abc import Callable
 from datetime import datetime
@@ -178,6 +179,94 @@ def _ensure_local_store(
     out(f"created the (empty) template store folder {path}")
 
 
+def _old_operator_state(diff_text: str) -> list[str]:
+    """The legacy state files (render.OPERATOR_LEGACY_STATE) that `docker diff` says exist in the container's writable layer."""
+    changed = set()
+    for line in diff_text.splitlines():
+        parts = line.strip().split(None, 1)
+        if len(parts) == 2 and parts[0] in ("A", "C"):
+            changed.add(parts[1].rstrip("/"))
+    found = []
+    for name in render_module.OPERATOR_LEGACY_STATE:
+        path = f"{render_module.OPERATOR_WORKDIR}/{name}"
+        # a file itself, or anything below a folder (a folder that exists in the image is only listed as changed when a file in it is)
+        if path in changed or any(c.startswith(path + "/") for c in changed):
+            found.append(name)
+    return found
+
+
+def migrate_operator_state(
+    bundle: Path,
+    run: Runner,
+    inspect: Inspect,
+    out: Callable[[str], None] = print,
+) -> bool:
+    """
+    One-off for an appliance that was installed before the Operator's state files were rendered onto the data volume (users,
+    session secret, AI switch, push audit, snippet topics, app log): they are in the writable layer of the running Operator
+    container, which is lost when the container is recreated. Before that happens they are copied to /data (`docker cp` out of
+    the old container, then into the volume with a throw-away container of the Operator's own image, which is always present).
+    A file that already exists on the volume is NEVER overwritten, so this is safe to run again and again (every `apply` and
+    update does) and does nothing on an appliance that never had the problem. Returns False when something could not be carried
+    over: the caller must then NOT recreate the container, or the accounts would be lost.
+    """
+    listing = inspect(compose_args(bundle, "ps", "-a", "-q", "ginnungagap"))
+    containers = (listing or "").split()
+    if not containers:
+        return True  # no Operator container yet: nothing to carry over
+    old = containers[0]
+    found = _old_operator_state(inspect(["docker", "diff", old]) or "")
+    if not found:
+        return True
+    image = (
+        inspect(["docker", "inspect", "--format", "{{.Image}}", old]) or ""
+    ).strip()
+    if not image:
+        out(
+            "could not read the image of the Operator container, so its state files were not carried over"
+        )
+        return False
+    volume = f"{_project(bundle)}_{DATA_VOLUME}"
+    present_text = inspect(
+        ["docker", "run", "--rm", "-v", f"{volume}:/data:ro", "--entrypoint", "sh", image, "-c", "ls -A /data"]
+    )  # fmt: skip
+    if present_text is None:
+        out(
+            "could not look into the data volume, so the Operator's state files were not carried over"
+        )
+        return False
+    present = set(present_text.split())
+    missing = [name for name in found if name not in present]
+    if not missing:
+        return True  # an earlier run already did it (or the volume has newer files): never overwrite
+    folder = Path(tempfile.mkdtemp(prefix="ginnungagap-migrate-"))
+    try:
+        for name in missing:
+            source = f"{render_module.OPERATOR_WORKDIR}/{name}"
+            if run(["docker", "cp", f"{old}:{source}", str(folder / name)]) != 0:
+                out(f"copying {source} out of the Operator container failed")
+                return False
+        script = "set -e; " + "; ".join(
+            f'if [ ! -e "/data/{name}" ]; then cp -a "/migrate/{name}" "/data/{name}"; fi'
+            for name in missing
+        )
+        code = run(
+            [
+                "docker", "run", "--rm", "-v", f"{volume}:/data", "-v", f"{folder}:/migrate:ro",
+                "--entrypoint", "sh", image, "-c", script,
+            ]
+        )  # fmt: skip
+        if code != 0:
+            out("writing the Operator's state files into the data volume failed")
+            return False
+    finally:
+        shutil.rmtree(folder, ignore_errors=True)
+    out(
+        f"Carried the Operator's state over to the data volume (it would be lost when the container is recreated): {', '.join(missing)}"
+    )
+    return True
+
+
 def apply(
     config_file: str | Path,
     bundle: Path,
@@ -224,6 +313,14 @@ def apply(
     )
     if not start:
         return 0
+
+    # before anything is recreated (or removed with the template store): the state of an Operator container that predates the
+    # rendered /data paths lives in its writable layer
+    if not migrate_operator_state(bundle, run, inspect, out):
+        out(
+            "not recreating anything, so nothing is lost; fix the problem above and run apply again"
+        )
+        return 1
 
     _ensure_local_store(config, make_store_dir or _make_store_dir, out)
     project = _project(bundle)
@@ -391,14 +488,29 @@ def _project(bundle: Path) -> str:
     return "ginnungagap"
 
 
+FALLBACK_TOOL_IMAGE = "python:3.12-slim"
+
+
+def tool_image(bundle: Path, inspect: Inspect | None = None) -> str:
+    """
+    The image for the throw-away containers that tar or untar the data volume: the Operator's own image, which is always in
+    the local image store (it runs the app), so a backup needs no network. Only when it is not there (nothing was built yet)
+    the base image is named, and Docker pulls it.
+    """
+    inspect = inspect or (lambda args: default_inspect(args, cwd=bundle))
+    reference = image_reference(_project(bundle), "ginnungagap")
+    return reference if image_exists(reference, inspect) else FALLBACK_TOOL_IMAGE
+
+
 def backup(
     config_file: str | Path,
     bundle: Path,
     destination: str | Path,
     run: Runner | None = None,
     now: Callable[[], datetime] = datetime.now,
-    image: str = "python:3.12-slim",
+    image: str | None = None,
     out: Callable[[str], None] = print,
+    inspect: Inspect | None = None,
 ) -> Path | None:
     """
     Copies the config file and the app's data volume (host profiles with their stored passwords, projects, designs, notes) into
@@ -410,6 +522,7 @@ def backup(
     shutil.copyfile(config_file, folder / "ginnungagap.yml")
     (folder / "ginnungagap.yml").chmod(0o600)
     uid, gid = os.getuid(), os.getgid()
+    image = image or tool_image(bundle, inspect)
     code = run(
         [
             "docker", "run", "--rm", "-v", f"{_project(bundle)}_{DATA_VOLUME}:/data:ro", "-v", f"{folder}:/backup",
@@ -430,8 +543,9 @@ def restore(
     backup_folder: str | Path,
     bundle: Path,
     run: Runner | None = None,
-    image: str = "python:3.12-slim",
+    image: str | None = None,
     out: Callable[[str], None] = print,
+    inspect: Inspect | None = None,
 ) -> int:
     """Replaces the app's data volume by the backup's data.tgz. The services using it are stopped first and started again."""
     run = _runner(run, bundle)
@@ -443,6 +557,7 @@ def restore(
     if run(compose_args(bundle, "stop", *APP_SERVICES)) != 0:
         out("stopping the services failed")
         return 1
+    image = image or tool_image(bundle, inspect)
     code = run(
         [
             "docker", "run", "--rm", "-v", f"{_project(bundle)}_{DATA_VOLUME}:/data", "-v", f"{folder}:/backup:ro",
@@ -474,6 +589,12 @@ def image_exists(reference: str, inspect: Inspect) -> bool:
     )
 
 
+def image_id(reference: str, inspect: Inspect) -> str | None:
+    """The id (`sha256:...`) of an image, None when there is none. Unlike a tag it never moves to another image."""
+    answer = inspect(["docker", "image", "inspect", "--format", "{{.Id}}", reference])
+    return (answer or "").strip() or None
+
+
 def retag_images(
     project: str,
     services: list[str],
@@ -481,15 +602,20 @@ def retag_images(
     to_tag: str,
     run: Runner,
     inspect: Inspect,
+    by_id: dict[str, str] | None = None,
 ) -> tuple[list[str], list[str]]:
     """
     Gives the image of each service the tag `to_tag` too (`docker tag`), starting from the one tagged `from_tag`: how an update
-    keeps the old image as `rollback-<version>` and how a rollback makes it `latest` again. Returns (retagged, without an
-    image or whose tagging failed).
+    keeps the old image as `rollback-<version>` and how a rollback makes it `latest` again. `by_id` (service -> image id) wins
+    over the tag where it names an image that still exists: a tag can be moved by a build that is still running somewhere, an
+    id cannot. Returns (retagged, without an image or whose tagging failed).
     """
     done, missing = [], []
     for service in services:
         source = image_reference(project, service, from_tag)
+        known = (by_id or {}).get(service)
+        if known and image_exists(known, inspect):
+            source = known
         if image_exists(source, inspect) and (
             run(["docker", "tag", source, image_reference(project, service, to_tag)])
             == 0

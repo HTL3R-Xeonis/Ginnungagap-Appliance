@@ -15,7 +15,7 @@ def place(tmp_path):
     repos = tmp_path / "repos"
     for name in (
         "Igdrasyl",
-        "Mjonyr",
+        "TopologyBuilder",
         "Hugyn-and-Munyn",
         "Mimyr",
     ):
@@ -161,7 +161,7 @@ def test_a_missing_repository_stops_before_anything_is_written(place):
 
 OLD_NAMES = (
     "TopologyOperator",
-    "TopologyBuilder",
+    "Mjonyr",
     "Docker-Server-Files",
     "topology-generator",
 )
@@ -169,7 +169,9 @@ OLD_NAMES = (
 
 def use_old_names(place, only=None):
     for new, old in zip(
-        ("Igdrasyl", "Mjonyr", "Hugyn-and-Munyn", "Mimyr"), OLD_NAMES, strict=True
+        ("Igdrasyl", "TopologyBuilder", "Hugyn-and-Munyn", "Mimyr"),
+        OLD_NAMES,
+        strict=True,
     ):
         if only is None or new in only:
             (place["repos"] / new).rename(place["repos"] / old)
@@ -552,7 +554,7 @@ def test_without_repos_dir_a_rerun_keeps_the_recorded_one_and_a_new_install_uses
     }
     for repo in (
         "Igdrasyl",
-        "Mjonyr",
+        "TopologyBuilder",
         "Hugyn-and-Munyn",
         "Mimyr",
     ):

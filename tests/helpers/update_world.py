@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -40,11 +41,23 @@ class Docker:
     def __init__(self) -> None:
         self.calls: list[list[str]] = []
         self.images = {f"ginnungagap-{s}:latest" for s in SERVICES}
+        # image reference -> image id: a tag can move to another image (a build), an id never changes
+        self.ids = {ref: f"sha256:{ref}" for ref in self.images}
         self.fail: list[tuple[str, int]] = []  # (text in the command, exit code)
         self.crash_on: str | None = None
-        self.health: dict[str, str] = {}
+        self.health: dict[
+            str, str
+        ] = {}  # service -> "<state> <health>" ("running none": no health check)
+        self.restarts: dict[str, int] = {}  # service -> RestartCount
         self.docker_up = True
         self.on_run: list[Callable[[list[str]], None]] = []
+        self.strict_scripts = True  # a script fails on an option it does not know
+        self.unknown_options: list[tuple[str, list[str]]] = []
+        # a service whose container restarts by itself: every look at it finds one more restart
+        self.crash_loop: set[str] = set()
+        # the Operator container's writable layer and the data volume: what is there (for the one-off state migration)
+        self.layer: set[str] = set()
+        self.volume: set[str] = set()
 
     def text(self, args: list[str]) -> str:
         return " ".join(args)
@@ -59,19 +72,51 @@ class Docker:
         for pattern, code in self.fail:
             if pattern in line:
                 return code
+        if args[0] == "bash" and self.strict_scripts:
+            text = Path(args[1]).read_text()
+            unknown = [a for a in args[2:] if a.startswith("--") and a not in text]
+            if unknown:  # what `install.sh: unknown option --state-dir` is
+                self.unknown_options.append((args[1], unknown))
+                return 2
         if args[:2] == ["docker", "tag"]:
+            self.ids[args[3]] = self.image_id(args[2]) or f"sha256:{args[2]}"
             self.images.add(args[3])
         if args[:3] == ["docker", "image", "rm"]:
             self.images.discard(args[3])
+            self.ids.pop(args[3], None)
+        if args[:2] == ["docker", "run"] and "/migrate:ro" in line:
+            # the one-off state migration: `if [ ! -e "/data/X" ]; then cp -a "/migrate/X" "/data/X"; fi` for every X
+            for name in re.findall(r'cp -a "/migrate/([^"]+)"', args[-1]):
+                self.volume.add(name)
         return 0
+
+    def image_id(self, reference: str) -> str | None:
+        if reference.startswith("sha256:"):
+            return reference if reference in self.ids.values() else None
+        return self.ids.get(reference) if reference in self.images else None
 
     def inspect(self, args: list[str]) -> str | None:
         if args[:2] == ["docker", "version"]:
             return "27.0" if self.docker_up else None
         if args[:3] == ["docker", "image", "inspect"]:
-            return "sha256:abc" if args[-1] in self.images else None
-        if "ps" in args and "--format" in args:
-            return self.health.get(args[-1], "running healthy")
+            return self.image_id(args[-1])
+        if "ps" in args and "-q" in args:
+            return f"cid-{args[-1]}"
+        if args[:2] == ["docker", "diff"]:
+            return "".join(
+                f"A /srv/ginnungagap/{name}\n" for name in sorted(self.layer)
+            )
+        if args[:2] == ["docker", "inspect"] and "{{.Image}}" in args:
+            return "sha256:operator-image"
+        if args[:2] == ["docker", "run"] and args[-1] == "ls -A /data":
+            return "\n".join(sorted(self.volume | {"settings_profiles"}))
+        if args[:2] == ["docker", "inspect"] and args[-1].startswith("cid-"):
+            service = args[-1][4:]
+            fields = self.health.get(service, "running healthy").split()
+            health = fields[1] if len(fields) > 1 else "none"
+            if service in self.crash_loop:
+                self.restarts[service] = self.restarts.get(service, 0) + 1
+            return f"{fields[0]}|{health}|{self.restarts.get(service, 0)}"
         if args[:3] == ["docker", "image", "ls"]:
             return "\n".join(sorted(self.images))
         return ""
@@ -122,6 +167,8 @@ class World:
         self.confirm = True
         self.root_user = True
         self.reexecs: list[tuple[str, str | None]] = []
+        self.stopped_builds: list[Path] = []
+        self.orphans: list[int] = []
         self.operator_reports: str | None = None
         self.fetch_code = 200
         self.clock = datetime(2026, 12, 1, 10, 0, 0, tzinfo=UTC)
@@ -171,6 +218,7 @@ class World:
             reachable=lambda host: True,
             journal=self.journal.append,
             docker_root=None,
+            stop_builds=self.stop_builds,
         )
         self._ticks = 0.0
 
@@ -188,6 +236,11 @@ class World:
         if self.operator_reports:
             body["version"] = self.operator_reports
         return self.fetch_code, json.dumps(body), None
+
+    def stop_builds(self, bundle) -> list[int]:
+        """The update engine's search for builds a killed engine left running."""
+        self.stopped_builds.append(bundle)
+        return list(self.orphans)
 
     def fake_backup(self, config_file, bundle, destination, run=None, out=print, **kw):
         if not self.backup_ok:
@@ -216,7 +269,7 @@ class World:
     ) -> None:
         names = {
             "operator": "Igdrasyl",
-            "builder": "Mjonyr",
+            "builder": "TopologyBuilder",
             "template-services": "Hugyn-and-Munyn",
             "generator": "Mimyr",
         }
@@ -230,8 +283,10 @@ class World:
         (self.repos / names["operator"] / "app" / "version.py").write_text(
             f'__version__ = "{operator}"\n'
         )
+        # the install.sh of an appliance image from before the updater: it knows neither --state-dir nor --manifest
         (self.repos / "Ginnungagap-Appliance" / "install.sh").write_text(
-            '#!/bin/sh\necho "old install.sh $*" >> "$GINNUNGAGAP_FAKE_INSTALL_LOG"\n'
+            "#!/bin/sh\n# options: --repos-dir --config-dir --prefix --no-start\n"
+            'echo "old install.sh $*" >> "$GINNUNGAGAP_FAKE_INSTALL_LOG"\n'
         )
         (self.repos / names["generator"] / "config").mkdir()
         (self.repos / "Ginnungagap-Appliance" / ".git").mkdir()

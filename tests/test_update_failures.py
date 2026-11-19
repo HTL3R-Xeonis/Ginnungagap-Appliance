@@ -99,7 +99,7 @@ def test_github_trouble_is_exit_1_and_plain(world, mode, words):
 
 def test_a_checksum_mismatch_is_exit_4_and_everything_staged_is_gone(world):
     a = world.release("a")
-    tarball = a / "Mjonyr-1.0.0.tar.gz"
+    tarball = a / "TopologyBuilder-1.0.0.tar.gz"
     data = bytearray(tarball.read_bytes())
     data[-1] ^= 0xFF  # same size, different content
     tarball.write_bytes(bytes(data))
@@ -116,12 +116,12 @@ def test_a_checksum_mismatch_is_exit_4_and_everything_staged_is_gone(world):
 
 def test_a_wrong_size_and_a_sha256sums_mismatch_are_refused(world):
     a = world.release("a")
-    (a / "Mjonyr-1.0.0.tar.gz").write_bytes(b"short")
+    (a / "TopologyBuilder-1.0.0.tar.gz").write_bytes(b"short")
     assert world.update("apply", offline=a) == up.EXIT_REFUSED
     assert "bytes" in world.text()
     b = world.release("b")
     sums = (b / "SHA256SUMS").read_text()
-    lines = [line for line in sums.splitlines() if "Mjonyr" not in line]
+    lines = [line for line in sums.splitlines() if "TopologyBuilder" not in line]
     lines = [
         ("0" * 64 + "  Igdrasyl-1.2.1.tar.gz") if "Igdrasyl" in line else line
         for line in lines
@@ -253,9 +253,9 @@ def test_a_failing_build_flips_the_links_back_and_touches_no_running_service(
     assert not any(
         c.startswith("up") for c in world.docker.compose()
     )  # nothing was restarted
-    # the old images are the latest ones again
+    # the old images are the latest ones again, put back by their image id (not by a tag that something else may have moved)
     assert (
-        "docker tag ginnungagap-setup:rollback-1.3.0 ginnungagap-setup:latest"
+        "docker tag sha256:ginnungagap-setup:latest ginnungagap-setup:latest"
         in world.docker.commands()
     )
     nothing_changed(world, before)
@@ -271,21 +271,17 @@ def test_a_container_that_does_not_become_healthy_rolls_everything_back(
     link_before = links(world)
     b = b_release(world)
     world.docker.health["template-gns3"] = "running unhealthy"
-    original = world.docker.inspect
 
     def heal_after_rollback(args):
-        rolled_back = any(
-            c.startswith("docker tag")
-            and "rollback-1.3.0 " in c
-            and c.endswith(":latest")
-            for c in world.docker.commands()
+        rolled_back = (
+            args[:2] == ["docker", "tag"]
+            and args[3] == "ginnungagap-template-gns3:latest"
+            and "template-gns3" in args[2]
         )
-        if "ps" in args and args[-1] == "template-gns3" and rolled_back:
-            return "running healthy"
-        return original(args)
+        if rolled_back:
+            world.docker.health["template-gns3"] = "running healthy"
 
-    world.env.inspect = heal_after_rollback
-    world.docker.on_run = []
+    world.docker.on_run = [heal_after_rollback]
     updater_runs = world.docker
     assert world.update("apply", offline=b) == up.EXIT_ROLLED_BACK
     assert "template-gns3 is not healthy" in world.text()
@@ -493,6 +489,7 @@ def test_rolling_back_a_data_migration_restores_the_backup(world, installed):
     world.operator_reports = "1.3.0"
     assert world.update("apply", offline=m) == 0
     assert world.installed()["data_migration"] is True
+    world.operator_reports = "1.2.1"  # the old Operator is back after the rollback
     assert world.update("rollback") == 0
     assert world.restores and world.restores[0].endswith("ginnungagap-backup-x")
 
@@ -761,18 +758,20 @@ def test_safe_extract_unpacks_a_good_archive_and_a_damaged_one_is_refused(tmp_pa
 
 def test_a_hostile_tarball_in_a_release_fails_the_update_cleanly(world):
     a = world.release("a")
-    fake_release.hostile_tarball(a / "Mjonyr-1.0.0.tar.gz", "parent", "Mjonyr-1.0.0")
+    fake_release.hostile_tarball(
+        a / "TopologyBuilder-1.0.0.tar.gz", "parent", "TopologyBuilder-1.0.0"
+    )
     fake_release.rewrite_manifest(
         a,
         lambda d: d["components"]["builder"].update(
-            sha256=fake_release.sha256_of(a / "Mjonyr-1.0.0.tar.gz"),
-            size=(a / "Mjonyr-1.0.0.tar.gz").stat().st_size,
+            sha256=fake_release.sha256_of(a / "TopologyBuilder-1.0.0.tar.gz"),
+            size=(a / "TopologyBuilder-1.0.0.tar.gz").stat().st_size,
         ),
     )
     sums = (a / "SHA256SUMS").read_text().splitlines()
     sums = [
-        f"{fake_release.sha256_of(a / 'Mjonyr-1.0.0.tar.gz')}  Mjonyr-1.0.0.tar.gz"
-        if "Mjonyr" in x
+        f"{fake_release.sha256_of(a / 'TopologyBuilder-1.0.0.tar.gz')}  TopologyBuilder-1.0.0.tar.gz"
+        if "TopologyBuilder" in x
         else x
         for x in sums
     ]

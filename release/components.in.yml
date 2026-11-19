@@ -17,9 +17,9 @@ components:
     tag: v1.3.0
   operator:
     repo: HTL3R-Xeonis/Igdrasyl
-    tag: v1.2.1
+    tag: v1.3.0
   builder:
-    repo: HTL3R-Xeonis/Mjonyr
+    repo: HTL3R-Xeonis/TopologyBuilder
     tag: v1.0.0
   template-services:
     repo: HTL3R-Xeonis/Hugyn-and-Munyn

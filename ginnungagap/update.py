@@ -22,6 +22,7 @@ import posixpath
 import re
 import shlex
 import shutil
+import signal
 import socket
 import subprocess
 import sys
@@ -56,6 +57,8 @@ RESTART_ORDER: tuple[tuple[str, ...], ...] = (
     ("setup",),
     ("ginnungagap",),
 )
+# a restarted service without a health check counts as up only when it stayed up this long without restarting again
+STABLE_SECONDS = 6.0
 MAX_TARBALL_BYTES = 500 * 1024 * 1024
 MAX_TOTAL_BYTES = 2 * 1024 * 1024 * 1024
 IMAGE_HEADROOM_BYTES = 2 * 1024 * 1024 * 1024
@@ -294,6 +297,7 @@ class Env:
     restore: Callable[..., int] = operate.restore
     reexec: Callable[[str, str | None], int] = _default_reexec
     docker_root: Path | None = Path("/var/lib/docker")
+    stop_builds: Callable[..., list[int]] | None = None  # None: stop_orphaned_builds
     reachable: Callable[[str], bool] = _default_reachable
     journal: Callable[[str], None] = _default_journal
     read_secret: Callable[[], str] | None = None
@@ -455,6 +459,115 @@ def rewrite_install_env(path: Path, repos_dir: Path) -> bool:
     tmp.chmod(mode)
     tmp.replace(path)
     return True
+
+
+@dataclass(frozen=True)
+class Probe:
+    """What Docker says about one service's container right now."""
+
+    container: str
+    state: str  # running, restarting, exited, ...
+    health: (
+        str  # healthy, unhealthy, starting, or none (the service has no health check)
+    )
+    restarts: int
+
+
+PROC = Path("/proc")
+
+
+def _read_processes(proc: Path = PROC) -> dict[int, tuple[int, list[str]]]:
+    """pid -> (parent pid, command line) of every process we may look at."""
+    found: dict[int, tuple[int, list[str]]] = {}
+    try:
+        entries = list(proc.iterdir())
+    except OSError:
+        return found
+    for entry in entries:
+        if not entry.name.isdigit():
+            continue
+        try:
+            args = [
+                a
+                for a in (entry / "cmdline")
+                .read_bytes()
+                .decode(errors="replace")
+                .split("\0")
+                if a
+            ]
+            stat = (entry / "stat").read_text()
+            fields = stat[stat.rindex(")") + 2 :].split()
+            parent = int(fields[1])
+        except (OSError, ValueError):
+            continue
+        if fields[0] in ("Z", "X"):
+            continue  # already dead, only waiting to be reaped
+        found[int(entry.name)] = (parent, args)
+    return found
+
+
+def find_orphaned_builds(
+    bundle: Path, processes: dict[int, tuple[int, list[str]]] | None = None
+) -> list[int]:
+    """
+    The `docker compose ... build` runs of this appliance that are still alive (and everything they started): after the update
+    engine was killed (kill -9, an out-of-memory kill) its child keeps building and moves the `latest` tag of an image when it
+    is done, which is exactly the tag a rollback wants to put the old image back on.
+    """
+    processes = _read_processes() if processes is None else processes
+    mine = set()
+    pid = os.getpid()
+    while pid in processes and pid not in mine:
+        mine.add(pid)
+        pid = processes[pid][0]
+    roots = set()
+    for pid, (_, args) in processes.items():
+        if pid in mine or "--project-directory" not in args:
+            continue
+        index = args.index("--project-directory")
+        if (
+            index + 1 < len(args)
+            and args[index + 1] == str(bundle)
+            and ("build" in args or "--build" in args)
+        ):
+            roots.add(pid)
+    found = set(roots)
+    grew = True
+    while grew:
+        grew = False
+        for pid, (parent, _) in processes.items():
+            if parent in found and pid not in found and pid not in mine:
+                found.add(pid)
+                grew = True
+    return sorted(found)
+
+
+def stop_orphaned_builds(
+    bundle: Path,
+    wait_seconds: float = 60.0,
+    sleep: Callable[[float], None] = time.sleep,
+    monotonic: Callable[[], float] = time.monotonic,
+    processes: Callable[[], dict[int, tuple[int, list[str]]]] = _read_processes,
+) -> list[int]:
+    """Asks the leftover builds of this appliance to stop (SIGTERM), waits for them, kills what is still there. The pids found."""
+    found = find_orphaned_builds(bundle, processes())
+    if not found:
+        return []
+
+    def alive() -> list[int]:
+        now = processes()
+        return [p for p in found if p in now]
+
+    for sig, patience in ((signal.SIGTERM, wait_seconds), (signal.SIGKILL, 10.0)):
+        for pid in alive():
+            with contextlib.suppress(ProcessLookupError, PermissionError):
+                os.kill(pid, sig)
+        deadline = monotonic() + patience
+        while alive() and monotonic() < deadline:
+            sleep(0.5)
+        if not alive():
+            break
+    return found
 
 
 @dataclass
@@ -1681,7 +1794,12 @@ class Updater:
         )
         folder.mkdir(parents=True, exist_ok=True, mode=0o700)
         result = self.env.backup(
-            self.config_file, self.bundle, folder, run=self.run, out=self.say
+            self.config_file,
+            self.bundle,
+            folder,
+            run=self.run,
+            out=self.say,
+            inspect=self.inspect,
         )
         if result is None:
             shutil.rmtree(folder, ignore_errors=True)
@@ -1749,6 +1867,19 @@ class Updater:
             command += ["--manifest", str(manifest_path)]
         return command + shlex.split(os.environ.get("GINNUNGAGAP_INSTALL_ARGS", ""))
 
+    @staticmethod
+    def knows_the_updater(script: Path) -> bool:
+        """
+        Whether this install.sh is one of a release made for the updater, i.e. takes --state-dir and --manifest. An older one
+        (the checkout an adopted appliance came with) stops with `unknown option --state-dir`, and it also expects the old folder
+        names, so it is not run at all: its program files are copied back by hand.
+        """
+        try:
+            text = script.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            return False
+        return "--state-dir" in text and "--manifest" in text
+
     def continue_update(self, tx: dict[str, Any]) -> int:
         """Steps 5 to 8: switch to the new sources, build, restart one service group after the other, wait for health."""
         manifest = mf.validate(tx["to"])
@@ -1794,6 +1925,16 @@ class Updater:
         has_env = (self.bundle / "rendered" / "compose.env").is_file()
         if old is not None and has_env:
             tag = f"rollback-{old.appliance_version}"
+            # remember the ids too: a rollback puts the old image back by id, a tag may have been moved by then
+            tx["image_ids"] = {
+                service: found
+                for service in build
+                if (
+                    found := operate.image_id(
+                        operate.image_reference(project, service), self.inspect
+                    )
+                )
+            }
             done, _ = operate.retag_images(
                 project, build, "latest", tag, self.run, self.inspect
             )
@@ -1822,23 +1963,71 @@ class Updater:
                 raise StepFailed("building the images failed")
         self.save_transaction(tx, "built")
 
-    def wait_service(self, service: str, timeout: float) -> bool:
+    def probe_service(self, service: str) -> Probe | None:
+        """The service's container as Docker sees it (None: there is none, or Docker did not answer)."""
+        ids = (
+            self.inspect(operate.compose_args(self.bundle, "ps", "-q", service)) or ""
+        ).split()
+        if not ids:
+            return None
+        answer = self.inspect(
+            [
+                "docker",
+                "inspect",
+                "--format",
+                "{{.State.Status}}|{{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}}|{{.RestartCount}}",
+                ids[0],
+            ]
+        )
+        parts = (answer or "").strip().split("|")
+        if len(parts) != 3:
+            return None
+        try:
+            restarts = int(parts[2])
+        except ValueError:
+            restarts = 0
+        return Probe(ids[0], parts[0], parts[1], restarts)
+
+    def wait_service(
+        self, service: str, timeout: float, before: Probe | None = None
+    ) -> str | None:
+        """
+        Waits until the service is really up. None: it is, otherwise what is wrong. `running` alone proves nothing (a container
+        that crashes on start is `running` for a moment after every restart), so: a service with a health check must be
+        `healthy`, one without must stay up for STABLE_SECONDS, and a container that restarts by itself - or is waiting to -
+        fails at once. `before`: the container as it was before the restart, to tell its old restarts from new ones.
+        """
         deadline = self.env.monotonic() + timeout
+        baseline: int | None = None
+        stable_since: float | None = None
+        problem = "did not answer"
         while True:
-            answer = self.inspect(
-                operate.compose_args(
-                    self.bundle, "ps", "--format", "{{.State}} {{.Health}}", service
-                )
-            )
-            fields = (answer or "").split()
-            state = fields[0] if fields else ""
-            health = fields[1] if len(fields) > 1 else ""
-            if state == "running" and health in ("healthy", ""):
-                return True
-            if health == "unhealthy" or state in ("exited", "dead"):
-                return False
+            probe = self.probe_service(service)
+            if probe is not None:
+                if baseline is None:
+                    same = before is not None and before.container == probe.container
+                    baseline = before.restarts if same and before else 0
+                if probe.state in ("exited", "dead"):
+                    return f"is not healthy: it stopped ({probe.state})"
+                if probe.health == "unhealthy":
+                    return "is not healthy: its health check fails"
+                if probe.state == "restarting" or probe.restarts > baseline:
+                    return f"is not healthy: it keeps restarting (restarted {max(probe.restarts - baseline, 1)} time(s) by itself)"
+                problem = f"is {probe.state}, health {probe.health}"
+                if probe.state == "running":
+                    if probe.health == "healthy":
+                        return None
+                    if probe.health == "none":
+                        now = self.env.monotonic()
+                        stable_since = now if stable_since is None else stable_since
+                        if now - stable_since >= STABLE_SECONDS:
+                            return None
+                    else:
+                        stable_since = None
+                else:
+                    stable_since = None
             if self.env.monotonic() >= deadline:
-                return False
+                return f"is not healthy {int(timeout)} s after it was restarted ({problem})"
             self.env.sleep(2)
 
     def restart_groups(self, services: list[str]) -> None:
@@ -1848,16 +2037,16 @@ class Updater:
             if not members:
                 continue
             self.say(f"Restarting {', '.join(members)} ...")
+            earlier = {m: self.probe_service(m) for m in members}
             command = operate.compose_args(
                 self.bundle, "up", "-d", "--no-deps", *operate.OFFLINE_UP_ARGS, *members
             )
             if self.run(command) != 0:
                 raise StepFailed(f"starting {', '.join(members)} failed")
             for service in members:
-                if not self.wait_service(service, timeout):
-                    raise StepFailed(
-                        f"{service} is not healthy {int(timeout)} s after it was restarted"
-                    )
+                problem = self.wait_service(service, timeout, earlier[service])
+                if problem:
+                    raise StepFailed(f"{service} {problem}")
         others = [s for s in services if not any(s in group for group in RESTART_ORDER)]
         if others:
             command = operate.compose_args(
@@ -1872,6 +2061,14 @@ class Updater:
         if config is None:
             raise StepFailed(
                 "the configuration is not available, so the restart can't be checked"
+            )
+        # the Operator container is recreated below: carry the state of one that predates the /data paths over first (nothing
+        # has been restarted yet if this fails, so the rollback has nothing to restart either)
+        if not operate.migrate_operator_state(
+            self.bundle, self.run, self.inspect, self.say
+        ):
+            raise StepFailed(
+                "the Operator's state (accounts, sessions) could not be carried over to the data volume"
             )
         tx["restarted"] = True
         self.save_transaction(tx, "restarting")
@@ -1894,7 +2091,12 @@ class Updater:
         if "operator" in tx["changed"]:
             self.check_operator_version(config, manifest.components["operator"].version)
 
-    def check_operator_version(self, config: dict[str, Any], expected: str) -> None:
+    def check_operator_version(
+        self,
+        config: dict[str, Any],
+        expected: str,
+        wrong: str = "the old container is still running",
+    ) -> None:
         fetch = self.env.fetch or status_module.make_fetch()
         status, body, _ = fetch(status_module.base_url(config) + "/health")
         if status == 200:
@@ -1909,7 +2111,7 @@ class Updater:
                 )
             elif reported != expected:
                 raise StepFailed(
-                    f"the Operator reports version {reported}, expected {expected}: the old container is still running"
+                    f"the Operator reports version {reported}, expected {expected}: {wrong}"
                 )
         else:
             self.say("(the Operator is behind a login: its version was not checked)")
@@ -2029,6 +2231,7 @@ class Updater:
                 if tx.get("data_migration") or tx["options"].get("restore_data")
                 else None,
                 tagged=tx.get("tagged"),
+                image_ids=tx.get("image_ids"),
             )
         except (StepFailed, UpdateError, OSError) as exc:
             message = exc.message if isinstance(exc, UpdateError) else str(exc)
@@ -2075,6 +2278,7 @@ class Updater:
         tooling: bool,
         backup: str | None,
         tagged: list[str] | None = None,
+        image_ids: dict[str, str] | None = None,
     ) -> None:
         """
         Back to `previous`: links, images, tooling, (data), restarts, health. `from_dirs`: the folders being left (components
@@ -2092,7 +2296,13 @@ class Updater:
         tag = f"rollback-{previous.appliance_version}"
         if has_env:
             _, missing = operate.retag_images(
-                project, affected, tag, "latest", self.run, self.inspect
+                project,
+                affected,
+                tag,
+                "latest",
+                self.run,
+                self.inspect,
+                by_id=image_ids,
             )
             active = self.active_services()
             # without a rollback image a service is rebuilt from the previous source, but only if it runs here and the image
@@ -2113,7 +2323,16 @@ class Updater:
             self.reinstall_tooling(appliance_dir)
         if backup and has_env:
             self.say(f"Restoring the data from {backup} ...")
-            if self.env.restore(backup, self.bundle, run=self.run, out=self.say) != 0:
+            if (
+                self.env.restore(
+                    backup,
+                    self.bundle,
+                    run=self.run,
+                    out=self.say,
+                    inspect=self.inspect,
+                )
+                != 0
+            ):
                 raise StepFailed("restoring the data failed")
         if restarted and has_env and self.config is not None:
             _, restart = self.restart_targets(affected)
@@ -2132,6 +2351,15 @@ class Updater:
             )
             if code != 0:
                 raise StepFailed("the appliance is not healthy after the rollback")
+            if "operator" in names:
+                # healthy is not enough: a rollback that ends on the new Operator is not a rollback
+                expected = (previous.components.get("operator") or {}).get("version")
+                if expected and expected != "unknown":
+                    self.check_operator_version(
+                        self.config,
+                        expected,
+                        "the rollback did not bring the old Operator back",
+                    )
 
     def restart_targets(self, services: list[str]) -> tuple[list[str], list[str]]:
         active = self.active_services()
@@ -2139,12 +2367,21 @@ class Updater:
 
     def reinstall_tooling(self, appliance_dir: Path) -> None:
         script = appliance_dir / "install.sh"
-        if script.is_file():
-            if self.run(self.install_command(appliance_dir, None)) != 0:
-                raise StepFailed("installing the previous tooling failed")
-            return
-        # an adopted program has no install.sh of its own: put its files back where the program lives
-        self.say("Putting the previous program files back ...")
+        if script.is_file() and self.knows_the_updater(script):
+            if self.run(self.install_command(appliance_dir, None)) == 0:
+                return
+            self.say(
+                "The previous release's install.sh failed; putting its program files back by hand instead ..."
+            )
+        elif script.is_file():
+            # an adopted program from before the updater: its install.sh knows neither --state-dir nor --manifest
+            self.say(
+                "The previous program predates the updater (its install.sh does not know --state-dir and --manifest): "
+                "putting its program files back by hand ..."
+            )
+        else:
+            # an adopted program has no install.sh of its own: put its files back where the program lives
+            self.say("Putting the previous program files back ...")
         for name in ("ginnungagap", "docker"):
             source = appliance_dir / name
             if source.is_dir():
@@ -2283,6 +2520,13 @@ class Updater:
             self.audit("resume", "discarded", to=version, detail=f"phase {phase}")
             return EXIT_OK
         self.tx_options_into_self(tx)
+        # an engine that was killed leaves its `docker compose build` running, and a build that finishes after the rollback moves
+        # the image tag the rollback just set: stop it first
+        stopped = (self.env.stop_builds or stop_orphaned_builds)(self.bundle)
+        if stopped:
+            self.say(
+                f"Stopped {len(stopped)} process(es) of the interrupted update's build that were still running."
+            )
         self.audit("resume", "rolling_back", to=version, detail=f"phase {phase}")
         code = self.roll_back_failed_update(
             tx, f"the update was interrupted in phase {phase}"

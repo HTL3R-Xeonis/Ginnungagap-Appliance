@@ -22,15 +22,16 @@ from pathlib import Path
 REPOS = {
     "appliance": "Ginnungagap-Appliance",
     "operator": "Igdrasyl",
-    "builder": "Mjonyr",
+    "builder": "TopologyBuilder",
     "template-services": "Hugyn-and-Munyn",
     "generator": "Mimyr",
 }
-# what the repositories were called before the code names (for releases and checkouts of the old layout)
+# the names the manifest table reads but never writes (for releases, state and checkouts of the old layout; the builder's
+# repository keeps TopologyBuilder, "Mjonyr" is only a name from while a rename was planned)
 OLD_REPOS = {
     "appliance": "Ginnungagap-Appliance",
     "operator": "TopologyOperator",
-    "builder": "TopologyBuilder",
+    "builder": "Mjonyr",
     "template-services": "Docker-Server-Files",
     "generator": "TopologyGenerator",
 }
@@ -115,7 +116,9 @@ def _files(name: str, version: str, broken: set[str]) -> dict[str, str]:
         files["ginnungagap/version.py"] = f'__version__ = "{version}"\n'
         # the program of a release is installed by its install.sh: the fake one only records that it was called
         files["install.sh"] = (
-            '#!/bin/sh\necho "install.sh $*" >> "${GINNUNGAGAP_FAKE_INSTALL_LOG:-/dev/null}"\n'
+            "#!/bin/sh\n"
+            "# options: --repos-dir --config-dir --state-dir --manifest --prefix --no-start (the real script lists them like this)\n"
+            'echo "install.sh $*" >> "${GINNUNGAGAP_FAKE_INSTALL_LOG:-/dev/null}"\n'
         )
     elif name == "operator":
         files["app/version.py"] = f'__version__ = "{version}"\n'

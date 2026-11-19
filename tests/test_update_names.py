@@ -17,7 +17,7 @@ from tests.helpers.update_world import World
 
 OLD_FOLDERS = {
     "operator": "TopologyOperator",
-    "builder": "TopologyBuilder",
+    "builder": "Mjonyr",
     "template-services": "Docker-Server-Files",
     "generator": "topology-generator",
 }
@@ -85,12 +85,10 @@ def test_adopt_with_both_names_present_takes_the_current_one(world):
 
 
 def test_adopt_says_which_names_it_looks_for_when_a_checkout_is_missing(world):
-    shutil.rmtree(world.repos / "TopologyBuilder")
+    shutil.rmtree(world.repos / "Mjonyr")
     assert world.update("adopt") == up.EXIT_ERROR
     text = world.text()
-    assert (
-        "Igdrasyl" in text and "Hugyn-and-Munyn" in text and "TopologyBuilder" in text
-    )
+    assert "Igdrasyl" in text and "Hugyn-and-Munyn" in text and "Mjonyr" in text
 
 
 def test_the_first_apply_from_a_mixed_layout_updates_everything(world):
@@ -141,15 +139,21 @@ def test_a_future_rename_of_a_component_repository_does_not_lock_the_appliance_o
     world,
 ):
     release = world.release(
-        "future", appliance="1.3.0", repo_names={"builder": "Mjonyr-Next"}
+        "future", appliance="1.3.0", repo_names={"builder": "TopologyBuilder-Next"}
     )
     manifest = json.loads((release / "components.json").read_text())
-    assert manifest["components"]["builder"]["asset"] == "Mjonyr-Next-1.0.0.tar.gz"
+    assert (
+        manifest["components"]["builder"]["asset"]
+        == "TopologyBuilder-Next-1.0.0.tar.gz"
+    )
     assert world.update("apply", offline=release) == 0
     # the folder on the appliance keeps this program's own name for the component (compose.yml builds from it)
-    assert (world.layout.releases / "Mjonyr" / "1.0.0" / "pyproject.toml").is_file()
     assert (
-        world.installed()["components"]["builder"]["repo"] == "HTL3R-Xeonis/Mjonyr-Next"
+        world.layout.releases / "TopologyBuilder" / "1.0.0" / "pyproject.toml"
+    ).is_file()
+    assert (
+        world.installed()["components"]["builder"]["repo"]
+        == "HTL3R-Xeonis/TopologyBuilder-Next"
     )
 
 
@@ -244,11 +248,11 @@ def test_the_move_to_the_current_names_runs_once_and_can_be_repeated_after_a_cra
     assert world.update("apply", offline=a) == 0
     to_pre_rename_install(world)
     # a crash after the folder was renamed but before the links were: the second run finishes the job
-    (world.layout.releases / "TopologyBuilder").rename(world.layout.releases / "Mjonyr")
+    (world.layout.releases / "Mjonyr").rename(world.layout.releases / "TopologyBuilder")
     updater = updater_of(world)
     assert updater.migrate_legacy_layout() is True
-    assert (world.layout.components / "Mjonyr").resolve() == (
-        world.layout.releases / "Mjonyr" / "1.0.0"
+    assert (world.layout.components / "TopologyBuilder").resolve() == (
+        world.layout.releases / "TopologyBuilder" / "1.0.0"
     ).resolve()
     assert updater.migrate_legacy_layout() is False
 
@@ -279,6 +283,7 @@ def test_a_state_in_the_current_names_is_left_alone(world):
         ("igdrasyl", "operator"),
         ("TopologyOperator", "operator"),
         ("Mjonyr", "builder"),
+        ("TopologyBuilder", "builder"),
         ("builder", "builder"),
         ("Ginnungagap-Appliance", "appliance"),
     ],

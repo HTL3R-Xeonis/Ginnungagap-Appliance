@@ -41,7 +41,7 @@ FILES = {
 }
 VERSIONS = {
     "appliance": "1.3.0",
-    "operator": "1.2.1",
+    "operator": "1.3.0",
     "builder": "1.0.0",
     "template-services": "1.0.0",
     "generator": "1.0.0",
@@ -128,7 +128,7 @@ def test_a_release_is_built_from_the_five_tarballs_and_the_result_is_a_valid_man
     assert manifest.released == "2026-12-01T10:00:00Z" and manifest.notes == "a note"
     assert document == json.loads((out / "components.json").read_text())
     operator = manifest.components["operator"]
-    assert operator.repo == f"{OWNER}/Igdrasyl" and operator.version == "1.2.1"
+    assert operator.repo == f"{OWNER}/Igdrasyl" and operator.version == "1.3.0"
     assert operator.commit == COMMIT and operator.services == ("ginnungagap",)
     tarball = out / operator.asset
     assert (
@@ -194,7 +194,7 @@ def test_a_release_candidate_is_on_the_prerelease_channel(work):
 
 def test_min_installed_notes_and_data_migration_come_from_the_pin_file(work):
     text = pins_text(extra_head="\n  min_installed: 1.2.0").replace(
-        "    tag: v1.2.1\n", "    tag: v1.2.1\n    data_migration: true\n"
+        "    tag: v1.3.0\n", "    tag: v1.3.0\n    data_migration: true\n"
     )
     work["pins"].write_text(text)
     document = build(work)
@@ -207,7 +207,7 @@ def test_min_installed_notes_and_data_migration_come_from_the_pin_file(work):
 def test_each_version_file_format_is_read():
     read = build_release.version_in_file
     assert read("appliance", '"""x"""\n\n__version__ = "1.3.0"\n') == "1.3.0"
-    assert read("operator", "__version__ = '1.2.1'\n") == "1.2.1"
+    assert read("operator", "__version__ = '1.3.0'\n") == "1.3.0"
     assert read("builder", '[project]\nversion = "1.0.0"\n') == "1.0.0"
     assert (
         read("builder", "[tool]\nx = 1\n") is None
@@ -223,9 +223,9 @@ def test_each_version_file_format_is_read():
 def test_a_tag_that_differs_from_the_version_file_is_refused_and_nothing_is_written(
     work,
 ):
-    make_tarball(work["sources"], "operator", "1.2.1", declared="1.2.0")
+    make_tarball(work["sources"], "operator", "1.3.0", declared="1.2.0")
     with pytest.raises(
-        build_release.ReleaseError, match=r"Igdrasyl.*v1\.2\.1.*says 1\.2\.0"
+        build_release.ReleaseError, match=r"Igdrasyl.*v1\.3\.0.*says 1\.2\.0"
     ):
         build(work)
     assert not work["out"].exists() and not list(work["tmp"].glob(".release-*"))
@@ -234,20 +234,20 @@ def test_a_tag_that_differs_from_the_version_file_is_refused_and_nothing_is_writ
 @pytest.mark.parametrize(
     ("kwargs", "message"),
     [
-        ({"top": "Wrong-1.0.0"}, "below Igdrasyl-1.2.1/"),
+        ({"top": "Wrong-1.0.0"}, "below Igdrasyl-1.3.0/"),
         ({"extra": {"../escape": b"x"}}, "leaves the folder"),
         ({"extra": {"/etc/passwd": b"x"}}, "leaves the folder"),
         ({"commit": None}, "no commit id"),
     ],
 )
 def test_a_tarball_with_the_wrong_layout_is_refused(work, kwargs, message):
-    make_tarball(work["sources"], "operator", "1.2.1", **kwargs)
+    make_tarball(work["sources"], "operator", "1.3.0", **kwargs)
     with pytest.raises(build_release.ReleaseError, match=message):
         build(work)
 
 
 def test_a_tarball_without_the_version_file_or_not_a_tarball_is_refused(work):
-    path = work["sources"] / "Igdrasyl-1.2.1.tar.gz"
+    path = work["sources"] / "Igdrasyl-1.3.0.tar.gz"
     path.write_bytes(b"this is not a tarball")
     with pytest.raises(build_release.ReleaseError, match="not a readable"):
         build(work)
@@ -258,7 +258,7 @@ def test_a_tarball_without_the_version_file_or_not_a_tarball_is_refused(work):
         format=tarfile.PAX_FORMAT,
         pax_headers={"comment": COMMIT},
     ) as archive:
-        info = tarfile.TarInfo("Igdrasyl-1.2.1/README")
+        info = tarfile.TarInfo("Igdrasyl-1.3.0/README")
         archive.addfile(info, io.BytesIO(b""))
     path.write_bytes(buffer.getvalue())
     with pytest.raises(build_release.ReleaseError, match=r"app/version\.py is missing"):
@@ -290,7 +290,7 @@ def test_a_non_empty_output_folder_is_refused_unless_forced(work):
 def test_the_pin_file_reports_every_problem_at_once(tmp_path):
     pins = tmp_path / "p.yml"
     pins.write_text(
-        "appliance: {min_installed: soon}\ncomponents:\n  operator: {repo: x/Wrong, tag: 1.2.1}\n  builder: {repo: o/Mjonyr, tag: v1.0.0, data_migration: 'yes'}\n  extra: {}\n"
+        "appliance: {min_installed: soon}\ncomponents:\n  operator: {repo: x/Wrong, tag: 1.3.0}\n  builder: {repo: o/TopologyBuilder, tag: v1.0.0, data_migration: 'yes'}\n  extra: {}\n"
     )
     with pytest.raises(build_release.ReleaseError) as raised:
         build_release.load_pins(pins)
@@ -387,17 +387,17 @@ def test_a_component_can_be_archived_from_a_checkout_at_its_tag(work):
     checkouts = work["tmp"] / "checkouts"
     repo = checkouts / "Igdrasyl"
     (repo / "app").mkdir(parents=True)
-    (repo / "app" / "version.py").write_text('__version__ = "1.2.1"\n')
+    (repo / "app" / "version.py").write_text('__version__ = "1.3.0"\n')
     _git(repo, "init", "-q")
     _git(repo, "add", ".")
     _git(repo, "commit", "-q", "-m", "one")
-    _git(repo, "tag", "v1.2.1")
-    (work["sources"] / "Igdrasyl-1.2.1.tar.gz").unlink()
+    _git(repo, "tag", "v1.3.0")
+    (work["sources"] / "Igdrasyl-1.3.0.tar.gz").unlink()
     document = build(work, checkouts=checkouts)
     assert document["components"]["operator"]["commit"] == _git(
         repo, "rev-parse", "HEAD"
     )
-    _git(repo, "tag", "-d", "v1.2.1")
+    _git(repo, "tag", "-d", "v1.3.0")
     shutil.rmtree(work["out"])
     with pytest.raises(
         build_release.ReleaseError, match="git rev-parse --verify failed"
@@ -418,11 +418,11 @@ def test_verify_accepts_what_build_made_and_names_every_kind_of_tampering(work):
         for name, data in pristine.items():
             (out / name).write_bytes(data)
 
-    tarball = out / "Igdrasyl-1.2.1.tar.gz"
+    tarball = out / "Igdrasyl-1.3.0.tar.gz"
     tarball.write_bytes(tarball.read_bytes()[:-1] + b"X")
     with pytest.raises(
         build_release.ReleaseError,
-        match=r"Igdrasyl-1\.2\.1\.tar\.gz: the checksum differs from components\.json",
+        match=r"Igdrasyl-1\.3\.0\.tar\.gz: the checksum differs from components\.json",
     ):
         build_release.verify(out)
     restore()
@@ -430,14 +430,16 @@ def test_verify_accepts_what_build_made_and_names_every_kind_of_tampering(work):
         (out / "SHA256SUMS")
         .read_text()
         .replace(
-            hashlib.sha256((out / "Mjonyr-1.0.0.tar.gz").read_bytes()).hexdigest(),
+            hashlib.sha256(
+                (out / "TopologyBuilder-1.0.0.tar.gz").read_bytes()
+            ).hexdigest(),
             "0" * 64,
         )
     )
     (out / "SHA256SUMS").write_text(sums)
     with pytest.raises(
         build_release.ReleaseError,
-        match="Mjonyr-1.0.0.tar.gz: the checksum differs from SHA256SUMS",
+        match="TopologyBuilder-1.0.0.tar.gz: the checksum differs from SHA256SUMS",
     ):
         build_release.verify(out)
     restore()
@@ -598,13 +600,15 @@ def test_the_release_notes_list_what_changed_since_the_previous_release(work, tm
         tmp_path / "previous.json",
     )
     assert "# Ginnungagap appliance 1.3.0" in notes and "Update of 1.2.9" in notes
-    assert "- operator (HTL3R-Xeonis/Igdrasyl): 1.2.0 -> 1.2.1" in notes
+    assert "- operator (HTL3R-Xeonis/Igdrasyl): 1.2.0 -> 1.3.0" in notes
     assert "- appliance (HTL3R-Xeonis/Ginnungagap-Appliance): 1.2.9 -> 1.3.0" in notes
     assert "builder" not in notes  # unchanged components are not listed
     plain = build_release.release_notes(
         json.loads((work["out"] / "components.json").read_text()), None
     )
-    assert "- builder (HTL3R-Xeonis/Mjonyr): 1.0.0" in plain and "a note" in plain
+    assert (
+        "- builder (HTL3R-Xeonis/TopologyBuilder): 1.0.0" in plain and "a note" in plain
+    )
 
 
 def test_the_command_line_builds_verifies_and_reports_errors_with_exit_codes(
@@ -782,7 +786,7 @@ def test_fetch_downloads_each_release_asset_verifies_its_checksum_and_sends_the_
         auth is None for _, auth in signed
     )  # the signed download address never gets the token
     assert any(
-        "/repos/HTL3R-Xeonis/Igdrasyl/releases/tags/v1.2.1" in path
+        "/repos/HTL3R-Xeonis/Igdrasyl/releases/tags/v1.3.0" in path
         for path, _ in api_calls
     )
     assert build_release.verify(work["out"]).version == "1.3.0"
@@ -818,10 +822,10 @@ def test_fetch_refuses_a_release_without_a_checksum_asset_or_without_the_tarball
 ):
     with pytest.raises(
         build_release.ReleaseError,
-        match=r"no usable Mjonyr-1\.0\.0\.tar\.gz\.sha256|no usable .*sha256",
+        match=r"no usable TopologyBuilder-1\.0\.0\.tar\.gz\.sha256|no usable .*sha256",
     ):
         _fetch(work, fake_github(drop_sums=True))
-    (work["sources"] / "Igdrasyl-1.2.1.tar.gz").unlink()
+    (work["sources"] / "Igdrasyl-1.3.0.tar.gz").unlink()
     with pytest.raises(build_release.ReleaseError, match=r"HTTP 404|no asset"):
         _fetch(work, fake_github())
 

@@ -192,7 +192,7 @@ import sys
 from pathlib import Path
 
 state = Path(sys.argv[1])
-folders = {"Igdrasyl": "TopologyOperator", "Mjonyr": "TopologyBuilder", "Hugyn-and-Munyn": "Docker-Server-Files", "Mimyr": "topology-generator"}
+folders = {"Igdrasyl": "TopologyOperator", "TopologyBuilder": "Mjonyr", "Hugyn-and-Munyn": "Docker-Server-Files", "Mimyr": "topology-generator"}
 keys = {"template-services": "docker-server-files", "generator": "topology-generator"}
 for new, old in folders.items():
     (state / "releases" / new).rename(state / "releases" / old)
