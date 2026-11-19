@@ -28,19 +28,21 @@ def place(tmp_path):
         "units": tmp_path / "units",
         "staging": tmp_path / "staging",
         "sshd": tmp_path / "sshd_config.d",
+        "state": tmp_path / "state",
     }
 
 
-def install(place, *extra, check=True, path=None):
+def install(place, *extra, check=True, path=None, script=None):
     command = [
         "bash",
-        str(ROOT / "install.sh"),
+        str(script or ROOT / "install.sh"),
         "--prefix", str(place["prefix"]),
         "--config-dir", str(place["config"]),
         "--bin-dir", str(place["bin"]),
         "--unit-dir", str(place["units"]),
         "--staging-dir", str(place["staging"]),
         "--sshd-dropin-dir", str(place["sshd"]),
+        "--state-dir", str(place["state"]),
         "--repos-dir", str(place["repos"]),
         "--no-start",
         *extra,
@@ -293,3 +295,210 @@ def test_the_script_keeps_the_install_of_the_drop_in_to_image_mode():
     assert (
         'if [ "$IMAGE" = 1 ]; then\n  install -d -m 0755 "$SSHD_DROPIN_DIR"' in script
     )
+
+
+# ---- `ginnungagap update`: state folders, units, trust key, release version
+
+
+@pytest.fixture
+def checkout(tmp_path):
+    """A copy of this checkout that a test may change (a version file, a signers file) without touching the real one."""
+    copy = tmp_path / "checkout"
+    copy.mkdir()
+    shutil.copy(ROOT / "install.sh", copy / "install.sh")
+    for name in (
+        "compose.yml",
+        "compose.legacy-ports.yml",
+        "compose.template-share.yml",
+        "ginnungagap.example.yml",
+    ):
+        shutil.copy(ROOT / name, copy / name)
+    for folder in ("ginnungagap", "docker"):
+        shutil.copytree(
+            ROOT / folder, copy / folder, ignore=shutil.ignore_patterns("__pycache__")
+        )
+    return copy
+
+
+def test_the_update_state_folders_are_made_private_where_they_hold_state(place):
+    assert install(place).returncode == 0
+    state = place["state"]
+    assert stat.S_IMODE((state / "update").stat().st_mode) == 0o700
+    assert stat.S_IMODE((state / "backups").stat().st_mode) == 0o700
+    for name in ("releases", "components"):
+        assert stat.S_IMODE((state / name).stat().st_mode) == 0o755
+    env = (place["config"] / "install.env").read_text()
+    assert f"GINNUNGAGAP_UPDATE_DIR={state}/update" in env
+    assert (place["staging"]).is_dir()  # the wizard's staging folder is unchanged
+
+
+def test_the_default_state_folder_keeps_the_staging_folder_where_it_always_was():
+    script = (ROOT / "install.sh").read_text()
+    assert "STATE_DIR=/var/lib/ginnungagap\n" in script
+    assert "STAGING_DIR=${STAGING_DIR:-$STATE_DIR/setup}" in script
+
+
+def test_no_token_file_is_created_and_the_state_never_holds_one(place):
+    assert install(place).returncode == 0
+    assert not (place["config"] / "update-token").exists()
+    written = [
+        p
+        for p in [*place["state"].rglob("*"), *place["config"].rglob("*")]
+        if p.is_file()
+    ]
+    assert not [p for p in written if "token" in p.name]
+
+
+def test_a_second_run_keeps_the_update_state(place):
+    install(place)
+    (place["state"] / "update" / "installed.json").write_text("{}\n")
+    (place["state"] / "releases" / "keep").mkdir()
+    assert install(place).returncode == 0
+    assert (place["state"] / "update" / "installed.json").read_text() == "{}\n"
+    assert (place["state"] / "releases" / "keep").is_dir()
+
+
+def test_the_check_timer_the_check_service_and_the_resume_unit_are_written(place):
+    assert install(place).returncode == 0
+    service = (place["units"] / "ginnungagap-update-check.service").read_text()
+    assert f"ExecStart={place['bin']}/ginnungagap update --check" in service
+    assert (
+        "SuccessExitStatus=10" in service
+    )  # "an update is available" is not a failure
+    assert "ExecCondition=" in service and "update-check-daily" in service
+    assert f"{place['config']}/ginnungagap.yml" in service
+    assert "--apply" not in service  # it only looks
+    timer = (place["units"] / "ginnungagap-update-check.timer").read_text()
+    assert "OnCalendar=daily" in timer and "WantedBy=timers.target" in timer
+    assert "Unit=ginnungagap-update-check.service" in timer
+    resume = (place["units"] / "ginnungagap-update-resume.service").read_text()
+    assert f"ConditionPathExists={place['state']}/update/transaction.json" in resume
+    assert f"ExecStart={place['bin']}/ginnungagap update --resume" in resume
+    assert "Before=ginnungagap.service" in resume
+
+
+def test_the_check_condition_runs_for_real_and_follows_the_configuration(place):
+    assert install(place).returncode == 0
+    service = (place["units"] / "ginnungagap-update-check.service").read_text()
+    condition = next(
+        line for line in service.splitlines() if line.startswith("ExecCondition=")
+    ).removeprefix("ExecCondition=")
+    config = place["config"] / "ginnungagap.yml"
+    base = "generator:\n  llm_servers:\n    - {name: o1, url: 'http://ollama:11434', model: m}\n"
+
+    def run():
+        return subprocess.run(
+            ["sh", "-c", condition.removeprefix("/bin/sh -c ").strip("'")],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+
+    config.write_text(base)
+    assert run().returncode == 1  # off by default
+    config.write_text(base + "update: {check: daily}\n")
+    assert run().returncode == 0, run().stderr
+
+
+def test_the_new_units_are_removed_by_uninstall_but_the_state_stays(place):
+    install(place)
+    install(place, "--uninstall")
+    for name in ("update-check.service", "update-check.timer", "update-resume.service"):
+        assert not (place["units"] / f"ginnungagap-{name}").exists()
+    assert (place["state"] / "update").is_dir() and (
+        place["config"] / "ginnungagap.yml"
+    ).is_file()
+
+
+def test_without_repos_dir_a_rerun_keeps_the_recorded_one_and_a_new_install_uses_the_components_folder(
+    place, tmp_path
+):
+    install(place)
+    # re-run without --repos-dir: the recorded folder stays (the script's own parent folder has no repositories)
+    command = ["bash", str(ROOT / "install.sh"), "--prefix", str(place["prefix"]), "--config-dir", str(place["config"]), "--bin-dir", str(place["bin"]), "--unit-dir", str(place["units"]), "--staging-dir", str(place["staging"]), "--state-dir", str(place["state"]), "--no-start"]  # fmt: skip
+    again = subprocess.run(command, capture_output=True, text=True, check=False)
+    assert again.returncode == 0, again.stderr
+    assert (
+        f"REPOS_DIR={place['repos']}" in (place["config"] / "install.env").read_text()
+    )
+    # a new install: the folder `ginnungagap update` fills (symlinks to the unpacked releases) is used when there is one
+    fresh = {
+        **place,
+        "config": tmp_path / "etc2",
+        "prefix": tmp_path / "opt2",
+        "state": tmp_path / "state2",
+    }
+    for repo in (
+        "TopologyOperator",
+        "TopologyBuilder",
+        "Docker-Server-Files",
+        "topology-generator",
+    ):
+        target = tmp_path / "releases" / repo
+        target.mkdir(parents=True)
+        (fresh["state"] / "components").mkdir(parents=True, exist_ok=True)
+        (fresh["state"] / "components" / repo).symlink_to(target)
+    command2 = [
+        c if c != str(place["config"]) else str(fresh["config"]) for c in command
+    ]
+    command2 = [
+        str(fresh["prefix"])
+        if c == str(place["prefix"])
+        else str(fresh["state"])
+        if c == str(place["state"])
+        else c
+        for c in command2
+    ]
+    result = subprocess.run(command2, capture_output=True, text=True, check=False)
+    assert result.returncode == 0, result.stderr
+    assert (
+        f"REPOS_DIR={fresh['state']}/components"
+        in (fresh["config"] / "install.env").read_text()
+    )
+
+
+def test_the_installed_program_knows_its_release_version(place, checkout):
+    (checkout / "ginnungagap" / "version.py").write_text(
+        '"""x"""\n\n__version__ = "1.3.0"\n'
+    )
+    assert install(place, script=checkout / "install.sh").returncode == 0
+    assert (place["prefix"] / "app" / "VERSION").read_text() == "1.3.0\n"
+    (checkout / "ginnungagap" / "version.py").write_text('__version__ = "1.3.1"\n')
+    assert install(place, script=checkout / "install.sh").returncode == 0
+    assert (place["prefix"] / "app" / "VERSION").read_text() == "1.3.1\n"
+
+
+def test_the_manifest_of_the_release_is_kept_next_to_the_program_and_a_plain_run_drops_a_stale_one(
+    place, tmp_path
+):
+    manifest = tmp_path / "components.json"
+    manifest.write_text('{"schema": 1}\n')
+    assert install(place, "--manifest", str(manifest)).returncode == 0
+    assert (
+        place["prefix"] / "app" / "components.json"
+    ).read_text() == '{"schema": 1}\n'
+    assert install(place).returncode == 0
+    assert not (place["prefix"] / "app" / "components.json").exists()
+    missing = install(place, "--manifest", str(tmp_path / "nope.json"))
+    assert missing.returncode == 1 and "--manifest" in missing.stderr
+
+
+def test_a_signers_file_with_a_key_is_installed_and_one_without_is_not(place, checkout):
+    (checkout / "release").mkdir()
+    signers = checkout / "release" / "allowed_signers"
+    signers.write_text("# no key yet\n\n")
+    assert install(place, script=checkout / "install.sh").returncode == 0
+    trust = place["config"] / "update-trust"
+    assert (
+        trust.is_dir() and not (trust / "allowed_signers").exists()
+    )  # `auto` would otherwise demand a signature nobody can make
+    signers.write_text(
+        '# the key\nginnungagap-release namespaces="ginnungagap-release" ssh-ed25519 AAAAC3Nza\n'
+    )
+    assert install(place, script=checkout / "install.sh").returncode == 0
+    assert "ssh-ed25519" in (trust / "allowed_signers").read_text()
+    signers.write_text("# rotated away\n")
+    assert install(place, script=checkout / "install.sh").returncode == 0
+    assert (
+        "ssh-ed25519" in (trust / "allowed_signers").read_text()
+    )  # a file without a key never removes the installed one

@@ -385,3 +385,22 @@ def test_the_ova_section_explains_itself_only_behind_the_information_icon():
     assert "TCP" in inside and "login" in inside and "lab network" in inside
     assert "<script" not in page.lower()
     assert "title=" not in section  # no hover tooltip
+
+
+def test_a_resubmitted_form_keeps_a_changed_update_section_and_adds_none_otherwise():
+    existing = config_module.normalise(
+        {
+            "generator": {
+                "llm_servers": [
+                    {"name": "o1", "url": "http://ollama:11434", "model": "m"}
+                ]
+            },
+            "update": {"channel": "prerelease", "check": "daily"},
+        }
+    )
+    raw = wizard.keep_existing_secrets(wizard.build_raw_config(MINIMAL), existing)
+    assert config_module.normalise(raw)["update"]["channel"] == "prerelease"
+    untouched = config_module.normalise({"generator": existing["generator"]})
+    assert "update" not in wizard.keep_existing_secrets(
+        wizard.build_raw_config(MINIMAL), untouched
+    )

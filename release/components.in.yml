@@ -1,0 +1,30 @@
+# The pin file of the appliance release: which tag of which component repository goes into it.
+# `release/build_release.py` reads it, fetches (or archives) each tarball, checks that every tag equals the version file
+# inside the tarball and writes components.json. Change it when a component gets a new release; the appliance's own tag is
+# the version of the release (ginnungagap/version.py must say the same, without the leading v).
+#
+# A release candidate (v1.3.0-rc.1): raise the version files of the components that are part of it to 1.3.0-rc.1 as well -
+# the tag and the file have to agree, and rc releases are only offered on `update.channel: prerelease`.
+
+appliance:
+  # min_installed: 1.2.0              # the oldest appliance release that may update directly to this one (leave out: any)
+  notes: ""                           # plain text, shown in `ginnungagap update --check`
+
+components:
+  appliance:
+    repo: HTL3R-Xeonis/Ginnungagap-Appliance
+    tag: v1.3.0
+  operator:
+    repo: HTL3R-Xeonis/TopologyOperator
+    tag: v1.2.1
+  builder:
+    repo: HTL3R-Xeonis/TopologyBuilder
+    tag: v1.0.0
+  docker-server-files:
+    repo: HTL3R-Xeonis/Docker-Server-Files
+    tag: v1.0.0
+  topology-generator:
+    repo: HTL3R-Xeonis/TopologyGenerator
+    tag: v1.0.0
+  # data_migration: true on a component whose new version changes persistent data in a way the old one can not read
+  # (then a rollback also restores the data backup, and the pre-update backup can not be skipped)

@@ -67,3 +67,11 @@ def console_refreshes(monkeypatch):
         lambda config_dir, clear_screens=False: calls.append(Path(config_dir)),
     )
     return calls
+
+
+@pytest.fixture(autouse=True)
+def update_state_in_tmp(monkeypatch, tmp_path_factory):
+    """The update state folder and its lock live under /var/lib/ginnungagap; a test must never create them on the machine."""
+    monkeypatch.setenv(
+        "GINNUNGAGAP_UPDATE_DIR", str(tmp_path_factory.mktemp("update-state"))
+    )

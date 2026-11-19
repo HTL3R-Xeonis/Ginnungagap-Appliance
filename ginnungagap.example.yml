@@ -49,3 +49,14 @@ generator:
 logging:
   level: INFO
   max_lines: 100000
+
+update:                                 # `ginnungagap update`: new versions of the installed components (see the README)
+  source: github                        # github: the public releases of `repo` (no login, no token needed) | directory: a folder with the files of ONE release
+  repo: HTL3R-Xeonis/Ginnungagap-Appliance
+  # directory: /srv/templates/ginnungagap-releases/v1.3.0   # only for source: directory (also the default of --offline-dir); needs an absolute path
+  channel: stable                       # stable | prerelease (release candidates, vX.Y.Z-rc.N)
+  # token_file: /etc/ginnungagap/update-token   # OPTIONAL access token (only for a private repo or the rate limit); the file is written by `ginnungagap update --set-token`, never put a token in this file
+  check: off                            # off | daily (a timer that only LOOKS for a new version and never installs one)
+  require_signature: auto               # auto: enforced as soon as /etc/ginnungagap/update-trust/allowed_signers exists | true | false
+  keep_releases: 2                      # unpacked versions kept per component (2 = current + previous, what a rollback needs)
+  step_timeout_seconds: 90              # how long each restarted service gets to become healthy

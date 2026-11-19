@@ -166,3 +166,54 @@ def test_an_oversized_staged_file_is_refused(staging, config_file, tmp_path):
         staging, config_file, tmp_path, None, apply=lambda *a, **k: calls.append(a) or 0
     )
     assert code == 1 and calls == [] and not config_file.exists()
+
+
+def test_a_staged_configuration_waits_for_a_running_update_and_is_kept_when_it_does_not_finish(
+    staging, config_file, tmp_path, monkeypatch
+):
+    import threading
+    import time
+
+    from ginnungagap import statelock
+
+    stage(staging, yaml.safe_dump(VALID))
+    calls = []
+    messages = []
+    with statelock.hold(out=messages.append):  # an update holds the lock
+        code = watcher.apply_staged(
+            staging,
+            config_file,
+            tmp_path,
+            None,
+            apply=lambda *a, **k: calls.append(1) or 0,
+            out=messages.append,
+            lock_timeout=0.2,
+        )
+    assert code == 1 and calls == []
+    assert (staging / watcher.MARKER).exists() and (staging / watcher.STAGED).exists()
+    assert not config_file.exists()
+    assert any("waiting" in m for m in messages) and any(
+        "kept for the next try" in m for m in messages
+    )
+
+    # ... and when the update finishes in time, the wizard's submission is applied
+    holder = threading.Event()
+
+    def update_runs_briefly():
+        with statelock.hold():
+            holder.set()
+            time.sleep(0.3)
+
+    thread = threading.Thread(target=update_runs_briefly)
+    thread.start()
+    holder.wait(2)
+    code = watcher.apply_staged(
+        staging,
+        config_file,
+        tmp_path,
+        None,
+        apply=lambda *a, **k: calls.append(1) or 0,
+        lock_timeout=5,
+    )
+    thread.join()
+    assert code == 0 and calls == [1] and config_file.exists()

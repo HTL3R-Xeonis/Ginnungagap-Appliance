@@ -115,3 +115,109 @@ def test_the_login_prompt_reload_clears_screens_only_when_asked(monkeypatch):
     assert cleared == []
     console.reload_login_prompt(clear_screens=True)
     assert cleared == [True]
+
+
+# ---- `ginnungagap update` and `versions` ----
+
+
+@pytest.fixture
+def seen_update(monkeypatch):
+    seen = {}
+
+    def fake(options, config_file=None, **kwargs):
+        seen["options"], seen["config"], seen["kwargs"] = options, config_file, kwargs
+        return 10
+
+    monkeypatch.setattr(cli.update_module, "run_update", fake)
+    return seen
+
+
+def test_update_defaults_to_a_check(seen_update):
+    assert cli.main(["update"]) == 10  # the engine's exit code is the command's
+    options = seen_update["options"]
+    assert options.action == "check" and not options.yes and not options.dry_run
+    assert options.wait == 120.0 and options.components == []
+
+
+def test_every_update_option_reaches_the_engine(seen_update):
+    argv = [
+        "update", "--apply", "--offline-dir", "/mnt/r", "--version", "1.3.0", "--channel", "prerelease",
+        "--component", "operator", "--component", "builder", "--yes", "--dry-run", "--no-backup", "--force",
+        "--allow-downgrade", "--no-start", "--wait", "30", "--restore-data", "--json", "--config", "/x/g.yml",
+    ]  # fmt: skip
+    cli.main(argv)
+    options = seen_update["options"]
+    assert (options.action, options.offline_dir, options.version, options.channel) == (
+        "apply", "/mnt/r", "1.3.0", "prerelease",
+    )  # fmt: skip
+    assert options.components == ["operator", "builder"]
+    assert options.yes and options.dry_run and options.no_backup and options.force
+    assert (
+        options.allow_downgrade
+        and options.no_start
+        and options.json
+        and options.restore_data
+    )
+    assert options.wait == 30.0 and seen_update["config"] == "/x/g.yml"
+
+
+@pytest.mark.parametrize(
+    "flag, action",
+    [
+        ("--check", "check"), ("--apply", "apply"), ("--rollback", "rollback"), ("--list", "list"),
+        ("--versions", "versions"), ("--history", "history"), ("--adopt", "adopt"),
+        ("--set-token", "set-token"), ("--resume", "resume"),
+    ],
+)  # fmt: skip
+def test_each_update_action_is_one_flag(seen_update, flag, action):
+    cli.main(["update", flag])
+    assert seen_update["options"].action == action
+
+
+def test_only_one_update_action_at_a_time(seen_update, capsys):
+    with pytest.raises(SystemExit):
+        cli.main(["update", "--apply", "--rollback"])
+    assert "not allowed with" in capsys.readouterr().err
+
+
+def test_the_boot_and_timer_units_call_names_that_exist(seen_update):
+    for argv in (
+        ["update", "--resume"],
+        ["update", "--check"],
+        ["update", "--adopt", "--yes"],
+    ):
+        cli.main(argv)
+
+
+def test_versions_is_the_same_as_update_versions(seen_update):
+    cli.main(["versions", "--json"])
+    assert seen_update["options"].action == "versions" and seen_update["options"].json
+
+
+def test_the_hidden_continue_option_selects_the_continue_action(seen_update):
+    cli.main(["update", "--continue-tx", "20261201T100000Z"])
+    options = seen_update["options"]
+    assert options.action == "continue" and options.continue_id == "20261201T100000Z"
+
+
+def test_an_unusable_configuration_for_a_plain_check_still_works_with_defaults(
+    tmp_path, capsys, monkeypatch
+):
+    monkeypatch.setenv(
+        "GINNUNGAGAP_UPDATE_DIR", str(tmp_path / "state" / "update")
+    )  # never the machine's real one
+    folder = tmp_path / "release"
+    from tests.helpers import fake_release
+
+    fake_release.make_release(folder)
+    code = cli.main(
+        [
+            "update",
+            "--check",
+            "--offline-dir",
+            str(folder),
+            "--config",
+            str(tmp_path / "missing.yml"),
+        ]
+    )
+    assert code == 10 and "Available: v1.3.0" in capsys.readouterr().out

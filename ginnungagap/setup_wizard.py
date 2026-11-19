@@ -159,7 +159,8 @@ def keep_existing_secrets(
     """
     The form never shows a stored secret back, and says "leave blank to keep the current one" - this is what makes that
     true: a secret left blank in the submitted form takes the value of the configuration already applied (if it had
-    one), instead of being validated as missing (password hash, API key).
+    one), instead of being validated as missing (password hash, API key). The same goes for the `update:` block,
+    which the form does not offer.
     """
     if existing is None:
         return raw
@@ -174,6 +175,12 @@ def keep_existing_secrets(
     for name, entry in raw["generator"]["hosted"].items():
         if not entry["api_key"] and name in old_hosted:
             entry["api_key"] = old_hosted[name].get("api_key", "")
+    # the form has no update settings (on purpose): a resubmitted form must not silently reset a changed `update:` block
+    if (
+        existing.get("update", config_module.DEFAULTS["update"])
+        != config_module.DEFAULTS["update"]
+    ):
+        raw["update"] = existing["update"]
     return raw
 
 

@@ -143,7 +143,7 @@ Appliances installed with `--image` use the prebuilt images for both startup and
 skips pulls and builds in this mode. Build the images on the preparation VM before exporting the OVA, and use
 `ginnungagap build-images` to refresh them on an installed appliance with network access.
 
-Out of scope (see the plan in the project's handoff repository): it never touches TopologyOperator's own user store -
+Out of scope: it never touches TopologyOperator's own user store -
 the appliance's `admin`/`admin` bootstrap login is unrelated and mentioned only in the console hint once setup is done.
 ESXi/GNS3 host profiles are not configured here either; that is the app's own "Design a host" dialog, after the first
 login.
@@ -260,6 +260,151 @@ everything afterwards (`KEEP=1` keeps it). It needs only Docker and the sibling 
 `tests/test_compose.py` enforces the separation (own profile per service, no `depends_on`, only the gateway and the OVA
 server publish ports, read-only mounts for the template store and the host profiles).
 
+<!-- BEGIN update configuration (the `update:` block, installer and image) -->
+## Updating the components: the `update:` block
+
+`ginnungagap update` brings newer versions of the installed components (the appliance tooling, TopologyOperator, TopologyBuilder,
+Docker-Server-Files, topology-generator) onto a running appliance. The sources are the **public** GitHub releases of
+`Ginnungagap-Appliance` (one release holds every component), or a folder with the files of one release. **No login and no token
+are needed**; nothing is ever installed by itself (the optional daily timer only looks).
+
+```yaml
+update:
+  source: github                 # github | directory
+  repo: HTL3R-Xeonis/Ginnungagap-Appliance
+  directory: ""                  # for source: directory: the absolute path of a folder with the files of ONE release
+  channel: stable                # stable | prerelease (release candidates)
+  token_file: /etc/ginnungagap/update-token   # OPTIONAL, see below; the file does not have to exist
+  check: off                     # off | daily  (the timer only looks for a new version, it never installs one)
+  require_signature: auto        # auto | true | false
+  keep_releases: 2               # unpacked versions kept per component; 2 = the current and the previous one (what a rollback needs)
+  step_timeout_seconds: 90       # how long each restarted service gets to become healthy
+```
+
+Every key is optional; the block can be left out. `ginnungagap validate` checks it like the rest of the file. The setup wizard has no
+fields for it and keeps a changed `update:` block when the form is submitted again.
+
+* **Access token (optional).** Anonymous access is the default and enough for public repositories (GitHub allows 60 anonymous
+  requests per hour per address, plenty for a check now and then). A token is only for a private repository or a shared address
+  that runs into that limit. It **never goes into `ginnungagap.yml`** (a `token:` key there is refused and the message says where
+  it belongs): it lives in the file `update.token_file` names, readable by root only (mode 0600), and is handed over without
+  showing it or putting it on a command line:
+
+  ```bash
+  read -rs -p 'GitHub token: ' T; printf '\n'; printf %s "$T" | sudo ginnungagap update --set-token; unset T
+  ```
+
+  No image carries a token: `image/prepare-image.sh` deletes the token file (also one that the configuration names), and the
+  setup wizard never asks for one.
+* **Signature.** `require_signature: auto` enforces the signature of `components.json` as soon as
+  `/etc/ginnungagap/update-trust/allowed_signers` exists, which `install.sh` only creates when `release/allowed_signers`
+  holds a key (until the first signing key exists, updates are checked by checksum only and the output says so). `true` always
+  demands a valid signature, `false` never does.
+* **Daily check.** `check: daily` makes `ginnungagap-update-check.timer` (always armed, once a day) run
+  `ginnungagap update --check`, which only writes `/var/lib/ginnungagap/update/available.json`. With `check: off` the service is
+  skipped, so the setting needs no `systemctl`. A look for updates that finds one is not an error (exit code 10).
+* **State.** `install.sh` creates, outside the program folder and outside the checkouts (so reinstalling never touches them and
+  `--uninstall` keeps them), under `--state-dir` (default `/var/lib/ginnungagap`): `update/` (what is installed, history,
+  journal, audit log, the lock; mode 0700), `releases/` (the unpacked source of each installed version), `components/` (links the
+  images are built from; this becomes `REPOS_DIR` on a new install that has no `--repos-dir`) and `backups/` (pre-update
+  backups, 0700). `/etc/ginnungagap/install.env` names the folder as `GINNUNGAGAP_UPDATE_DIR`.
+* **One update at a time.** The update and the setup wizard's apply (`apply-staged`) take the same lock
+  (`update/lock`); a wizard submit during an update waits for it (up to the service's own 10 minutes) and is kept, not lost, if the
+  update takes longer.
+* **After a power loss.** `ginnungagap-update-resume.service` runs at boot when an update left its journal behind
+  (`update/transaction.json`) and finishes or rolls back before anything else starts.
+* **Installer options.** `--state-dir DIR`, and `--manifest FILE` (given by the update itself: the `components.json` of the release
+  the program comes from is kept as `/opt/ginnungagap/app/components.json`, the version as `app/VERSION`).
+* **Image.** `image/prepare-image.sh` keeps the installed release (`installed.json`, the unpacked releases and the links the images
+  are built from), so a fresh appliance can check for and install updates at once; a machine that was installed by hand
+  (`install.sh --repos-dir`) is recorded as the release it is first (`ginnungagap update --adopt`). It deletes everything that
+  belongs to the build machine: the token, history, downloads, the journal, the audit log, pre-update backups (they hold the
+  configuration with its API keys), rollback image tags and the unpacked versions that are not installed.
+<!-- END update configuration -->
+
+<!-- BEGIN updating components (usage of `ginnungagap update`) -->
+## Updating components
+
+```
+ginnungagap update [--check | --apply | --rollback | --list | --versions | --history | --adopt | --set-token | --resume]
+                   [--offline-dir DIR] [--version X.Y.Z] [--channel stable|prerelease] [--component NAME]...
+                   [--yes] [--dry-run] [--no-backup] [--force] [--allow-downgrade] [--no-start]
+                   [--wait SECONDS] [--restore-data] [--config FILE] [--json]
+ginnungagap versions                      # the same as update --versions
+```
+
+| action | what it does |
+|---|---|
+| `--check` (default) | asks the source (GitHub Releases, no login needed; or `--offline-dir`), compares with what is installed, prints the table and writes `update/available.json`. Exit `10` = an update is available |
+| `--apply` | downloads only the components whose version changed, verifies checksums (and the signature when a key is trusted), backs up the configuration and the app's data, unpacks, rebuilds only the services that use the changed components, restarts them one after the other (generator, collectors, template services, setup wizard, the app last) and waits for each to be healthy. Any failure rolls everything back by itself |
+| `--rollback` | back to the previous release: links, the kept images (`rollback-<version>`), tooling, restarts; needs no internet. The data is restored from the pre-update backup only when that update was marked as migrating data (or with `--restore-data`) |
+| `--list`, `--versions`, `--history` | the releases the source offers, the installed release with each component's version, every release installed so far |
+| `--adopt` | records the components installed by hand (`install.sh --repos-dir /srv/repos`) as release `adopted` (copies, links, `install.env`); the first `--apply` does it itself. Nothing in the old folder is changed |
+| `--set-token` | optional GitHub token from stdin into the token file (see the `update:` block); only needed for private repositories or the anonymous rate limit |
+| `--resume` | finishes or rolls back an update that was interrupted (the boot unit runs it): before anything that runs was touched it is discarded, afterwards it is rolled back |
+
+Exit codes: `0` ok / up to date, `10` update available (`--check`), `1` error before any change (no network, GitHub error or rate
+limit - the message says when to try again, unknown release), `2` the update failed and was **rolled back**, `3` it failed and the
+rollback failed too (the journal `update/transaction.json` and the printed steps say what is left), `4` refused by a
+precondition (not root, another update or apply running, the appliance not healthy without `--force`, not enough disk, checksum or
+signature wrong, an older release without `--allow-downgrade`, no confirmation).
+
+Good to know:
+
+* **Anonymous by default.** No `Authorization` header is sent unless the token file exists; a token is only ever sent to the API host, never to the
+  download address GitHub redirects to. When GitHub's rate limit (60 requests per hour and address without a token) is hit, the
+  message names the time to try again and how to store a token.
+* **Only what changed** is rebuilt and restarted; `--component NAME` (repeatable) limits an update further and warns that this is not the combination that
+  was tested together. `--no-start` unpacks, verifies and builds without restarting anything (for an appliance image). `--dry-run`
+  shows the plan after checking the manifest and the signature and changes nothing.
+* **Short downtime**: restarting the app drops the browser sessions for about 10-20 seconds; expect a reload.
+* **Building needs the internet** (pip, Docker Hub), as `apply` without `--no-build` always did; a folder source (`--offline-dir`) only
+  removes the need for GitHub. A rollback needs no build while the rollback images are there.
+* **Files**: `/var/lib/ginnungagap/update/{installed.json,history/,available.json,transaction.json,audit.log,lock}`; every apply, rollback,
+  resume and token change is one JSON line in `audit.log` (who, from, to, result) and in the journal (`journalctl -t ginnungagap-update`).
+* Tests: `tests/test_manifest.py`, `test_releases.py`, `test_update.py`, `test_update_failures.py` (the failure matrix) run against a
+  fake appliance and a fake GitHub on localhost; `smoke/update-smoke.sh` does the real Docker part (build, recreate only what changed,
+  automatic rollback, `--rollback`).
+<!-- END updating components -->
+
+<!-- BEGIN releasing (for maintainers) -->
+## Releasing (maintainers)
+
+A release of the appliance is a GitHub release of **this** repository whose files are everything the appliance needs:
+`components.json` (the manifest), `SHA256SUMS`, optionally `components.json.sig`, and one source tarball per component
+(`Ginnungagap-Appliance-<v>.tar.gz`, `TopologyOperator-<v>.tar.gz`, `TopologyBuilder-<v>.tar.gz`, `Docker-Server-Files-<v>.tar.gz`,
+`TopologyGenerator-<v>.tar.gz`, each with one top folder of its own name). The tooling lives in `release/`; **nothing in it
+publishes or pushes on its own**.
+
+1. Release the components that changed (their own repositories, tag `vX.Y.Z` = the version file inside: `app/version.py`,
+   `pyproject.toml`, `VERSION`).
+2. In this repository raise `ginnungagap/version.py` (a patch release for fixes, minor for a new component version or feature,
+   major only for a breaking configuration or data change) and the tags in `release/components.in.yml` (the pin file; `data_migration:
+   true` on a component whose new version changes persistent data in a way the old one can't read). A release candidate is
+   `X.Y.Z-rc.N` in the version files and tags; it is only offered on `update.channel: prerelease`.
+3. Look at what would be built, with nothing published (needs the checkouts or the components' releases):
+
+   ```bash
+   python3 release/build_release.py --pins release/components.in.yml --out /tmp/release --ref HEAD --fetch   # or --checkouts DIR / --sources DIR
+   python3 release/build_release.py --verify /tmp/release                                                   # sizes, checksums, manifest
+   ```
+
+   The script refuses a tag that differs from the version file, a tarball with another top folder or a path leaving it, a
+   missing component, and a non-empty `--out`. The same output is reproducible byte for byte (`--released` fixes the time).
+4. Tag and push `vX.Y.Z` of this repository: `.github/workflows/release.yml` runs the tests and ruff, builds the files and creates the
+   release (marked as pre-release when the tag contains a `-`). The workflow can also be started by hand with `dry_run` (the
+   default), which keeps the files as a workflow artifact and creates nothing. `.github/workflows/ci.yml` runs the tests and
+   ruff on every push.
+5. **Signing (once).** `ssh-keygen -t ed25519 -N '' -C ginnungagap-release -f release_key`, put the line described in
+   `release/allowed_signers` into that file and commit it, and store the private key as the repository secret
+   `RELEASE_SIGNING_KEY` (the workflow signs with it; without the secret the release is unsigned). `COMPONENTS_READ_TOKEN`
+   is an optional read-only token for fetching the other repositories' releases (anonymous access works while they are public).
+   Locally: `--sign release_key`, and `--verify DIR --allowed-signers release/allowed_signers` to check.
+
+The appliance image is built either from checkouts, as before (`image/README.md`), or from a release with `ginnungagap update --apply
+--no-start`; the image name follows the appliance release version.
+<!-- END releasing -->
+
 ## Not part of this solution
 
 **Monitoring** (Prometheus, Grafana, exporters) is deliberately not part of the one-VM solution. It keeps running where it runs
@@ -268,4 +413,8 @@ today; `services.monitoring` in the config is refused with that explanation rath
 ## Not available yet
 
 The remaining items are the file browser, TLS from a file or ACME, and single sign-on.
-The design and open decisions are in the project's handoff repository.
+
+## License
+
+GNU General Public License v3.0 - see [LICENSE](LICENSE). Third-party components and their licenses are listed in
+[THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).

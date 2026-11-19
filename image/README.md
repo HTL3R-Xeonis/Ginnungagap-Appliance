@@ -71,6 +71,21 @@ What was done (and verified on the lab ESXi) to get the OVA, in order:
 4. The `.ova` goes into a folder of the template share; `describe_template.py` writes the `<NAME>.yml` that makes the template
    API list it (leave that out and the OVA stays invisible in the GUI but can still be deployed by file name).
 
+### The release and the update state in the image
+
+The image knows which release it is, so a fresh appliance can run `ginnungagap update --check` right away. `prepare-image.sh` (steps
+"record the installed release" and "remove the update access token, ...") does this:
+
+* it keeps `installed.json` (with no "previous" release: a copy has nothing to roll back to), the unpacked releases that the links in
+  `/var/lib/ginnungagap/components` point to, and those links; a machine that was installed with `install.sh --repos-dir` and not by
+  `ginnungagap update --apply` gets `ginnungagap update --adopt --yes` first, which records the checkouts as the release it is;
+* it **always deletes the update access token** (`/etc/ginnungagap/update-token` and the file `update.token_file` names; the token is
+  optional and never belongs in an image), the update history, downloads, journal, audit log, pre-update backups (they contain
+  the configuration with its API keys), the rollback image tags and every unpacked release that is not installed;
+* `--dry-run` lists both steps.
+
+Name the image after the appliance release it contains (`ginnungagap-appliance-v<version>`, from `ginnungagap/version.py`).
+
 ## Deploying a copy
 
 TopologyBuilder's OVA import (the ESXi host pulls the OVA from the appliance's OVA server, see "OVA server for the ESXi hosts"

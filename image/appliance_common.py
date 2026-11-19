@@ -27,7 +27,7 @@ def password_from_env(environ: Mapping[str, str] | None = None) -> str:
     if not password:
         raise SystemExit(
             f"{PASSWORD_VARIABLE} is not set. The password is only ever read from that environment variable, "
-            "never from an argument (run the script where it is loaded, e.g. from the app's .env on the testbox)."
+            "never from an argument (run the script where it is loaded, e.g. from the app's .env of the machine that runs it)."
         )
     return password
 

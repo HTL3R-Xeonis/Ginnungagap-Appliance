@@ -1,4 +1,4 @@
-"""Command line: python -m ginnungagap validate|show|render|apply|status|backup|restore|build-images|firstboot|issue."""
+"""Command line: python -m ginnungagap validate|show|render|apply|status|backup|restore|build-images|firstboot|issue|update|versions."""
 
 from __future__ import annotations
 
@@ -15,6 +15,7 @@ from ginnungagap import config as config_module
 from ginnungagap import console, firstboot, operate, setup_watcher
 from ginnungagap import render as render_module
 from ginnungagap import status as status_module
+from ginnungagap import update as update_module
 
 DEFAULT_GENERATOR_CONFIG = os.environ.get("GINNUNGAGAP_GENERATOR_CONFIG") or str(
     Path(__file__).resolve().parent.parent.parent / "topology-generator" / "config"
@@ -148,7 +149,142 @@ def _parser() -> argparse.ArgumentParser:
     staged.add_argument(
         "--no-build", action="store_true", help="use the images already on disk"
     )
+    _update_parser(commands)
     return parser
+
+
+def _add_update_options(command: argparse.ArgumentParser) -> None:
+    command.add_argument(
+        "--config",
+        default=os.path.join(
+            os.environ.get("GINNUNGAGAP_CONFIG_DIR", "/etc/ginnungagap"),
+            "ginnungagap.yml",
+        ),
+        help="the configuration file (its update section is read)",
+    )
+    command.add_argument("--json", action="store_true", help="machine-readable output")
+
+
+def _update_parser(commands) -> None:
+    update = commands.add_parser(
+        "update",
+        help="look for a new release of the appliance components, install it, go back (see the README, Updating components)",
+    )
+    actions = update.add_mutually_exclusive_group()
+    for flag, text in (
+        (
+            "check",
+            "ask the source, compare with what is installed (the default; exit 10 when an update is available)",
+        ),
+        (
+            "apply",
+            "download, verify, build, restart, check health; rolls back by itself when it fails",
+        ),
+        ("rollback", "go back to the previous release (needs no internet)"),
+        ("list", "the releases the source offers"),
+        ("versions", "the installed release and every component's version"),
+        ("history", "the releases installed on this machine so far"),
+        (
+            "adopt",
+            "record the components installed now as release 'adopted' (the first --apply does it too)",
+        ),
+        (
+            "set-token",
+            "read an optional GitHub token from stdin into the token file (0600)",
+        ),
+        (
+            "resume",
+            "finish or roll back an update that was interrupted (run by the boot unit)",
+        ),
+    ):
+        actions.add_argument(
+            f"--{flag}", dest="action", action="store_const", const=flag, help=text
+        )
+    update.add_argument("--continue-tx", help=argparse.SUPPRESS)
+    update.add_argument(
+        "--offline-dir",
+        help="a folder with the files of ONE release (or of several, one per sub-folder) instead of GitHub",
+    )
+    update.add_argument(
+        "--version", help="the release to go to (default: the newest of the channel)"
+    )
+    update.add_argument(
+        "--channel",
+        choices=("stable", "prerelease"),
+        help="default: update.channel of the configuration",
+    )
+    update.add_argument(
+        "--component",
+        action="append",
+        default=[],
+        help="only this component (repeatable; not the tested combination)",
+    )
+    update.add_argument(
+        "--yes", action="store_true", help="do not ask for confirmation"
+    )
+    update.add_argument(
+        "--dry-run", action="store_true", help="show the plan, change nothing"
+    )
+    update.add_argument(
+        "--no-backup",
+        action="store_true",
+        help="skip the pre-update backup (not recommended)",
+    )
+    update.add_argument(
+        "--force",
+        action="store_true",
+        help="update although the appliance is not healthy before",
+    )
+    update.add_argument("--allow-downgrade", action="store_true")
+    update.add_argument(
+        "--no-start",
+        action="store_true",
+        help="unpack, verify and build only; restart nothing (for an appliance image)",
+    )
+    update.add_argument(
+        "--wait",
+        type=float,
+        default=120.0,
+        help="seconds to wait for health after the restarts",
+    )
+    update.add_argument(
+        "--restore-data",
+        action="store_true",
+        help="a rollback also restores the data from the pre-update backup",
+    )
+    _add_update_options(update)
+    versions = commands.add_parser(
+        "versions",
+        help="the installed release and every component's version (same as update --versions)",
+    )
+    _add_update_options(versions)
+
+
+def _run_update(args: argparse.Namespace) -> int:
+    if args.command == "versions":
+        options = update_module.Options(action="versions", json=args.json)
+    else:
+        action = args.action or "check"
+        if args.continue_tx:
+            action = "continue"
+        options = update_module.Options(
+            action=action,
+            offline_dir=args.offline_dir,
+            version=args.version,
+            channel=args.channel,
+            components=args.component,
+            yes=args.yes,
+            dry_run=args.dry_run,
+            no_backup=args.no_backup,
+            force=args.force,
+            allow_downgrade=args.allow_downgrade,
+            no_start=args.no_start,
+            json=args.json,
+            wait=args.wait,
+            restore_data=args.restore_data,
+            continue_id=args.continue_tx,
+        )
+    return update_module.run_update(options, args.config, bundle=operate.bundle_dir())
 
 
 def _load(path: str):
@@ -170,6 +306,8 @@ def _refresh_console(config_dir: str | Path, clear_screens: bool = False) -> Non
 def main(argv: list[str] | None = None) -> int:
     args = _parser().parse_args(argv)
     bundle = operate.bundle_dir()
+    if args.command in ("update", "versions"):
+        return _run_update(args)
     if args.command == "restore":
         if not args.yes:
             print(

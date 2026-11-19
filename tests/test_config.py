@@ -364,3 +364,139 @@ def test_monitoring_is_not_part_of_the_solution_and_says_so():
     assert problems(
         {**MINIMAL, "services": {"monitoring": False}}
     )  # not even "false": the setting does not exist
+
+
+# ---- the update section (`ginnungagap update`): public sources, an optional token that never lives in this file
+
+
+def test_the_update_section_has_public_defaults_and_needs_no_token():
+    config = normalise(copy.deepcopy(MINIMAL))
+    update = config["update"]
+    assert update["source"] == "github"
+    assert update["repo"] == "HTL3R-Xeonis/Ginnungagap-Appliance"
+    assert update["channel"] == "stable" and update["check"] == "off"
+    assert update["require_signature"] == "auto"
+    assert update["keep_releases"] == 2 and update["step_timeout_seconds"] == 90
+    assert update["token_file"] == "/etc/ginnungagap/update-token"
+    assert not any(
+        "token" in problem for problem in problems({"update": {"source": "x"}})
+    )
+
+
+def test_a_missing_token_file_is_not_a_problem_and_an_empty_one_means_no_token(
+    tmp_path,
+):
+    assert normalise({**MINIMAL, "update": {"token_file": str(tmp_path / "none")}})
+    assert (
+        normalise({**MINIMAL, "update": {"token_file": ""}})["update"]["token_file"]
+        == ""
+    )
+
+
+def test_the_example_file_documents_the_update_section_with_its_defaults(example):
+    assert example["update"]["source"] == "github"
+    config = normalise(example)
+    assert {
+        k: v for k, v in config["update"].items() if k in example["update"]
+    } == example["update"] | {"check": "off"}
+
+
+def test_yaml_booleans_are_read_the_way_people_write_them(tmp_path):
+    path = tmp_path / "c.yml"
+    path.write_text(
+        "update:\n  check: off\n  require_signature: true\n"
+        "generator:\n  llm_servers:\n    - {name: o1, url: 'http://ollama:11434', model: m}\n"
+    )
+    update = cfg.load(path)["update"]
+    assert update["check"] == "off" and update["require_signature"] is True
+    path.write_text(
+        path.read_text().replace(
+            "require_signature: true", "require_signature: 'false'"
+        )
+    )
+    assert cfg.load(path)["update"]["require_signature"] is False
+
+
+@pytest.mark.parametrize("value", ["auto", True, False])
+def test_every_signature_mode_is_accepted(value):
+    assert (
+        normalise({**MINIMAL, "update": {"require_signature": value}})["update"][
+            "require_signature"
+        ]
+        is value
+    )
+
+
+@pytest.mark.parametrize(
+    "change, key",
+    [
+        ({"source": "ftp"}, "update.source"),
+        ({"repo": "not a repo"}, "update.repo"),
+        ({"repo": ""}, "update.repo"),
+        ({"source": "directory"}, "update.directory"),
+        ({"source": "directory", "directory": "relative/dir"}, "update.directory"),
+        ({"channel": "nightly"}, "update.channel"),
+        ({"check": "hourly"}, "update.check"),
+        ({"check": True}, "update.check"),
+        ({"require_signature": "maybe"}, "update.require_signature"),
+        ({"keep_releases": 1}, "update.keep_releases"),
+        ({"keep_releases": "2"}, "update.keep_releases"),
+        ({"step_timeout_seconds": 0}, "update.step_timeout_seconds"),
+        ({"step_timeout_seconds": True}, "update.step_timeout_seconds"),
+        ({"token_file": "relative-token"}, "update.token_file"),
+        ({"token_file": 5}, "update.token_file"),
+    ],
+)
+def test_a_bad_update_setting_is_named(change, key):
+    assert any(p.startswith(key) for p in problems({**MINIMAL, "update": change}))
+
+
+def test_the_directory_source_works_with_an_absolute_folder():
+    config = normalise(
+        {**MINIMAL, "update": {"source": "directory", "directory": "/srv/releases/v1"}}
+    )
+    assert config["update"]["source"] == "directory" and config["update"]["repo"]
+
+
+@pytest.mark.parametrize("name", ["token", "access_token", "github_token", "api_key"])
+def test_a_token_is_refused_in_the_file_with_a_pointer_to_set_token(name):
+    found = problems({**MINIMAL, "update": {name: "ghp_secret_value"}})
+    assert any(f"update.{name}" in p and "--set-token" in p for p in found)
+    assert not any(
+        "ghp_secret_value" in p for p in found
+    )  # the value is never echoed back
+
+
+def test_a_misspelled_update_setting_is_named_and_the_section_must_be_a_mapping():
+    assert any(
+        "update.chanel: unknown setting" in p
+        for p in problems({**MINIMAL, "update": {"chanel": "stable"}})
+    )
+    assert any(
+        "update: must be a mapping" in p for p in problems({**MINIMAL, "update": ["x"]})
+    )
+
+
+def test_an_update_section_with_only_comments_keeps_the_defaults():
+    assert normalise({**MINIMAL, "update": None})["update"] == cfg.DEFAULTS["update"]
+
+
+def test_the_timer_condition_is_true_only_for_a_valid_file_that_says_daily(tmp_path):
+    path = tmp_path / "c.yml"
+    base = "generator:\n  llm_servers:\n    - {name: o1, url: 'http://ollama:11434', model: m}\n"
+    assert cfg.update_check_is_daily(path) is False  # no file
+    path.write_text(base)
+    assert cfg.update_check_is_daily(path) is False
+    path.write_text(base + "update: {check: daily}\n")
+    assert cfg.update_check_is_daily(path) is True
+    assert cfg.main(["update-check-daily", str(path)]) == 0
+    path.write_text(base + "update: {check: daily, channel: nope}\n")
+    assert (
+        cfg.main(["update-check-daily", str(path)]) == 1
+    )  # an invalid file never starts a check
+    assert cfg.main(["nonsense"]) == 2
+
+
+def test_the_update_section_is_shown_unredacted_because_it_holds_no_secret():
+    shown = cfg.redacted(normalise(copy.deepcopy(MINIMAL)))
+    assert shown["update"]["repo"] == "HTL3R-Xeonis/Ginnungagap-Appliance"

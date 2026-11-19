@@ -73,6 +73,19 @@ DEFAULTS: dict[str, Any] = {
         "request_timeout_seconds": 500,
     },
     "logging": {"level": "INFO", "max_lines": 100000},
+    # Updating the installed components (`ginnungagap update`). The sources are public: nothing here needs a token, and a token
+    # never goes into this file - `token_file` only names the (optional, 0600) file `ginnungagap update --set-token` writes.
+    "update": {
+        "source": "github",
+        "repo": "HTL3R-Xeonis/Ginnungagap-Appliance",
+        "directory": "",
+        "channel": "stable",
+        "token_file": "/etc/ginnungagap/update-token",
+        "check": "off",
+        "require_signature": "auto",
+        "keep_releases": 2,
+        "step_timeout_seconds": 90,
+    },
 }
 
 # settings people may expect from the design but that are deliberately not part of the appliance
@@ -82,6 +95,11 @@ _EXCLUDED = {
     "services.ova_store and templates.ova_base_url",
     "services.ova_deploy": "was removed: the ESXi hosts pull the OVAs themselves over HTTP - delete this line and see "
     "services.ova_store",
+    **{
+        f"update.{name}": "a token is never written into this file - hand it over with `ginnungagap update --set-token` "
+        "(it ends up in update.token_file, readable by root only); public sources need none"
+        for name in ("token", "access_token", "github_token", "api_key")
+    },
 }
 
 # the ports compose.legacy-ports.yml publishes
@@ -90,6 +108,10 @@ LEGACY_PORTS = [8123, 8000, 8001, 8002]
 _NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,40}$")
 _URL = re.compile(r"^https?://[^\s/]+(/\S*)?$")
 _LEVELS = ("DEBUG", "INFO", "WARNING", "ERROR")
+_REPO = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*/[A-Za-z0-9._-]+$")
+UPDATE_SOURCES = ("github", "directory")
+UPDATE_CHANNELS = ("stable", "prerelease")
+UPDATE_CHECKS = ("off", "daily")
 
 
 class ConfigError(ValueError):
@@ -233,6 +255,52 @@ def _check(config: dict[str, Any]) -> list[str]:
     problems += _check_ova_store(config)
     if logging_cfg["level"] not in _LEVELS:
         problems.append(f"logging.level: must be one of {', '.join(_LEVELS)}")
+    problems += _check_update(config["update"])
+    return problems
+
+
+def _whole(value: Any, low: int, high: int) -> bool:
+    return (
+        isinstance(value, int) and not isinstance(value, bool) and low <= value <= high
+    )
+
+
+def _check_update(update: dict[str, Any]) -> list[str]:
+    """The update settings. Nothing here is a secret and nothing needs a token: the sources are public."""
+    problems: list[str] = []
+    if update["source"] not in UPDATE_SOURCES:
+        problems.append("update.source: must be github or directory")
+    elif update["source"] == "github":
+        if not isinstance(update["repo"], str) or not _REPO.match(update["repo"]):
+            problems.append("update.repo: must look like owner/repository")
+    elif not str(update["directory"]).startswith("/"):
+        problems.append(
+            "update.directory: update.source is directory, so the absolute path of the folder with the release files is needed"
+        )
+    if update["directory"] and not str(update["directory"]).startswith("/"):
+        problems.append("update.directory: must be an absolute path")
+    if update["channel"] not in UPDATE_CHANNELS:
+        problems.append("update.channel: must be stable or prerelease")
+    token_file = update["token_file"]
+    if not isinstance(token_file, str) or (
+        token_file and not token_file.startswith("/")
+    ):
+        problems.append(
+            "update.token_file: must be an absolute path (or empty for no token file); it is only read when it exists"
+        )
+    if update["check"] not in UPDATE_CHECKS:
+        problems.append("update.check: must be off or daily")
+    signature = update["require_signature"]
+    if signature != "auto" and not isinstance(signature, bool):
+        problems.append("update.require_signature: must be auto, true or false")
+    if not _whole(update["keep_releases"], 2, 20):
+        problems.append(
+            "update.keep_releases: must be a whole number from 2 (the current and the previous release) to 20"
+        )
+    if not _whole(update["step_timeout_seconds"], 10, 3600):
+        problems.append(
+            "update.step_timeout_seconds: must be a whole number of seconds (10 to 3600)"
+        )
     return problems
 
 
@@ -347,6 +415,7 @@ def normalise(raw: Any) -> dict[str, Any]:
         "templates",
         "generator",
         "logging",
+        "update",
     ):
         if not isinstance(config[section], dict):
             problems.append(f"{section}: must be a mapping")
@@ -358,6 +427,7 @@ def normalise(raw: Any) -> dict[str, Any]:
         and config["appliance"]["tls"].get("mode") is False
     ):
         config["appliance"]["tls"]["mode"] = "off"
+    _read_update_words(config["update"])
     try:
         problems += _check(config)
     except (TypeError, KeyError, AttributeError) as exc:
@@ -367,6 +437,20 @@ def normalise(raw: Any) -> dict[str, Any]:
     if problems:
         raise ConfigError(problems)
     return config
+
+
+def _read_update_words(update: dict[str, Any]) -> None:
+    """YAML 1.1 turns an unquoted `off` into false and `on` into true; `check: off` and `require_signature: true` are what people write."""
+    if update.get("check") is False:
+        update["check"] = "off"
+    signature = update.get("require_signature")
+    if isinstance(signature, str) and signature.lower() in (
+        "true",
+        "false",
+        "yes",
+        "no",
+    ):
+        update["require_signature"] = signature.lower() in ("true", "yes")
 
 
 def load(path: str | Path) -> dict[str, Any]:
@@ -389,3 +473,32 @@ def redacted(config: dict[str, Any]) -> dict[str, Any]:
     if "password_hash" in shown["appliance"]["auth"]:
         shown["appliance"]["auth"]["password_hash"] = "<hidden>"
     return shown
+
+
+def update_check_is_daily(path: str | Path) -> bool:
+    """True when the file is valid and asks for the daily update check (`update.check: daily`). Never raises."""
+    try:
+        return load(path)["update"]["check"] == "daily"
+    except ConfigError:
+        return False
+
+
+def main(argv: list[str] | None = None) -> int:
+    """`python3 -m ginnungagap.config update-check-daily FILE`: exit 0 when the daily check is switched on, 1 otherwise.
+
+    The condition of ginnungagap-update-check.service: the timer is always armed, and this is what keeps it silent
+    until the configuration says `update.check: daily` (so changing the setting needs no systemctl and no reboot).
+    """
+    import sys
+
+    args = list(sys.argv[1:] if argv is None else argv)
+    if len(args) == 2 and args[0] == "update-check-daily":
+        return 0 if update_check_is_daily(args[1]) else 1
+    print(
+        "usage: python3 -m ginnungagap.config update-check-daily FILE", file=sys.stderr
+    )
+    return 2
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

@@ -462,6 +462,59 @@ def restore(
     return 0
 
 
+def image_reference(project: str, service: str, tag: str = "latest") -> str:
+    """The image compose builds for a service: `<project>-<service>`, tagged `latest` unless told otherwise."""
+    return f"{project}-{service}:{tag}"
+
+
+def image_exists(reference: str, inspect: Inspect) -> bool:
+    return (
+        inspect(["docker", "image", "inspect", "--format", "{{.Id}}", reference])
+        is not None
+    )
+
+
+def retag_images(
+    project: str,
+    services: list[str],
+    from_tag: str,
+    to_tag: str,
+    run: Runner,
+    inspect: Inspect,
+) -> tuple[list[str], list[str]]:
+    """
+    Gives the image of each service the tag `to_tag` too (`docker tag`), starting from the one tagged `from_tag`: how an update
+    keeps the old image as `rollback-<version>` and how a rollback makes it `latest` again. Returns (retagged, without an
+    image or whose tagging failed).
+    """
+    done, missing = [], []
+    for service in services:
+        source = image_reference(project, service, from_tag)
+        if image_exists(source, inspect) and (
+            run(["docker", "tag", source, image_reference(project, service, to_tag)])
+            == 0
+        ):
+            done.append(service)
+        else:
+            missing.append(service)
+    return done, missing
+
+
+def build_services(
+    bundle: Path,
+    services: list[str],
+    run: Runner | None = None,
+    out: Callable[[str], None] = print,
+) -> int:
+    """Builds the images of these services only (the compose project's rendered environment must exist)."""
+    run = _runner(run, bundle)
+    out(f"building the images of {', '.join(services)}")
+    if run(compose_args(bundle, "build", *services)) != 0:
+        out("building the images failed")
+        return 1
+    return 0
+
+
 def bundle_dir() -> Path:
     """The folder with compose.yml: the parent of this package."""
     return Path(__file__).resolve().parent.parent

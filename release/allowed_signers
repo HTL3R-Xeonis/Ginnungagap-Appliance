@@ -1,0 +1,8 @@
+# The public key that components.json.sig is checked against (ssh-keygen -Y verify). install.sh puts this file into
+# /etc/ginnungagap/update-trust/allowed_signers - but only once it holds a key, because `update.require_signature: auto`
+# enforces the signature as soon as that file exists.
+#
+# Make the key pair once (the private key stays with the maintainer / the GitHub Actions secret RELEASE_SIGNING_KEY):
+#   ssh-keygen -t ed25519 -N '' -C ginnungagap-release -f release_key
+# then add ONE line here in this format, with the content of release_key.pub:
+#   ginnungagap-release namespaces="ginnungagap-release" ssh-ed25519 AAAA...

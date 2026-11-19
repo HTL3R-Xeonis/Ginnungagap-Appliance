@@ -10,6 +10,8 @@
 # Options: --prefix DIR (/opt/ginnungagap)  --config-dir DIR (/etc/ginnungagap)  --bin-dir DIR (/usr/local/bin)
 #          --unit-dir DIR (/etc/systemd/system)  --repos-dir DIR  --staging-dir DIR (/var/lib/ginnungagap/setup)
 #          --sshd-dropin-dir DIR (/etc/ssh/sshd_config.d)
+#          --state-dir DIR (/var/lib/ginnungagap)  where `ginnungagap update` keeps its state, the unpacked releases and backups
+#          --manifest FILE      the components.json of the release this program comes from (`ginnungagap update` passes it)
 #          --no-systemd  --no-start
 #          --install-packages   first install what is needed with apt (Debian 13 / Ubuntu: Docker, compose, python3-yaml, ...)
 #          --image              for building an appliance image: also enable the first-boot unit and switch SSH password login
@@ -21,7 +23,9 @@ PREFIX=/opt/ginnungagap
 CONFIG_DIR=/etc/ginnungagap
 BIN_DIR=/usr/local/bin
 UNIT_DIR=/etc/systemd/system
-STAGING_DIR=/var/lib/ginnungagap/setup
+STATE_DIR=/var/lib/ginnungagap
+STAGING_DIR=
+MANIFEST=
 SSHD_DROPIN_DIR=/etc/ssh/sshd_config.d
 REPOS_DIR=
 SYSTEMD=1
@@ -39,6 +43,8 @@ while [ $# -gt 0 ]; do
     --bin-dir) BIN_DIR=${2:?}; shift 2 ;;
     --unit-dir) UNIT_DIR=${2:?}; shift 2 ;;
     --staging-dir) STAGING_DIR=${2:?}; shift 2 ;;
+    --state-dir) STATE_DIR=${2:?}; shift 2 ;;
+    --manifest) MANIFEST=${2:?}; shift 2 ;;
     --sshd-dropin-dir) SSHD_DROPIN_DIR=${2:?}; shift 2 ;;
     --repos-dir) REPOS_DIR=${2:?}; shift 2 ;;
     --no-systemd) SYSTEMD=0; shift ;;
@@ -46,11 +52,15 @@ while [ $# -gt 0 ]; do
     --uninstall) UNINSTALL=1; shift ;;
     --install-packages) PACKAGES=1; shift ;;
     --image) IMAGE=1; shift ;;
-    -h|--help) sed -n '2,16p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    -h|--help) sed -n '2,19p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
     *) die "unknown option $1 (see --help)" ;;
   esac
 done
 
+STAGING_DIR=${STAGING_DIR:-$STATE_DIR/setup}
+UPDATE_DIR="$STATE_DIR/update"
+COMPONENTS_DIR="$STATE_DIR/components"
+TRUST_DIR="$CONFIG_DIR/update-trust"
 UNIT="$UNIT_DIR/ginnungagap.service"
 FIRSTBOOT_UNIT="$UNIT_DIR/ginnungagap-firstboot.service"
 BOOTSTRAP_UNIT="$UNIT_DIR/ginnungagap-bootstrap.service"
@@ -59,6 +69,9 @@ SETUP_APPLY_SERVICE_UNIT="$UNIT_DIR/ginnungagap-setup-apply.service"
 ISSUE_UNIT="$UNIT_DIR/ginnungagap-issue.service"
 ISSUE_PATH_UNIT="$UNIT_DIR/ginnungagap-issue.path"
 ISSUE_CHANGE_UNIT="$UNIT_DIR/ginnungagap-issue-changed.service"
+UPDATE_CHECK_SERVICE_UNIT="$UNIT_DIR/ginnungagap-update-check.service"
+UPDATE_CHECK_TIMER_UNIT="$UNIT_DIR/ginnungagap-update-check.timer"
+UPDATE_RESUME_UNIT="$UNIT_DIR/ginnungagap-update-resume.service"
 SSHD_DROPIN="$SSHD_DROPIN_DIR/10-ginnungagap.conf"
 # systemctl is only touched when installing into the real unit folder of a running systemd (not for a test --unit-dir)
 REAL_SYSTEMD=0
@@ -69,12 +82,12 @@ WRAPPER="$BIN_DIR/ginnungagap"
 APP="$PREFIX/app"
 
 if [ "$UNINSTALL" = 1 ]; then
-  [ "$REAL_SYSTEMD" = 1 ] && systemctl disable ginnungagap.service ginnungagap-firstboot.service ginnungagap-bootstrap.service ginnungagap-setup-apply.path ginnungagap-issue.path ginnungagap-issue.service >/dev/null 2>&1 || true
-  rm -f "$UNIT" "$FIRSTBOOT_UNIT" "$BOOTSTRAP_UNIT" "$SETUP_APPLY_PATH_UNIT" "$SETUP_APPLY_SERVICE_UNIT" "$ISSUE_UNIT" "$ISSUE_PATH_UNIT" "$ISSUE_CHANGE_UNIT" "$SSHD_DROPIN" "$WRAPPER"
+  [ "$REAL_SYSTEMD" = 1 ] && systemctl disable ginnungagap.service ginnungagap-firstboot.service ginnungagap-bootstrap.service ginnungagap-setup-apply.path ginnungagap-issue.path ginnungagap-issue.service ginnungagap-update-check.timer ginnungagap-update-resume.service >/dev/null 2>&1 || true
+  rm -f "$UNIT" "$FIRSTBOOT_UNIT" "$BOOTSTRAP_UNIT" "$SETUP_APPLY_PATH_UNIT" "$SETUP_APPLY_SERVICE_UNIT" "$ISSUE_UNIT" "$ISSUE_PATH_UNIT" "$ISSUE_CHANGE_UNIT" "$UPDATE_CHECK_SERVICE_UNIT" "$UPDATE_CHECK_TIMER_UNIT" "$UPDATE_RESUME_UNIT" "$SSHD_DROPIN" "$WRAPPER"
   rm -rf "$APP"
   rmdir "$PREFIX" 2>/dev/null || true  # only when nothing else lives there
   [ "$REAL_SYSTEMD" = 1 ] && systemctl daemon-reload || true
-  echo "Removed the program, the command and the unit. Kept: $CONFIG_DIR (your configuration), $STAGING_DIR (the setup wizard's staging folder) and the containers' data volumes."
+  echo "Removed the program, the command and the unit. Kept: $CONFIG_DIR (your configuration), $STAGING_DIR (the setup wizard's staging folder), $STATE_DIR (the update state, the unpacked releases and the backups) and the containers' data volumes."
   echo "Stop the containers with: docker compose --project-name ginnungagap down"
   exit 0
 fi
@@ -99,11 +112,25 @@ if [ "$START" = 1 ]; then
   command -v docker >/dev/null 2>&1 || die "docker is required (or use --no-start to only install)"
   docker compose version >/dev/null 2>&1 || die "the docker compose plugin is required"
 fi
-[ -n "$REPOS_DIR" ] || REPOS_DIR=$(cd "$HERE/.." && pwd)
+COMPONENT_REPOS="TopologyOperator TopologyBuilder Docker-Server-Files topology-generator"
+has_repos() {  # every checkout the images are built from is in folder $1 (a symlink to a folder counts)
+  local repo
+  for repo in $COMPONENT_REPOS; do [ -d "$1/$repo" ] || return 1; done
+}
+if [ -z "$REPOS_DIR" ]; then
+  # no --repos-dir: a re-run keeps what the installation already uses; otherwise the folder `ginnungagap update` fills
+  # (the update state's components folder, symlinks to the installed releases), and only then the folder next to this checkout
+  recorded=$(sed -n 's/^REPOS_DIR=//p' "$CONFIG_DIR/install.env" 2>/dev/null | head -n1 || true)
+  if [ -n "$recorded" ] && has_repos "$recorded"; then REPOS_DIR=$recorded
+  elif has_repos "$COMPONENTS_DIR"; then REPOS_DIR=$COMPONENTS_DIR
+  else REPOS_DIR=$(cd "$HERE/.." && pwd)
+  fi
+fi
 REPOS_DIR=$(cd "$REPOS_DIR" 2>/dev/null && pwd) || die "repos dir does not exist"
-for repo in TopologyOperator TopologyBuilder Docker-Server-Files topology-generator; do
+for repo in $COMPONENT_REPOS; do
   [ -d "$REPOS_DIR/$repo" ] || die "missing $REPOS_DIR/$repo (the images are built from it; set --repos-dir)"
 done
+[ -z "$MANIFEST" ] || [ -f "$MANIFEST" ] || die "--manifest: $MANIFEST is not a file"
 
 # ---- program: replace the code, keep rendered/ (the running project's files)
 install -d -m 0755 "$APP"
@@ -111,6 +138,12 @@ rm -rf "$APP/ginnungagap" "$APP/docker"
 cp -r "$HERE/ginnungagap" "$HERE/docker" "$APP/"
 find "$APP" -name __pycache__ -type d -prune -exec rm -rf {} +
 cp "$HERE/compose.yml" "$HERE/compose.legacy-ports.yml" "$HERE/compose.template-share.yml" "$HERE/ginnungagap.example.yml" "$APP/"
+# which release this program is: the version of the appliance (ginnungagap/version.py) and, when `ginnungagap update` installs
+# it, the components.json it came from. A leftover of an older install is removed first, it would describe the old program.
+rm -f "$APP/VERSION" "$APP/components.json"
+APP_VERSION=$(sed -n 's/^__version__ *= *"\([^"]*\)".*/\1/p' "$HERE/ginnungagap/version.py" 2>/dev/null | head -n1 || true)
+[ -z "$APP_VERSION" ] || printf '%s\n' "$APP_VERSION" >"$APP/VERSION"
+[ -z "$MANIFEST" ] || install -m 0644 "$MANIFEST" "$APP/components.json"
 
 # ---- configuration folder: never overwrite what the operator has edited
 install -d -m 0750 "$CONFIG_DIR"
@@ -124,6 +157,20 @@ fi
 # ginnungagap-setup-apply.path watches for, see ginnungagap/setup_wizard.py and ginnungagap/setup_watcher.py
 install -d -m 0700 "$STAGING_DIR"
 
+# ---- `ginnungagap update`: its state (installed release, history, journal, audit log, the lock), the unpacked releases,
+# the symlinks the images are built from and the pre-update backups. All of it lives outside the program folder and the
+# checkout, so replacing the program never touches it, and --uninstall keeps it. No token is created here: the access
+# token is optional and only ever written by `ginnungagap update --set-token` (0600, never in the configuration).
+install -d -m 0755 "$STATE_DIR"
+install -d -m 0700 "$UPDATE_DIR" "$STATE_DIR/backups"
+install -d -m 0755 "$STATE_DIR/releases" "$COMPONENTS_DIR"
+# the public key the release manifest is signed with. A file that still has no key in it (only comments) is not installed:
+# `update.require_signature: auto` enforces the signature as soon as this file exists, and with no key every update would fail.
+install -d -m 0755 "$TRUST_DIR"
+if [ -f "$HERE/release/allowed_signers" ] && grep -Eqv '^[[:space:]]*(#|$)' "$HERE/release/allowed_signers"; then
+  install -m 0644 "$HERE/release/allowed_signers" "$TRUST_DIR/allowed_signers"
+fi
+
 cat >"$CONFIG_DIR/install.env" <<ENV
 # Written by install.sh; where the program and the repositories it builds from are.
 PYTHONPATH=$APP
@@ -131,6 +178,7 @@ REPOS_DIR=$REPOS_DIR
 GINNUNGAGAP_GENERATOR_CONFIG=$REPOS_DIR/topology-generator/config
 GINNUNGAGAP_CONFIG_DIR=$CONFIG_DIR
 GINNUNGAGAP_SETUP_STAGING_DIR=$STAGING_DIR
+GINNUNGAGAP_UPDATE_DIR=$UPDATE_DIR
 ENV
 
 # ---- the command
@@ -284,6 +332,55 @@ Description=Ginnungagap console login text after a password change (also wipes t
 Type=oneshot
 ExecStart=$WRAPPER issue --clear-screens
 ISSUECHANGED
+  # looking for a new version, once a day, never installing one. The timer is always armed; the service does nothing
+  # unless the configuration says `update.check: daily` (ExecCondition), so the setting needs no systemctl. Exit code 10 of
+  # `update --check` means "an update is available" and is not a failure.
+  cat >"$UPDATE_CHECK_SERVICE_UNIT" <<UPDATECHECK
+[Unit]
+Description=Ginnungagap: look for a new version of the appliance components (never installs anything)
+After=network-online.target
+Wants=network-online.target
+ConditionPathExists=$CONFIG_DIR/ginnungagap.yml
+
+[Service]
+Type=oneshot
+TimeoutStartSec=300
+SuccessExitStatus=10
+# exit 1 here is "update.check is not daily": systemd skips the service without calling it a failure
+ExecCondition=/bin/sh -c 'cd / && set -a && . $CONFIG_DIR/install.env && set +a && exec python3 -m ginnungagap.config update-check-daily $CONFIG_DIR/ginnungagap.yml'
+ExecStart=$WRAPPER update --check
+UPDATECHECK
+  cat >"$UPDATE_CHECK_TIMER_UNIT" <<UPDATETIMER
+[Unit]
+Description=Ginnungagap: daily look for a new version (only when update.check is daily)
+
+[Timer]
+OnCalendar=daily
+RandomizedDelaySec=1h
+Persistent=true
+Unit=ginnungagap-update-check.service
+
+[Install]
+WantedBy=timers.target
+UPDATETIMER
+  # a power loss or reboot in the middle of an update leaves its journal (transaction.json): before anything starts, the
+  # next boot finishes the job - discards what had not changed anything yet, rolls back what had
+  cat >"$UPDATE_RESUME_UNIT" <<UPDATERESUME
+[Unit]
+Description=Ginnungagap: finish or roll back an update that was interrupted
+Requires=docker.service
+After=docker.service
+Before=ginnungagap.service ginnungagap-setup-apply.path
+ConditionPathExists=$UPDATE_DIR/transaction.json
+
+[Service]
+Type=oneshot
+TimeoutStartSec=900
+ExecStart=$WRAPPER update --resume
+
+[Install]
+WantedBy=multi-user.target
+UPDATERESUME
   if [ "$REAL_SYSTEMD" = 1 ]; then
     systemctl daemon-reload
     if [ "$IMAGE" = 1 ]; then
@@ -296,7 +393,7 @@ ISSUECHANGED
     if [ "$CREATED" = 0 ]; then
       systemctl enable ginnungagap.service >/dev/null 2>&1 || true
     fi
-    systemctl enable ginnungagap-bootstrap.service ginnungagap-setup-apply.path ginnungagap-issue.service ginnungagap-issue.path >/dev/null 2>&1 || true
+    systemctl enable ginnungagap-bootstrap.service ginnungagap-setup-apply.path ginnungagap-issue.service ginnungagap-issue.path ginnungagap-update-check.timer ginnungagap-update-resume.service >/dev/null 2>&1 || true
   fi
 fi
 

@@ -7,6 +7,13 @@
 # initial SSH password, the login account's password hash and the template's root password hash (root is locked), and the
 # journal of every build boot. The sshd drop-in stays for the next first boot.
 #
+# The image keeps the RELEASE it was built from (`ginnungagap update`: installed.json, the unpacked releases and the links the
+# images are built from), so a fresh appliance can check for and install updates at once. A machine that was installed with
+# install.sh --repos-dir (not by `ginnungagap update --apply`) is recorded as the release it is first (`update --adopt`).
+# What belongs to this machine's update history goes: the access token (an update token is optional and must never be
+# baked into an image), the journal, history, downloads, audit log, pre-update backups, rollback image tags and every
+# unpacked release that is not installed.
+#
 # Run it on a machine on which `install.sh --install-packages --image --no-start` was run. It is DESTRUCTIVE for what it
 # removes, so it asks for --yes; --dry-run only lists what it would do.
 #
@@ -30,7 +37,7 @@ while [ $# -gt 0 ]; do
     --dry-run) DRY=1; shift ;;
     --zero-free-space) ZERO=1; shift ;;
     --project) PROJECT=${2:?}; shift 2 ;;
-    -h|--help) sed -n '2,15p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    -h|--help) sed -n '2,22p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
     *) die "unknown option $1 (see --help)" ;;
   esac
 done
@@ -54,6 +61,74 @@ stop_setup() {
 remove_services() {
   docker ps -aq --filter "label=com.docker.compose.project=$PROJECT" | xargs -r docker rm -f >/dev/null
   docker volume ls -q | grep "^${PROJECT}_" | xargs -r docker volume rm -f >/dev/null || true
+}
+
+state_dir() {  # the folder of the update state: GINNUNGAGAP_UPDATE_DIR from install.env, else the default
+  local dir=""
+  if [ -r /etc/ginnungagap/install.env ]; then
+    dir=$(sed -n 's/^GINNUNGAGAP_UPDATE_DIR=//p' /etc/ginnungagap/install.env)
+  fi
+  dir=${dir:-/var/lib/ginnungagap/update}
+  case "$dir" in /*) ;; *) die "update state directory must be absolute" ;; esac
+  printf '%s\n' "$dir"
+}
+
+record_release() {
+  # an image built with `ginnungagap update --apply` has installed.json already; any other one is adopted as the release it is
+  if [ ! -f "$(state_dir)/installed.json" ]; then
+    ginnungagap update --adopt --yes
+  fi
+}
+
+remove_update_leftovers() {
+  local dir base token_file link keep rel
+  dir=$(state_dir)
+  base=$(dirname "$dir")
+  # the access token: the default place, and the place the configuration names (it is removed with the configuration below)
+  rm -f /etc/ginnungagap/update-token
+  token_file=$(python3 - <<'PY' 2>/dev/null || true
+import yaml
+try:
+    with open("/etc/ginnungagap/ginnungagap.yml", encoding="utf-8") as handle:
+        print((yaml.safe_load(handle) or {}).get("update", {}).get("token_file") or "")
+except Exception:
+    pass
+PY
+)
+  case "$token_file" in /*) rm -f -- "$token_file" ;; esac
+  rm -rf -- "$dir/history" "$dir/downloads"
+  rm -f -- "$dir/transaction.json" "$dir/audit.log" "$dir/available.json" "$dir/lock"
+  rm -rf -- "$base/backups"/* 2>/dev/null || true  # pre-update backups: the configuration (API keys) and the data of this machine
+  # the installed release stays but has nothing to go back to: a copy starts with no "previous" release
+  if [ -f "$dir/installed.json" ]; then
+    python3 - "$dir/installed.json" <<'PY'
+import json, os, sys
+path = sys.argv[1]
+with open(path, encoding="utf-8") as handle:
+    state = json.load(handle)
+state["previous"] = None
+state["backup"] = None
+tmp = path + ".new"
+with open(tmp, "w", encoding="utf-8") as handle:
+    json.dump(state, handle, indent=2)
+    handle.write("\n")
+os.chmod(tmp, 0o600)
+os.replace(tmp, path)
+PY
+  fi
+  # unpacked releases that no link of components/ points to (older versions kept for a rollback)
+  if [ -d "$base/releases" ]; then
+    keep=" "
+    for link in "$base"/components/*; do
+      [ -L "$link" ] && keep="$keep$(readlink -f -- "$link") "
+    done
+    for rel in "$base"/releases/*/*; do
+      [ -d "$rel" ] || continue
+      case "$keep" in *" $(readlink -f -- "$rel") "*) ;; *) rm -rf -- "$rel" ;; esac
+    done
+  fi
+  # rollback image tags: the images stay under their normal names, only the extra names go
+  docker image ls --format '{{.Repository}}:{{.Tag}}' | grep ':rollback-' | xargs -r docker image rm >/dev/null 2>&1 || true
 }
 
 remove_build_leftovers() {
@@ -136,6 +211,8 @@ act "stop the setup watcher" stop_setup
 # the containers go first: an image that a container still uses cannot be removed
 act "remove the containers and volumes of the project '$PROJECT'" remove_services
 act "build and pull the images of every service and remove every image that is not part of the current compose project" build_images
+act "record the installed release for 'ginnungagap update' (adopt the checkouts unless the image was built by an update)" record_release
+act "remove the update access token, history, downloads, audit log, backups, rollback image tags and unpacked releases that are not installed (the installed release stays)" remove_update_leftovers
 act "remove the build cache and untagged image layers" remove_build_leftovers
 act "remove the configuration, the rendered files, the first-boot marker and the generated SSH password" remove_configuration
 act "remove staged and rejected setup files" remove_staged_configuration

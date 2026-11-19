@@ -22,6 +22,7 @@ import yaml
 
 from ginnungagap import config as config_module
 from ginnungagap import operate as operate_module
+from ginnungagap import statelock
 
 MARKER = "apply.request"
 STAGED = "ginnungagap.yml"
@@ -68,6 +69,43 @@ def apply_staged(
     out: Callable[[str], None] = print,
     *,
     build: bool = True,
+    lock_timeout: float = 540.0,
+) -> int:
+    """
+    Applies what the wizard staged, but never while `ginnungagap update` is running: it waits for the update lock (up to
+    `lock_timeout` seconds, the service unit's own limit is 600) and, when that runs out, leaves the marker and the staged
+    file where they are and returns 1, so nothing is lost and the submission is taken up again by the next trigger.
+    """
+    if (
+        not (Path(staging_dir) / MARKER).exists()
+        and not (Path(staging_dir) / MARKER).is_symlink()
+    ):
+        return 0  # nothing staged: nothing to wait for
+    try:
+        with statelock.hold(timeout=lock_timeout, out=out):
+            return _apply_staged(
+                staging_dir,
+                config_file,
+                bundle,
+                generator_config,
+                apply,
+                out,
+                build=build,
+            )
+    except statelock.LockTimeout as exc:
+        out(f"the staged configuration is kept for the next try: {exc}")
+        return 1
+
+
+def _apply_staged(
+    staging_dir: str | Path,
+    config_file: str | Path,
+    bundle: Path,
+    generator_config: str | Path | None,
+    apply: Apply,
+    out: Callable[[str], None],
+    *,
+    build: bool,
 ) -> int:
     """
     0: nothing was staged, or it was and is now the live configuration, applied. 1: something was staged but was not
