@@ -20,7 +20,7 @@ services:                               # every service is its own container and
   template_esxi: true
   template_gns3: true
   generator: true
-  ova_deploy: external                  # true (runs here, own container) | external (the existing one, see ova_deploy below) | off
+  ova_store: true                       # true: this appliance serves the store's OVAs to the ESXi hosts (templates.ova_port) | false: served elsewhere, set templates.ova_base_url
   filebrowser: false                    # not available yet
 
 templates:                              # where the OVAs and their *.yml descriptions live
@@ -31,6 +31,8 @@ templates:                              # where the OVAs and their *.yml descrip
     # nfs: { server: 10.20.20.180, export: /mnt/pool/templates }
   esxi_refresh_minutes: 15
   gns3_refresh_minutes: 5
+  ova_port: 8088                        # plain HTTP, no login: only the ESXi hosts of the lab network may reach it
+  # ova_base_url: http://10.20.20.181:8088  # the address the ESXi hosts pull <folder>/<file>.ova from; default: the public_url's host on ova_port
   # esxi_url: http://10.20.20.171:8000  # only needed when services.template_esxi is false
   # gns3_url: http://10.20.20.171:8001  # only needed when services.template_gns3 is false
 
@@ -43,10 +45,6 @@ generator:
     # gemini: { api_key: "..." }        # presets: gemini, groq, openrouter (others need base_url and model)
   max_retries: 3
   request_timeout_seconds: 500
-
-ova_deploy:
-  external_url: "http://10.20.20.172:8003"   # used while services.ova_deploy is external
-  timeout_seconds: 600
 
 logging:
   level: INFO

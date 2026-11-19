@@ -14,6 +14,7 @@ import urllib.request
 from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
+from urllib.parse import urlparse
 
 # state values: ok | degraded | down | login | external | off
 Fetch = Callable[[str], tuple[int | None, str, str | None]]
@@ -106,7 +107,7 @@ def _row(
 
 def check(config: dict[str, Any], base: str | None, fetch: Fetch) -> list[Row]:
     """Probe through the gateway, or directly on the Compose network when base is None."""
-    services, ova = config["services"], config["ova_deploy"]
+    services = config["services"]
     rows: list[Row] = []
 
     def probe(name: str, path: str, port: int = 8000):
@@ -153,27 +154,36 @@ def check(config: dict[str, Any], base: str | None, fetch: Fetch) -> list[Row]:
             continue
         status, body, error = probe(label, path)
         rows.append(_row(label, status, body, error, summary))
-    if services["ova_deploy"] is True:
-        status, body, error = probe("ova-deploy", "/ova/health")
-        rows.append(
-            _row(
-                "ova-deploy",
-                status,
-                body,
-                error,
-                lambda d: "ready (ESXi login comes with each deploy request)",
+    if services["ova_store"]:
+        port = config["templates"]["ova_port"]
+        # not behind the gateway (it may ask for a login, an ESXi host cannot): asked on its own port, on the gateway's host
+        host = urlparse(base).hostname if base is not None else None
+        url = f"http://{host}:{port}/health" if host else "http://ova-store:80/health"
+        status, body, error = fetch(url)
+        if status is None:
+            rows.append(
+                Row("ova-store", "down", f"not reachable on port {port} ({error})")
             )
-        )
-    elif services["ova_deploy"] == "external":
+        else:
+            rows.append(
+                _row(
+                    "ova-store",
+                    status,
+                    body,
+                    error,
+                    lambda d: (
+                        f"serving the OVAs of the template store to ESXi hosts on port {port} (no login)"
+                    ),
+                )
+            )
+    else:
         rows.append(
             Row(
-                "ova-deploy",
+                "ova-store",
                 "external",
-                f"{ova['external_url']} (separate service, not checked here)",
+                f"{config['templates']['ova_base_url']} (served elsewhere, not checked here)",
             )
         )
-    else:
-        rows.append(Row("ova-deploy", "off", "switched off"))
     return rows
 
 

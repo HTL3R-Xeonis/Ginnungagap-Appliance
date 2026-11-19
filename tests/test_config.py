@@ -7,7 +7,6 @@ from ginnungagap import config as cfg
 from ginnungagap.config import ConfigError, normalise
 
 MINIMAL = {
-    "ova_deploy": {"external_url": "http://ova:8003"},
     "generator": {
         "llm_servers": [{"name": "o1", "url": "http://ollama:11434", "model": "m"}]
     },
@@ -23,7 +22,9 @@ def problems(raw) -> list[str]:
 def test_the_example_file_is_valid(example):
     config = normalise(example)
     assert config["version"] == 1
-    assert config["services"]["ova_deploy"] == "external"
+    assert config["services"]["ova_store"] is True
+    assert config["templates"]["ova_port"] == 8088
+    assert config["templates"]["ova_base_url"] == ""
 
 
 def test_a_minimal_file_is_completed_with_defaults():
@@ -36,12 +37,12 @@ def test_a_minimal_file_is_completed_with_defaults():
 def test_every_problem_is_reported_at_once():
     found = problems(
         {
-            "services": {"ova_deploy": "native"},
+            "services": {"ova_store": "native"},
             "logging": {"level": "LOUD"},
             "appliance": {"http_port": 0},
         }
     )
-    assert any("services.ova_deploy" in p for p in found)
+    assert any("services.ova_store" in p for p in found)
     assert any("logging.level" in p for p in found)
     assert any("appliance.http_port" in p for p in found)
     assert len(found) >= 3
@@ -67,20 +68,63 @@ def test_services_that_do_not_exist_yet_are_refused_not_ignored():
             **MINIMAL,
             "services": {
                 "filebrowser": True,
-                "ova_deploy": "container",
             },
         }
     )
     assert any("services.filebrowser" in p for p in found)
-    assert any("services.ova_deploy" in p and "true" in p for p in found)
 
 
-def test_ova_deploy_external_needs_its_address_but_off_does_not():
+def test_the_ova_server_runs_here_by_default_and_needs_no_address():
+    config = normalise(copy.deepcopy(MINIMAL))
+    assert config["services"]["ova_store"] is True
+
+
+def test_an_ova_server_that_runs_elsewhere_needs_the_address_the_esxi_hosts_use():
+    base = {**MINIMAL, "services": {"ova_store": False}}
+    found = problems(base)
     assert any(
-        "ova_deploy.external_url" in p
-        for p in problems({"generator": MINIMAL["generator"]})
+        "templates.ova_base_url" in p and "ova_store is false" in p for p in found
     )
-    normalise({"generator": MINIMAL["generator"], "services": {"ova_deploy": "off"}})
+    config = normalise({**base, "templates": {"ova_base_url": "http://10.0.0.9:80"}})
+    assert config["templates"]["ova_base_url"] == "http://10.0.0.9:80"
+
+
+def test_the_ova_base_url_and_port_are_checked():
+    found = problems(
+        {**MINIMAL, "templates": {"ova_base_url": "ftp://x", "ova_port": 0}}
+    )
+    assert any("templates.ova_base_url: must be an http" in p for p in found)
+    assert any("templates.ova_port: must be a port number" in p for p in found)
+    assert any(
+        "templates.ova_port" in p
+        for p in problems({**MINIMAL, "templates": {"ova_port": "8088"}})
+    )
+
+
+def test_the_ova_port_may_not_collide_with_a_port_the_appliance_publishes():
+    assert any(
+        "templates.ova_port: 80 is already used" in p
+        for p in problems({**MINIMAL, "templates": {"ova_port": 80}})
+    )
+    assert any(
+        "templates.ova_port: 8123" in p
+        for p in problems(
+            {
+                **MINIMAL,
+                "appliance": {"legacy_ports": True},
+                "templates": {"ova_port": 8123},
+            }
+        )
+    )
+    normalise({**MINIMAL, "templates": {"ova_port": 8123}})  # fine without legacy ports
+
+
+def test_the_removed_ova_deploy_settings_are_refused_with_the_way_forward():
+    found = problems({**MINIMAL, "ova_deploy": {"external_url": "http://x:8003"}})
+    assert len(found) == 1 and found[0].startswith("ova_deploy: was removed")
+    assert "services.ova_store" in found[0]
+    found = problems({**MINIMAL, "services": {"ova_deploy": "external"}})
+    assert len(found) == 1 and found[0].startswith("services.ova_deploy: was removed")
 
 
 def test_a_switched_off_service_needs_the_address_of_the_one_that_runs_elsewhere():
@@ -99,7 +143,6 @@ def test_a_switched_off_service_needs_the_address_of_the_one_that_runs_elsewhere
     assert any("generator.url" in p for p in found)
     config = normalise(
         {
-            "ova_deploy": MINIMAL["ova_deploy"],
             "services": {
                 "template_esxi": False,
                 "template_gns3": False,
@@ -115,7 +158,7 @@ def test_a_switched_off_service_needs_the_address_of_the_one_that_runs_elsewhere
 
 
 def test_the_generator_needs_an_llm_server_only_while_it_runs():
-    found = problems({"ova_deploy": MINIMAL["ova_deploy"]})
+    found = problems({})
     assert any("at least one LLM server" in p for p in found)
 
 
@@ -192,7 +235,6 @@ def test_store_settings_are_checked_per_type():
 def test_llm_server_entries_are_checked():
     found = problems(
         {
-            "ova_deploy": MINIMAL["ova_deploy"],
             "generator": {
                 "llm_servers": [
                     {"name": "a", "url": "ftp://x"},
@@ -210,7 +252,7 @@ def test_llm_server_entries_are_checked():
 
 
 def test_hosted_services_use_presets_or_need_their_own_address():
-    base = {"ova_deploy": MINIMAL["ova_deploy"]}
+    base: dict = {}
     normalise({**base, "generator": {"hosted": {"gemini": {"api_key": "k"}}}})
     found = problems({**base, "generator": {"hosted": {"myllm": {"api_key": "k"}}}})
     assert any("myllm.base_url" in p for p in found) and any(
@@ -241,7 +283,6 @@ def test_hosted_services_use_presets_or_need_their_own_address():
 def test_redacted_hides_keys_and_hashes_without_touching_the_original():
     config = normalise(
         {
-            "ova_deploy": MINIMAL["ova_deploy"],
             "appliance": {
                 "public_url": "https://g.lab",
                 "tls": {"mode": "self-signed"},
@@ -273,7 +314,7 @@ def test_load_reports_a_missing_file_and_broken_yaml(tmp_path):
 def test_load_reads_a_file(tmp_path):
     path = tmp_path / "g.yml"
     path.write_text(yaml.safe_dump(MINIMAL))
-    assert cfg.load(path)["ova_deploy"]["external_url"] == "http://ova:8003"
+    assert cfg.load(path)["generator"]["llm_servers"][0]["name"] == "o1"
 
 
 def test_an_unquoted_off_and_a_section_with_only_comments_work():
@@ -308,7 +349,7 @@ def test_a_typo_does_not_hide_the_other_problems():
         {"appliance": {"tls": "yes"}},
         {"templates": {"store": "here"}},
         {"generator": {"llm_servers": 5}},
-        {"services": {"ova_deploy": ["external"]}},
+        {"services": {"ova_store": ["yes"]}},
     ],
 )
 def test_a_wrongly_shaped_value_is_a_problem_not_a_crash(broken):
@@ -323,12 +364,3 @@ def test_monitoring_is_not_part_of_the_solution_and_says_so():
     assert problems(
         {**MINIMAL, "services": {"monitoring": False}}
     )  # not even "false": the setting does not exist
-
-
-def test_the_ova_deploy_container_has_no_password_setting_any_more():
-    base = {"generator": MINIMAL["generator"], "services": {"ova_deploy": True}}
-    assert "esxi_password" not in normalise(base)["ova_deploy"]
-    found = problems({**base, "ova_deploy": {"esxi_password": "x"}})
-    assert len(found) == 1
-    assert found[0].startswith("ova_deploy.esxi_password: was removed")
-    assert "host profile" in found[0] and "delete this line" in found[0]

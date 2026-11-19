@@ -31,7 +31,6 @@ def stage(staging: Path, text: str) -> None:
 VALID = {
     "appliance": {"public_url": "http://ginn.lab"},
     "generator": {"llm_servers": [{"name": "o", "url": "http://10.0.0.1:11434", "model": "m"}]},
-    "ova_deploy": {"external_url": "http://10.0.0.2:8003"},
 }  # fmt: skip
 
 

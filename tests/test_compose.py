@@ -32,9 +32,9 @@ def test_no_service_depends_on_another(compose):
         assert "links" not in service and "network_mode" not in service, name
 
 
-def test_only_the_gateway_publishes_ports(compose):
+def test_only_the_gateway_and_the_ova_server_publish_ports(compose):
     published = {n for n, s in compose["services"].items() if "ports" in s}
-    assert published == {"gateway"}
+    assert published == {"gateway", "ova-store"}
 
 
 def test_the_legacy_ports_file_only_adds_ports_to_existing_services(compose):
@@ -45,23 +45,25 @@ def test_the_legacy_ports_file_only_adds_ports_to_existing_services(compose):
     assert all(set(s) == {"ports"} for s in legacy["services"].values())
 
 
-def test_the_ova_deploy_service_is_its_own_container_with_the_password_as_a_secret(
-    compose,
-):
-    service = compose["services"]["ova-deploy"]
-    assert service["profiles"] == ["ova-deploy"]
+def test_the_ova_server_is_its_own_read_only_container_on_its_own_port(compose):
+    service = compose["services"]["ova-store"]
+    assert service["profiles"] == ["ova-store"]
     assert "depends_on" not in service
-    # the ESXi login comes with each deploy request: no secret, no host profiles, no app data mounted
-    assert "secrets" not in service and "secrets" not in compose
-    assert service["volumes"] == ["template-store:/templates/esxi:ro"]
-    assert "HOST_PROFILES_DIR" not in service["environment"]
+    # the one service that is published without the gateway: ESXi hosts cannot log in, so it must not sit behind it
+    assert service["ports"] == ["${OVA_PORT:-8088}:80"]
+    # the store and its own rendered Caddyfile, both read-only; nothing else (no app data, no host profiles, no secrets)
+    assert sorted(service["volumes"]) == [
+        "./rendered/ova-store/Caddyfile:/etc/caddy/Caddyfile:ro",
+        "template-store:/store:ro",
+    ]
+    assert "secrets" not in service and "environment" not in service
     assert "/health" in " ".join(service["healthcheck"]["test"])
-    assert service["build"]["additional_contexts"]["service"].endswith(
-        "/TopologyBuilderServices"
-    )
-    assert not any(
-        "PASSWORD" in str(v) for v in (service.get("environment") or {}).values()
-    )
+    assert "ova-deploy" not in compose["services"]
+
+
+def test_the_legacy_ports_file_has_no_port_for_the_removed_ova_deploy_service():
+    text = (ROOT / "compose.legacy-ports.yml").read_text(encoding="utf-8")
+    assert "ova-deploy" not in text and "8003" not in text
 
 
 def test_services_with_a_health_endpoint_have_a_health_check(compose):
@@ -162,7 +164,7 @@ def test_the_profiles_the_renderer_selects_all_exist_in_the_compose_file(
     from ginnungagap.render import profiles
 
     declared = {p for s in compose["services"].values() for p in s["profiles"]}
-    everything = make_config(services={"ova_deploy": True})
+    everything = make_config()
     assert set(profiles(make_config())) <= declared
     assert (
         set(profiles(everything)) == declared

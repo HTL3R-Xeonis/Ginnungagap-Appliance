@@ -1,6 +1,6 @@
 """The thin FastAPI shim (docker/setup_app.py) around ginnungagap/setup_wizard.py - the HTTP layer only; the actual
 form-to-config logic is tested without FastAPI in tests/test_setup_wizard.py. Skipped where fastapi/httpx are not
-installed, same as tests/test_ova_health.py for the OVA deploy wrapper."""
+installed."""
 
 from __future__ import annotations
 
@@ -30,14 +30,14 @@ MINIMAL_FORM = {
     "gns3_url": "http://10.0.0.1:8001",
     "generator_mode": "external",
     "generator_url": "http://10.0.0.1:8002",
-    "ova_deploy_mode": "off",
+    "ova_mode": "external",
+    "ova_base_url": "http://10.0.0.1:8088",
     "store_type": "local",
     "store_local_path": "/srv/templates",
     "esxi_refresh_minutes": "15",
     "gns3_refresh_minutes": "5",
     "generator_max_retries": "3",
     "generator_timeout_seconds": "500",
-    "ova_timeout_seconds": "600",
     "logging_level": "INFO",
     "logging_max_lines": "100000",
     "http_port": "80",
@@ -88,9 +88,13 @@ def test_appliance_health_checks_bundled_services(
                     "template_esxi": False,
                     "template_gns3": False,
                     "generator": True,
-                    "ova_deploy": "off",
+                    "ova_store": False,
                 },
-                "templates": {"esxi_url": "http://t:8000", "gns3_url": "http://t:8001"},
+                "templates": {
+                    "esxi_url": "http://t:8000",
+                    "gns3_url": "http://t:8001",
+                    "ova_base_url": "http://t:8088",
+                },
                 "generator": {
                     "llm_servers": [
                         {"name": "test", "url": "http://model:11434", "model": "m"}
@@ -118,7 +122,7 @@ def test_appliance_health_checks_bundled_services(
             "template-esxi": "off",
             "template-gns3": "off",
             "generator": "ok" if generator_available else "degraded",
-            "ova-deploy": "off",
+            "ova-store": "external",
         },
     }
     assert requested == [
@@ -215,9 +219,13 @@ def test_an_existing_configuration_is_shown_as_already_set_without_its_secrets(
                     "template_esxi": False,
                     "template_gns3": False,
                     "generator": False,
-                    "ova_deploy": "off",
+                    "ova_store": False,
                 },
-                "templates": {"esxi_url": "http://t:8000", "gns3_url": "http://t:8001"},
+                "templates": {
+                    "esxi_url": "http://t:8000",
+                    "gns3_url": "http://t:8001",
+                    "ova_base_url": "http://t:8088",
+                },
                 "generator": {"url": "http://t:8002"},
             }
         ),

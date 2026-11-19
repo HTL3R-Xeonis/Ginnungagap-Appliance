@@ -20,7 +20,8 @@ MINIMAL = {
     "gns3_url": "http://10.0.0.1:8001",
     "generator_mode": "external",
     "generator_url": "http://10.0.0.1:8002",
-    "ova_deploy_mode": "off",
+    "ova_mode": "external",
+    "ova_base_url": "http://10.0.0.1:8088",
     "store_type": "local",
     "store_local_path": "/srv/templates",
 }
@@ -36,7 +37,8 @@ def test_a_minimal_submission_normalises_cleanly():
     assert config["appliance"]["public_url"] == "https://ginn.lab"
     assert config["services"]["template_esxi"] is False
     assert config["templates"]["esxi_url"] == "http://10.0.0.1:8000"
-    assert config["services"]["ova_deploy"] == "off"
+    assert config["services"]["ova_store"] is False
+    assert config["templates"]["ova_base_url"] == "http://10.0.0.1:8088"
 
 
 def test_template_store_management_is_opt_in_and_prefilled_on_reconfigure():
@@ -194,7 +196,6 @@ def test_prefill_never_includes_a_secret_value():
             "appliance": {
                 "auth": {"mode": "basic", "user": "a", "password_hash": "$2a$x"}
             },
-            "services": {"ova_deploy": "off"},
             "generator": {
                 "llm_servers": [
                     {"name": "o", "url": "http://10.0.0.1:1", "model": "m"}
@@ -262,9 +263,13 @@ def test_blank_secrets_keep_the_values_of_the_configuration_already_applied():
                 "template_esxi": False,
                 "template_gns3": False,
                 "generator": False,
-                "ova_deploy": "off",
+                "ova_store": False,
             },
-            "templates": {"esxi_url": "http://t:8000", "gns3_url": "http://t:8001"},
+            "templates": {
+                "esxi_url": "http://t:8000",
+                "gns3_url": "http://t:8001",
+                "ova_base_url": "http://t:8088",
+            },
             "generator": {
                 "url": "http://t:8002",
                 "hosted": {"gemini": {"api_key": "old-key"}},
@@ -298,9 +303,13 @@ def test_a_typed_secret_replaces_the_existing_one_and_no_existing_config_changes
                 "template_esxi": False,
                 "template_gns3": False,
                 "generator": False,
-                "ova_deploy": "off",
+                "ova_store": False,
             },
-            "templates": {"esxi_url": "http://t:8000", "gns3_url": "http://t:8001"},
+            "templates": {
+                "esxi_url": "http://t:8000",
+                "gns3_url": "http://t:8001",
+                "ova_base_url": "http://t:8088",
+            },
             "generator": {
                 "url": "http://t:8002",
                 "hosted": {"gemini": {"api_key": "old"}},
@@ -318,4 +327,61 @@ def test_a_typed_secret_replaces_the_existing_one_and_no_existing_config_changes
 def test_the_wizard_has_no_esxi_password_field_and_ignores_a_submitted_one():
     assert "ova_esxi_password" not in wizard.render_page({})
     raw = wizard.build_raw_config({**MINIMAL, "ova_esxi_password": "typed"})
-    assert "esxi_password" not in raw["ova_deploy"]
+    assert "typed" not in str(raw)
+    assert "ova_deploy" not in raw
+
+
+def test_the_ova_server_defaults_to_running_here_on_port_8088_with_no_address():
+    config = normalised({"ova_mode": "bundled", "ova_base_url": ""})
+    assert config["services"]["ova_store"] is True
+    assert config["templates"]["ova_port"] == 8088
+    assert config["templates"]["ova_base_url"] == ""
+
+
+def test_the_ova_server_port_and_address_are_taken_from_the_form():
+    config = normalised(
+        {
+            "ova_mode": "bundled",
+            "ova_port": "8090",
+            "ova_base_url": " http://10.0.0.5:8090 ",
+        }
+    )
+    assert config["templates"]["ova_port"] == 8090
+    assert config["templates"]["ova_base_url"] == "http://10.0.0.5:8090"
+
+
+def test_a_port_that_is_not_a_number_is_reported_by_the_config_check_not_guessed():
+    raw = wizard.build_raw_config({**MINIMAL, "ova_mode": "bundled", "ova_port": "abc"})
+    with pytest.raises(config_module.ConfigError, match="templates.ova_port"):
+        config_module.normalise(raw)
+
+
+def test_an_ova_server_elsewhere_without_an_address_is_refused():
+    raw = wizard.build_raw_config({**MINIMAL, "ova_base_url": ""})
+    with pytest.raises(config_module.ConfigError, match="templates.ova_base_url"):
+        config_module.normalise(raw)
+
+
+def test_the_ova_settings_are_prefilled_and_survive_a_round_trip():
+    config = normalised({"ova_mode": "bundled", "ova_port": "8090", "ova_base_url": ""})
+    values = wizard.prefill_from(config)
+    assert values["ova_mode"] == "bundled" and values["ova_port"] == "8090"
+    assert values["ova_base_url"] == ""
+    again = config_module.normalise(wizard.build_raw_config(values))
+    assert again["services"]["ova_store"] is True
+    assert again["templates"]["ova_port"] == 8090
+
+
+def test_the_ova_section_explains_itself_only_behind_the_information_icon():
+    page = wizard.render_page(wizard.prefill_from(None))
+    assert "OVA server for the ESXi hosts" in page
+    start = page.index("OVA server for the ESXi hosts")
+    section = page[start : page.index("</fieldset>", start)]
+    assert '<details class="info">' in section and "<summary" in section
+    # the explanation (reachable port, no login, LAN only) sits inside the details element and nowhere else
+    outside = re.sub(r"<details.*?</details>", "", section, flags=re.DOTALL)
+    assert "login" not in outside and "TCP" not in outside
+    inside = re.search(r"<details.*?</details>", section, flags=re.DOTALL).group(0)
+    assert "TCP" in inside and "login" in inside and "lab network" in inside
+    assert "<script" not in page.lower()
+    assert "title=" not in section  # no hover tooltip

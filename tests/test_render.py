@@ -1,4 +1,5 @@
 import os
+import re
 import stat
 
 import pytest
@@ -36,6 +37,7 @@ def test_everything_enabled_writes_every_file(make_config, out, generator_source
         "generator/prompt_template.txt",
         "generator/topology_config.yml",
         "operator.env",
+        "ova-store/Caddyfile",
     ]
     for name in written:
         assert (out / name).is_file()
@@ -52,6 +54,7 @@ def test_the_profiles_follow_the_enabled_services(make_config, out, generator_so
         "template-gns3",
         "collector-gns3",
         "generator",
+        "ova-store",
         "setup",
     ]
     render(
@@ -64,7 +67,7 @@ def test_the_profiles_follow_the_enabled_services(make_config, out, generator_so
     )
     assert (
         env_of(read(out, "compose.env"))["COMPOSE_PROFILES"]
-        == "gateway,ginnungagap,template-esxi,collector-esxi,setup"
+        == "gateway,ginnungagap,template-esxi,collector-esxi,ova-store,setup"
     )
 
 
@@ -149,7 +152,8 @@ def test_the_app_gets_the_service_urls_and_its_data_paths(
     assert env["ESXI_TEMPLATE_SERVER_URL"] == "http://template-esxi:8000"
     assert env["GNS3_TEMPLATE_SERVER_URL"] == "http://template-gns3:8000"
     assert env["TOPOLOGY_GENERATOR_URL"] == "http://generator:8000"
-    assert env["OVA_DEPLOY_URL"] == "http://10.20.20.172:8003"
+    assert env["OVA_BASE_URL"] == "http://localhost:8088"
+    assert "OVA_DEPLOY_URL" not in env
     assert all(
         v.startswith("/data")
         for k, v in env.items()
@@ -162,17 +166,18 @@ def test_a_service_that_runs_elsewhere_is_reached_at_its_configured_address(
     make_config, out
 ):
     config = make_config(
-        services={"template_esxi": False, "generator": False, "ova_deploy": "off"},
-        templates={"esxi_url": "http://old-host:8000/"},
+        services={"template_esxi": False, "generator": False, "ova_store": False},
+        templates={
+            "esxi_url": "http://old-host:8000/",
+            "ova_base_url": "http://ova-host:80/",
+        },
         generator={"url": "http://gen-host:8002"},
     )
     render(config, out)
     env = env_of(read(out, "operator.env"))
     assert env["ESXI_TEMPLATE_SERVER_URL"] == "http://old-host:8000"
     assert env["TOPOLOGY_GENERATOR_URL"] == "http://gen-host:8002"
-    assert (
-        env["OVA_DEPLOY_URL"] == "http://disabled.invalid"
-    )  # fails loudly instead of using a built-in address
+    assert env["OVA_BASE_URL"] == "http://ova-host:80"
 
 
 def test_the_gateway_routes_only_enabled_services(make_config, out, generator_sources):
@@ -183,7 +188,6 @@ def test_the_gateway_routes_only_enabled_services(make_config, out, generator_so
         ("/templates/esxi/*", "template-esxi:8000"),
         ("/templates/gns3/*", "template-gns3:8000"),
         ("/generator/*", "generator:8000"),
-        ("/ova/*", "http://10.20.20.172:8003"),
         ("handle {", "ginnungagap:8123"),
     ):
         assert path in caddy
@@ -191,17 +195,13 @@ def test_the_gateway_routes_only_enabled_services(make_config, out, generator_so
     assert "auto_https off" in caddy and ":80 {" in caddy
     render(
         make_config(
-            services={"generator": False, "ova_deploy": "off"},
+            services={"generator": False},
             generator={"url": "http://g:1"},
         ),
         out,
     )
     caddy = read(out, "Caddyfile")
-    assert (
-        "/generator/" not in caddy
-        and "/ova/" not in caddy
-        and "/templates/esxi/" in caddy
-    )
+    assert "/generator/" not in caddy and "/templates/esxi/" in caddy
     assert "handle_path /setup/*" not in caddy
 
 
@@ -347,7 +347,13 @@ def test_a_file_that_is_no_longer_produced_is_removed(
     assert not (out / "generator.env").exists()
     assert not (out / "generator").exists()  # the folder went with its last file
     assert yaml.safe_load(read(out, ".manifest.json")) == sorted(
-        ["Caddyfile", "collector-gns3/gns3_config.yml", "compose.env", "operator.env"]
+        [
+            "Caddyfile",
+            "collector-gns3/gns3_config.yml",
+            "compose.env",
+            "operator.env",
+            "ova-store/Caddyfile",
+        ]
     )
 
 
@@ -383,38 +389,84 @@ def test_an_invalid_project_name_is_refused(
         render(make_config(), out, generator_sources)
 
 
-def ova_config(make_config):
-    return make_config(services={"ova_deploy": True})
-
-
-def test_ova_deploy_as_a_container_gets_a_profile_and_a_route_but_no_password_file(
+def test_the_gateway_has_no_route_to_the_ova_server(
     make_config, out, generator_sources
 ):
-    config = ova_config(make_config)
+    # the gateway may ask for a login or redirect to https, which an ESXi host cannot handle: the OVA server has its own port
+    render(make_config(), out, generator_sources)
+    assert "/ova" not in read(out, "Caddyfile")
+    assert "ova-store" not in read(out, "Caddyfile")
+
+
+def test_the_ova_server_gets_a_profile_its_own_caddyfile_and_a_published_port(
+    make_config, out, generator_sources
+):
+    config = make_config(templates={"ova_port": 8090})
     written = render(config, out, generator_sources)
-    assert "ova-deploy/esxi_password" not in written
-    assert not (
-        out / "ova-deploy"
-    ).exists()  # the ESXi login comes with each deploy request
-    assert "ova-deploy" in env_of(read(out, "compose.env"))["COMPOSE_PROFILES"].split(
-        ","
-    )
-    assert rd.service_urls(config)["ova"] == "http://ova-deploy:8000"
-    assert (
-        env_of(read(out, "operator.env"))["OVA_DEPLOY_URL"] == "http://ova-deploy:8000"
-    )
-    assert "handle_path /ova/* {\n\t\treverse_proxy ova-deploy:8000" in read(
-        out, "Caddyfile"
-    )
+    assert "ova-store/Caddyfile" in written
+    compose = env_of(read(out, "compose.env"))
+    assert "ova-store" in compose["COMPOSE_PROFILES"].split(",")
+    assert compose["OVA_PORT"] == "8090"
+    assert read(out, "operator.env").count("OVA_BASE_URL=http://localhost:8090\n") == 1
 
 
-def test_external_ova_deploy_still_routes_to_the_configured_address(
+def test_a_switched_off_ova_server_has_no_profile_and_no_file(
     make_config, out, generator_sources
 ):
-    config = make_config()
-    render(config, out, generator_sources)
-    assert "reverse_proxy http://10.20.20.172:8003" in read(out, "Caddyfile")
-    assert "ova-deploy" not in env_of(read(out, "compose.env"))["COMPOSE_PROFILES"]
+    config = make_config(
+        services={"ova_store": False}, templates={"ova_base_url": "http://ova-host"}
+    )
+    written = render(config, out, generator_sources)
+    assert "ova-store/Caddyfile" not in written and not (out / "ova-store").exists()
+    assert "ova-store" not in env_of(read(out, "compose.env"))["COMPOSE_PROFILES"]
+
+
+@pytest.mark.parametrize(
+    "public_url, expected",
+    [
+        ("http://10.20.20.181", "http://10.20.20.181:8088"),
+        ("https://ginn.lab:8443/", "http://ginn.lab:8088"),
+        ("http://[fd00::5]", "http://[fd00::5]:8088"),
+    ],
+)
+def test_the_default_ova_address_is_the_appliance_host_on_the_ova_port(
+    make_config, public_url, expected
+):
+    tls = "self-signed" if public_url.startswith("https") else "off"
+    config = make_config(appliance={"public_url": public_url, "tls": {"mode": tls}})
+    assert rd.ova_base_url(config) == expected
+    assert rd.service_urls(config)["ova"] == expected
+
+
+def test_a_configured_ova_address_wins_and_loses_its_trailing_slash(make_config):
+    config = make_config(templates={"ova_base_url": "http://other:81/"})
+    assert rd.ova_base_url(config) == "http://other:81"
+
+
+def test_the_ova_servers_caddyfile_serves_only_ova_files_read_only_without_listing():
+    text = rd.ova_store_caddyfile()
+    assert text.startswith("# Generated by")
+    assert "root * /store" in text and "file_server" in text
+    assert "browse" not in text  # no directory listing
+    assert "method GET HEAD" in text  # nothing that writes
+    assert "reverse_proxy" not in text and "basic_auth" not in text
+    assert "tls" not in text
+    assert "admin off" in text and "auto_https off" in text
+    # the path rule: *.ova only, no segment that starts with a dot
+    pattern = re.search(r"path_regexp `([^`]*)`", text).group(1)
+    served = re.compile(pattern)
+    for path in ("/debian/deb12.ova", "//deb12.ova", "/a/b/Win_2022.OVA"):
+        assert served.match(path), path
+    for path in (
+        "/debian/debian.yml",
+        "/debian/",
+        "/deb12.ova.bak",
+        "/.hidden/deb12.ova",
+        "/../deb12.ova",
+        "/debian/../deb12.ova",
+        "/debian/.deb12.ova",
+    ):
+        assert not served.match(path), path
 
 
 def tls_caddyfile(make_config, out, generator_sources, **appliance):

@@ -6,8 +6,8 @@ its GNS3 VM) are not part of that file: they stay profiles that you create in th
 **Status: first version, run with Docker.** `smoke/smoke-test.sh` builds every image and runs it against a throw-away project, a
 fake template store and a host that does not exist: each service alone, then all together through the gateway, then the
 operating commands (`status`, `apply` on an unchanged file recreates nothing, `backup`, `restore`) and a switch to self-signed
-TLS. It passes on a Docker host (Docker 29, Compose 5). What it does not cover: an actual OVA import by the OVA deploy
-service (it needs a real ESXi host and password) and basic auth. The installer (root, real systemd unit, reboot) and the
+TLS. It passes on a Docker host (Docker 29, Compose 5). What it does not cover: an actual OVA import by an ESXi host
+(it needs a real host and its login; the smoke test only checks what the OVA server answers) and basic auth. The installer (root, real systemd unit, reboot) and the
 appliance image (OVA: deployed on the lab ESXi, first boot from guestinfo, NFS template store, reboot) were verified on
 Debian 13 VMs in the lab; see `image/README.md`.
 
@@ -25,16 +25,33 @@ the template store), `Caddyfile`, `operator.env`, `generator/`, `generator.env` 
 `collector-gns3/`. Files are rewritten in place because Docker mounts single files by inode.
 
 The compose file builds the services from the sibling checkouts `../TopologyOperator`, `../TopologyBuilder`,
-`../Docker-Server-Files`, `../topology-generator` and, for the OVA deploy service, `../TopologyBuilderServices` (set `REPOS_DIR`
-for another place).
+`../Docker-Server-Files` and `../topology-generator` (set `REPOS_DIR` for another place).
 
-**OVA deploy service.** `services.ova_deploy` is `true` (own container `ova-deploy`, built from the TopologyBuilderServices
-repository as it is, with a `/health` endpoint added around it), `external` (the existing one, `ova_deploy.external_url`) or
-`off`. The container holds no ESXi password: the Operator sends the user name and password of the active host profile with
-every deploy request, so a host added in the app works at once and there is no second, global password that could belong to
-the wrong host. (`ova_deploy.esxi_password`, the old fallback, was removed; a configuration that still has it is refused with
-a message telling you to delete the line.) The service reads the OVAs from the same template store as the ESXi template API
-(read-only).
+### OVA server for the ESXi hosts
+
+TopologyBuilder does not upload an OVA any more: it reads the OVF descriptor over HTTP and the **ESXi host pulls the disks
+itself**. So the hosts need an HTTP address that serves the OVAs of the template store as `<address>/<folder>/<file>.ova`
+(`<folder>` and `<file>` are the template's `_source_dir` and `file` in the ESXi template API, which is the layout of the
+store itself). The `ova-store` container does that: `services.ova_store: true` (the default), published on
+**`templates.ova_port` (default 8088/TCP)**.
+
+* **Setting.** The address the ESXi hosts use goes to the app as `OVA_BASE_URL` (written into `operator.env`; the app's
+  profile `api:` section value `ova_base_url`). It is `templates.ova_base_url` when set, otherwise this appliance's own host
+  name or address from `appliance.public_url` with `ova_port`, e.g. `http://10.20.20.181:8088`. Set it yourself when the hosts
+  reach the appliance under another address; with `services.ova_store: false` (the files are served by something else that
+  keeps the same `<folder>/<file>` layout) it is required. The old `services.ova_deploy` and the `ova_deploy` section were
+  removed; a configuration that still has them is refused with a message telling you to delete them.
+* **What it serves.** Plain HTTP, read-only (the store is mounted `:ro`), `GET` and `HEAD` only, **only `*.ova`** (the
+  descriptors and every other file answer 404, so do names or folders that start with a dot), no directory listing, and `Range`
+  requests work (they are what the pull needs). Caddy runs it with the rendered `ova-store/Caddyfile`.
+* **No login, LAN only.** An ESXi host cannot send credentials, so the OVAs can be read without a login by everything that
+  can reach that port. Open it to the ESXi hosts of the lab network only, never to the internet or the user network, and do
+  not put it behind the gateway's `appliance.auth`.
+* **Which port the ESXi hosts need.** TCP `templates.ova_port` (8088 unless changed) from each ESXi host to this appliance,
+  nothing else (the ESXi host opens the connection, so the host's own firewall must allow outgoing HTTP: its `httpClient`
+  ruleset). A firewall between the hosts and the appliance must allow that one port; the
+  console login text and `ginnungagap status` (row `ova-store`) show the address and the port. The setup wizard says the same
+  behind the information icon of "OVA server for the ESXi hosts".
 
 ## Operate
 
@@ -225,24 +242,22 @@ docker compose --env-file rendered/compose.env ps
 
 | Service | Profile | Inside the network | Health |
 |---|---|---|---|
-| gateway (Caddy: one entry point, optional TLS and basic auth) | `gateway` | 80, 443 (the only published ports) | - |
+| gateway (Caddy: one entry point, optional TLS and basic auth) | `gateway` | 80, 443 | - |
 | ginnungagap (the app with TopologyBuilder) | `ginnungagap` | `ginnungagap:8123` | `/health` |
 | ESXi template API | `template-esxi` | `template-esxi:8000` | `/health` |
 | ESXi template collector | `collector-esxi` | - (writes `templates.yml`) | - |
 | GNS3 template API | `template-gns3` | `template-gns3:8000` | `/health` |
 | GNS3 template collector (hosts from the app's profiles) | `collector-gns3` | - (writes `gns3_templates.yml`) | - |
 | topology generator | `generator` | `generator:8000` | `/health` |
+| OVA server for the ESXi hosts (Caddy, read-only, `*.ova` only, no login) | `ova-store` | 8088 (published, `templates.ova_port`) | `/health` |
 | setup wizard (see "Setup wizard" above) | `setup` | `setup:8000`, at `/setup/` with Basic Auth after configuration | `/health` |
-
-The **OVA deploy API** is a service too (`ova-deploy`, `/ova/health`), built from the TopologyBuilderServices repository when
-`services.ova_deploy` is `true`; with `external` the existing one (`ova_deploy.external_url`) is reached through the gateway at `/ova/`.
 
 `smoke/smoke-test.sh` runs the whole sequence - each service alone (degraded until its data is there), then the gateway
 alone (502 for what is not running), the app with a host that does not answer, then everything together - and removes
 everything afterwards (`KEEP=1` keeps it). It needs only Docker and the sibling repositories.
 
-`tests/test_compose.py` enforces the separation (own profile per service, no `depends_on`, only the gateway publishes
-ports, read-only mounts for the template store and the host profiles).
+`tests/test_compose.py` enforces the separation (own profile per service, no `depends_on`, only the gateway and the OVA
+server publish ports, read-only mounts for the template store and the host profiles).
 
 ## Not part of this solution
 

@@ -33,6 +33,7 @@ FILE_OWNERS = {
     "generator/topology_config.yml": "generator",
     "generator/prompt_template.txt": "generator",
     "generator/example_topology.yml": "generator",
+    "ova-store/Caddyfile": "ova-store",
 }
 
 DATA_VOLUME = "data"
@@ -64,7 +65,7 @@ def default_inspect(args: list[str], cwd: Path | None = None) -> str | None:
 
 # The services that can mount the template store (a bind mount or an NFS export).
 STORE_VOLUME = "template-store"
-STORE_USERS = ("template-esxi", "collector-esxi", "ova-deploy", "ginnungagap")
+STORE_USERS = ("template-esxi", "collector-esxi", "ova-store", "ginnungagap")
 
 
 def _wanted_store_options(rendered: Path) -> dict[str, str] | None:
@@ -293,7 +294,7 @@ def build_images(
     run = _runner(run, bundle)
     config = config_module.normalise(
         {
-            "services": {"ova_deploy": True},
+            "services": {"ova_store": True},
             "generator": {
                 "llm_servers": [
                     {

@@ -48,7 +48,7 @@ DEFAULTS: dict[str, Any] = {
         "template_esxi": True,
         "template_gns3": True,
         "generator": True,
-        "ova_deploy": "external",
+        "ova_store": True,
         "filebrowser": False,
     },
     "templates": {
@@ -62,6 +62,8 @@ DEFAULTS: dict[str, Any] = {
         "gns3_refresh_minutes": 5,
         "esxi_url": "",
         "gns3_url": "",
+        "ova_base_url": "",
+        "ova_port": 8088,
     },
     "generator": {
         "url": "",
@@ -70,16 +72,20 @@ DEFAULTS: dict[str, Any] = {
         "max_retries": 3,
         "request_timeout_seconds": 500,
     },
-    "ova_deploy": {"external_url": "", "timeout_seconds": 600},
     "logging": {"level": "INFO", "max_lines": 100000},
 }
 
 # settings people may expect from the design but that are deliberately not part of the appliance
 _EXCLUDED = {
     "services.monitoring": "monitoring is not part of the one-VM solution (it runs separately)",
-    "ova_deploy.esxi_password": "was removed: the ESXi password now comes from the Operator's host profile with every "
-    "deploy request - delete this line",
+    "ova_deploy": "was removed: the ESXi hosts pull the OVAs themselves over HTTP - delete this section and see "
+    "services.ova_store and templates.ova_base_url",
+    "services.ova_deploy": "was removed: the ESXi hosts pull the OVAs themselves over HTTP - delete this line and see "
+    "services.ova_store",
 }
+
+# the ports compose.legacy-ports.yml publishes
+LEGACY_PORTS = [8123, 8000, 8001, 8002]
 
 _NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,40}$")
 _URL = re.compile(r"^https?://[^\s/]+(/\S*)?$")
@@ -130,11 +136,7 @@ def _check(config: dict[str, Any]) -> list[str]:
         config["services"],
         config["templates"],
     )
-    generator, ova, logging_cfg = (
-        config["generator"],
-        config["ova_deploy"],
-        config["logging"],
-    )
+    generator, logging_cfg = config["generator"], config["logging"]
 
     if config["version"] != SUPPORTED_VERSION:
         problems.append(
@@ -176,13 +178,9 @@ def _check(config: dict[str, Any]) -> list[str]:
                 "appliance.auth.password_hash: a bcrypt hash is needed (never the password itself)"
             )
 
-    for name in ("template_esxi", "template_gns3", "generator"):
+    for name in ("template_esxi", "template_gns3", "generator", "ova_store"):
         if not isinstance(services[name], bool):
             problems.append(f"services.{name}: must be true or false")
-    if services["ova_deploy"] not in (True, "external", "off"):
-        problems.append(
-            "services.ova_deploy: must be true (runs here), external (runs elsewhere, see ova_deploy.external_url) or off"
-        )
     if services["filebrowser"] is not False:
         problems.append(
             "services.filebrowser: is not available in this version yet, leave it false"
@@ -232,14 +230,39 @@ def _check(config: dict[str, Any]) -> list[str]:
 
     problems += _check_generator(generator, required=services["generator"] is True)
 
-    if services["ova_deploy"] == "external" and not _is_url(ova["external_url"]):
-        problems.append(
-            "ova_deploy.external_url: needed while services.ova_deploy is external"
-        )
-    if not isinstance(ova["timeout_seconds"], int) or ova["timeout_seconds"] < 1:
-        problems.append("ova_deploy.timeout_seconds: must be a positive number")
+    problems += _check_ova_store(config)
     if logging_cfg["level"] not in _LEVELS:
         problems.append(f"logging.level: must be one of {', '.join(_LEVELS)}")
+    return problems
+
+
+def _check_ova_store(config: dict[str, Any]) -> list[str]:
+    """The OVA server the ESXi hosts pull from: its port (when it runs here) and the address they reach it at."""
+    appliance, services, templates = (
+        config["appliance"],
+        config["services"],
+        config["templates"],
+    )
+    problems: list[str] = []
+    port, base_url = templates["ova_port"], templates["ova_base_url"]
+    if not isinstance(port, int) or isinstance(port, bool) or not 1 <= port <= 65535:
+        problems.append("templates.ova_port: must be a port number")
+    elif services["ova_store"] is True:
+        taken = [appliance["http_port"], appliance["https_port"]]
+        if appliance["legacy_ports"] is True:
+            taken += LEGACY_PORTS
+        if port in taken:
+            problems.append(
+                f"templates.ova_port: {port} is already used by the gateway or a legacy port, choose another one"
+            )
+    if base_url and not _is_url(base_url):
+        problems.append(
+            "templates.ova_base_url: must be an http:// or https:// address"
+        )
+    elif services["ova_store"] is False and not base_url:
+        problems.append(
+            "templates.ova_base_url: services.ova_store is false, so the address the ESXi hosts reach the OVAs at is needed"
+        )
     return problems
 
 
@@ -323,7 +346,6 @@ def normalise(raw: Any) -> dict[str, Any]:
         "services",
         "templates",
         "generator",
-        "ova_deploy",
         "logging",
     ):
         if not isinstance(config[section], dict):

@@ -71,7 +71,8 @@ def test_no_config_wizard_apply_the_app_takes_over(bundle, tmp_path, monkeypatch
         "gns3_url": "http://10.0.0.1:8001",
         "generator_mode": "external",
         "generator_url": "http://10.0.0.1:8002",
-        "ova_deploy_mode": "off",
+        "ova_mode": "external",
+        "ova_base_url": "http://10.0.0.1:8088",
     }
     raw = wizard.build_raw_config(values)
     config = config_module.normalise(raw)  # exactly what the CLI's own `validate` does

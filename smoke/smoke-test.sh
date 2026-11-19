@@ -11,6 +11,7 @@ export REPOS_DIR=${REPOS_DIR:-$(cd "$HERE/.." && pwd)}
 WORK=$(mktemp -d)
 PROJECT=ginnsmoke
 PORT=${SMOKE_PORT:-18080}
+OVA_PORT=$((PORT + 2))
 PROJ="$WORK/project"
 FAILED=0
 
@@ -66,9 +67,9 @@ printf 'FAKE-OVA-0123456789' > "$WORK/store/debian/deb12.ova"
 cat > "$WORK/ginnungagap.yml" <<YML
 version: 1
 appliance: {public_url: http://localhost, timezone: UTC, tls: {mode: "off"}, http_port: $PORT, https_port: $((PORT + 1))}
-templates: {store: {type: local, local: {path: $WORK/store}}, esxi_refresh_minutes: 1, gns3_refresh_minutes: 1}
+templates: {store: {type: local, local: {path: $WORK/store}}, esxi_refresh_minutes: 1, gns3_refresh_minutes: 1, ova_port: $OVA_PORT}
 generator: {llm_servers: [{name: test, url: "http://127.0.0.1:11434", model: m}]}
-services: {ova_deploy: true}
+services: {ova_store: true}
 YML
 # the renderer runs in a throw-away python container, so the machine needs nothing but Docker
 # (as your own user, so that the key file it writes - mode 0600 - stays readable for docker compose)
@@ -113,20 +114,25 @@ say "generator ALONE"
 up generator && sleep 8
 check "/health is 200" "$(status_of generator http://127.0.0.1:8000/health)" "200"
 
-say "ova-deploy ALONE: the service's own code, a health endpoint added around it, no password of its own"
-up ova-deploy && sleep 8
-check "/health is 200 (store present)" "$(status_of ova-deploy http://127.0.0.1:8000/health)" "200"
-check "the container holds no ESXi password" "$(docker inspect --format '{{.Config.Env}}' "$(compose ps -q ova-deploy)" | grep -c -i 'ESXI_PASSWORD')" "0"
-check "no password secret is mounted" "$(compose exec -T ova-deploy sh -c 'ls /run/secrets 2>/dev/null | wc -l')" "0"
-check "the service's own route is there" "$(inside ova-deploy http://127.0.0.1:8000/openapi.json | grep -c '/deploy/ova')" "1"
-check "it reads the store read-only" "$(compose exec -T ova-deploy sh -c 'touch /templates/esxi/x 2>&1 | grep -c Read-only')" "1"
+say "ova-store ALONE: the OVAs of the store, read-only over plain HTTP, for the ESXi hosts (no login, no listing)"
+up ova-store && sleep 5
+ova="http://127.0.0.1:$OVA_PORT"
+check "/health is 200" "$(curl -s -o /dev/null -w '%{http_code}' "$ova/health")" "200"
+check "<folder>/<file>.ova is served" "$(curl -s "$ova/debian/deb12.ova")" "FAKE-OVA-0123456789"
+check "a HEAD request says it takes Range requests" "$(curl -sI "$ova/debian/deb12.ova" | tr -d '\r' | grep -ci '^accept-ranges: bytes')" "1"
+check "a Range request gets 206 and only those bytes" "$(curl -s -H 'Range: bytes=5-9' -w ' %{http_code}' "$ova/debian/deb12.ova")" "OVA-0 206"
+check "the Content-Length is the file size" "$(curl -sI "$ova/debian/deb12.ova" | tr -d '\r' | grep -i '^content-length:' | awk '{print $2}')" "19"
+check "the description file is not served" "$(curl -s -o /dev/null -w '%{http_code}' "$ova/debian/debian.yml")" "404"
+check "no directory listing" "$(curl -s -o /dev/null -w '%{http_code}' "$ova/debian/")" "404"
+check "no way out of the store" "$(curl -s --path-as-is -o /dev/null -w '%{http_code}' "$ova/debian/../../etc/passwd")" "404"
+check "only GET and HEAD" "$(curl -s -o /dev/null -w '%{http_code}' -X POST -d x "$ova/debian/deb12.ova")" "404"
+check "it reads the store read-only" "$(compose exec -T ova-store sh -c 'touch /store/x 2>&1 | grep -c Read-only')" "1"
 
 say "gateway ALONE: starts without the app, answers 502 for it, routes to what runs"
 up gateway && sleep 4
 check "/ is 502 while the app does not run" "$(curl -s -o /dev/null -w '%{http_code}' localhost:$PORT/)" "502"
 check "/templates/esxi/health" "$(curl -s -o /dev/null -w '%{http_code}' localhost:$PORT/templates/esxi/health)" "200"
 check "download through the gateway" "$(curl -s localhost:$PORT/templates/esxi/api/download/deb12)" "FAKE-OVA-0123456789"
-check "/ova/health through the gateway" "$(curl -s -o /dev/null -w '%{http_code}' localhost:$PORT/ova/health)" "200"
 
 say "ginnungagap (the app) with a host that does not answer: must start anyway"
 up ginnungagap

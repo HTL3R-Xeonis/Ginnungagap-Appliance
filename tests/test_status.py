@@ -8,11 +8,11 @@ from ginnungagap import status as st
 
 
 def answers(table: dict[str, tuple[int | None, dict | str, str | None]]):
-    """A fake fetch: path -> (status, body, error)."""
+    """A fake fetch: path (or the whole address, for what is not asked through the gateway) -> (status, body, error)."""
 
     def fetch(url: str):
         path = "/" + url.split("/", 3)[3]
-        status, body, error = table[path]
+        status, body, error = table[url] if url in table else table[path]
         return status, body if isinstance(body, str) else json.dumps(body), error
 
     return fetch
@@ -31,6 +31,8 @@ ALL_OK = {
         None,
     ),
     "/generator/health": (200, {"status": "ok", "servers": 3, "problems": []}, None),
+    # the OVA server is asked on its own port (the gateway may ask for a login, an ESXi host cannot), not through the gateway
+    "http://g:8088/health": (200, {"status": "ok"}, None),
 }
 
 
@@ -61,10 +63,8 @@ def test_everything_healthy(make_config):
     assert by["template-esxi"].detail == "2 template(s)"
     assert by["template-gns3"].detail == "19 template(s) from 1 server(s)"
     assert by["generator"].detail == "3 LLM server(s)"
-    assert (
-        by["ova-deploy"].state == "external"
-        and "10.20.20.172:8003" in by["ova-deploy"].detail
-    )
+    assert by["ova-store"].state == "ok"
+    assert "port 8088" in by["ova-store"].detail
 
 
 def test_the_apps_own_warning_is_a_note_not_a_failure(make_config):
@@ -101,7 +101,7 @@ def test_a_service_the_gateway_cannot_reach_is_down(make_config):
 def test_an_unreachable_gateway_makes_everything_down_with_the_reason(make_config):
     table = {path: (None, "", "Connection refused") for path in ALL_OK}
     rows = st.check(make_config(), "http://g", answers(table))
-    assert {r.state for r in rows if r.name != "ova-deploy"} == {"down"}
+    assert {r.state for r in rows} == {"down"}
     assert "Connection refused" in rows[0].detail
 
 
@@ -117,8 +117,11 @@ def test_a_login_wall_is_reported_as_such(make_config):
 
 def test_services_that_run_elsewhere_or_are_off_are_not_asked(make_config):
     config = make_config(
-        services={"template_esxi": False, "generator": False, "ova_deploy": "off"},
-        templates={"esxi_url": "http://e:8000"},
+        services={"template_esxi": False, "generator": False, "ova_store": False},
+        templates={
+            "esxi_url": "http://e:8000",
+            "ova_base_url": "http://ova-host:80",
+        },
         generator={"url": "http://g:1"},
     )
     table = {
@@ -128,7 +131,8 @@ def test_services_that_run_elsewhere_or_are_off_are_not_asked(make_config):
     assert (
         rows["template-esxi"].state == "off"
         and rows["generator"].state == "off"
-        and rows["ova-deploy"].state == "off"
+        and rows["ova-store"].state == "external"
+        and "http://ova-host:80" in rows["ova-store"].detail
     )
     assert st.healthy(list(rows.values()))
 
@@ -140,7 +144,7 @@ def test_the_table_lists_every_row(make_config):
         "template-esxi",
         "template-gns3",
         "generator",
-        "ova-deploy",
+        "ova-store",
     ):
         assert name in text
 
@@ -192,13 +196,37 @@ def test_fetch_reports_a_refused_connection_instead_of_raising():
     assert status is None and body == "" and error
 
 
-def test_ova_deploy_as_a_container_is_asked_through_the_gateway(make_config):
-    config = make_config(services={"ova_deploy": True})
-    table = {**ALL_OK, "/ova/health": (200, {"status": "ok", "problems": []}, None)}
-    by = rows_by_name(st.check(config, "http://g", answers(table)))
-    assert by["ova-deploy"].state == "ok"
-    assert "ESXi login comes with each deploy request" in by["ova-deploy"].detail
-    assert "password" not in by["ova-deploy"].detail
+def test_the_ova_server_is_asked_on_its_own_port_not_through_the_gateway(make_config):
+    asked = []
+
+    def fetch(url):
+        asked.append(url)
+        return 200, '{"status": "ok"}', None
+
+    config = make_config(templates={"ova_port": 8090})
+    by = rows_by_name(st.check(config, "https://10.0.0.7:8443", fetch))
+    assert "http://10.0.0.7:8090/health" in asked
+    assert by["ova-store"].state == "ok" and "port 8090" in by["ova-store"].detail
+    assert "no login" in by["ova-store"].detail
+
+
+def test_on_the_compose_network_the_ova_server_is_asked_by_its_name(make_config):
+    asked = []
+
+    def fetch(url):
+        asked.append(url)
+        return 200, '{"status": "ok"}', None
+
+    st.check(make_config(), None, fetch)
+    assert "http://ova-store:80/health" in asked
+
+
+def test_an_ova_server_that_does_not_answer_is_down_with_the_port_named(make_config):
+    table = {**ALL_OK, "http://g:8088/health": (None, "", "Connection refused")}
+    by = rows_by_name(st.check(make_config(), "http://g", answers(table)))
+    assert by["ova-store"].state == "down"
+    assert "8088" in by["ova-store"].detail
+    assert "Connection refused" in by["ova-store"].detail
 
 
 def test_a_200_without_the_services_own_data_is_not_healthy(make_config):

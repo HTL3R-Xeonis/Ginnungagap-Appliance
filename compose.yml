@@ -123,21 +123,21 @@ services:
       <<: *probe
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=4)"]
 
-  ova-deploy:
-    profiles: [ova-deploy]
-    build:
-      context: .
-      dockerfile: docker/ova-deploy.Dockerfile
-      additional_contexts:
-        service: ${REPOS_DIR:-..}/TopologyBuilderServices
+  # Serves the OVA files of the template store to the ESXi hosts, which pull them themselves (TopologyBuilder only reads the
+  # descriptor and starts the pull). Plain HTTP, read-only, *.ova only, no login (an ESXi host cannot send one): the
+  # published port must only be reachable from the lab network. Its Caddyfile is rendered, see ginnungagap/render.py.
+  ova-store:
+    profiles: [ova-store]
+    image: caddy:2
     restart: unless-stopped
-    environment:
-      TZ: ${TZ:-UTC}
+    ports:
+      - "${OVA_PORT:-8088}:80"
     volumes:
-      - template-store:/templates/esxi:ro
+      - ./rendered/ova-store/Caddyfile:/etc/caddy/Caddyfile:ro
+      - template-store:/store:ro
     healthcheck:
       <<: *probe
-      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=4)"]
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:80/health"]
 
   setup:
     profiles: [setup]

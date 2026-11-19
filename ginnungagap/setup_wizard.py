@@ -68,7 +68,6 @@ def build_raw_config(
         elif typed:
             password_hash = typed  # a test double without real hashing; config.normalise will reject it, which is fine
 
-    ova_mode = _get(values, "ova_deploy_mode", "external")
     store_type = _get(values, "store_type", "local")
 
     llm_servers = []
@@ -120,9 +119,7 @@ def build_raw_config(
             "template_esxi": _get(values, "esxi_mode", "bundled") == "bundled",
             "template_gns3": _get(values, "gns3_mode", "bundled") == "bundled",
             "generator": _get(values, "generator_mode", "bundled") == "bundled",
-            "ova_deploy": {"true": True, "external": "external", "off": "off"}.get(
-                ova_mode, ova_mode
-            ),
+            "ova_store": _get(values, "ova_mode", "bundled") == "bundled",
             "filebrowser": False,
         },
         "templates": {
@@ -139,6 +136,8 @@ def build_raw_config(
             "gns3_refresh_minutes": _int(values, "gns3_refresh_minutes", 5),
             "esxi_url": _get(values, "esxi_url"),
             "gns3_url": _get(values, "gns3_url"),
+            "ova_base_url": _get(values, "ova_base_url").strip(),
+            "ova_port": _int(values, "ova_port", 8088),
         },
         "generator": {
             "url": _get(values, "generator_url"),
@@ -146,10 +145,6 @@ def build_raw_config(
             "hosted": hosted,
             "max_retries": _int(values, "generator_max_retries", 3),
             "request_timeout_seconds": _int(values, "generator_timeout_seconds", 500),
-        },
-        "ova_deploy": {
-            "external_url": _get(values, "ova_external_url"),
-            "timeout_seconds": _int(values, "ova_timeout_seconds", 600),
         },
         "logging": {
             "level": _get(values, "logging_level", "INFO"),
@@ -226,11 +221,7 @@ def prefill_from(config: dict[str, Any] | None) -> dict[str, str]:
         config["services"],
         config["templates"],
     )
-    generator, ova, logging_cfg = (
-        config["generator"],
-        config["ova_deploy"],
-        config["logging"],
-    )
+    generator, logging_cfg = config["generator"], config["logging"]
     store = templates["store"]
     values: dict[str, str] = {
         "public_url": appliance["public_url"],
@@ -247,11 +238,9 @@ def prefill_from(config: dict[str, Any] | None) -> dict[str, str]:
         "esxi_url": templates["esxi_url"],
         "gns3_url": templates["gns3_url"],
         "generator_url": generator["url"],
-        "ova_deploy_mode": {True: "true", "external": "external", "off": "off"}.get(
-            services["ova_deploy"], "external"
-        ),
-        "ova_external_url": ova["external_url"],
-        "ova_timeout_seconds": str(ova["timeout_seconds"]),
+        "ova_mode": "bundled" if services["ova_store"] else "external",
+        "ova_base_url": templates["ova_base_url"],
+        "ova_port": str(templates["ova_port"]),
         "store_type": store["type"],
         "store_manage": "on" if store.get("manage") else "",
         "store_local_path": store.get("local", {}).get("path", ""),
@@ -279,6 +268,21 @@ _NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,40}$")
 
 def _esc(value: str) -> str:
     return html.escape(value, quote=True)
+
+
+OVA_INFO = (
+    "The ESXi hosts download the OVA files themselves, over plain HTTP, from the template store's folders "
+    "(<address>/<folder>/<file>.ova). The server shows only .ova files, read-only, with no directory listing. An ESXi host "
+    "cannot send a login, so there is none: open this port only to the ESXi hosts of your lab network, and allow it "
+    "between them and this appliance (TCP, the port given here). Leave the address empty to use this appliance's own "
+    "address from the public URL with that port; fill it in when the hosts reach the appliance under another address, or "
+    "when the files are served elsewhere."
+)
+
+
+def info(text: str) -> str:
+    """An information icon that opens its text on a click (no JavaScript, no hover)."""
+    return f'<details class="info"><summary aria-label="Information">i</summary><p>{_esc(text)}</p></details>'
 
 
 def _field(values: Mapping[str, str], name: str, *, kind: str = "text") -> str:
@@ -377,6 +381,11 @@ def render_page(
   .problems {{ background: #3a2020; border: 1px solid #a04040; border-radius: 6px; padding: 10px 14px; margin-bottom: 16px; }}
   .message {{ background: #20331f; border: 1px solid #4b7a3f; border-radius: 6px; padding: 10px 14px; margin-bottom: 16px; }}
   .note {{ color: #9a9; font-size: 13px; }}
+  details.info {{ margin: 6px 0 0; }}
+  details.info summary {{ display: inline-block; list-style: none; cursor: pointer; width: 18px; height: 18px; line-height: 18px;
+    text-align: center; border: 1px solid #777; border-radius: 50%; font-size: 12px; font-style: italic; color: #c8c8c8; }}
+  details.info summary::-webkit-details-marker {{ display: none; }}
+  details.info p {{ font-size: 13px; color: #c8c8c8; margin: 8px 0 0; }}
   button {{ padding: 9px 16px; border-radius: 6px; border: none; cursor: pointer; font-size: 14px; margin-right: 8px; }}
   button[name=action][value=apply] {{ background: #7cb342; color: #1c1c1c; font-weight: 600; }}
   button[name=action][value=download] {{ background: #333; color: #eee; border: 1px solid #555; }}
@@ -419,14 +428,12 @@ def render_page(
     {service_block("generator", "Topology generator", "generator_url")}
 
     <fieldset class="service">
-      <legend>OVA deploy</legend>
-      {radio("ova_deploy_mode", "true", "Runs on this appliance")}
-      {radio("ova_deploy_mode", "external", "Runs elsewhere", "ova-ext")}
-      {radio("ova_deploy_mode", "off", "Switched off")}
-      <div class="reveal" data-shows-when="ova_deploy_mode=external">
-        <label>Service URL {_field(values, "ova_external_url")}</label>
-      </div>
-      <label>Timeout (seconds) {_field(values, "ova_timeout_seconds", kind="number")}</label>
+      <legend>OVA server for the ESXi hosts</legend>
+      {radio("ova_mode", "bundled", "Runs on this appliance")}
+      {radio("ova_mode", "external", "Runs elsewhere")}
+      <label>Port on this appliance {_field(values, "ova_port", kind="number")}</label>
+      <label>Address the ESXi hosts use {_field(values, "ova_base_url")}</label>
+      {info(OVA_INFO)}
     </fieldset>
 
     <fieldset class="service">

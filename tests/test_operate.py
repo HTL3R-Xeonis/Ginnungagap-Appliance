@@ -73,7 +73,7 @@ def test_apply_renders_then_starts_with_a_build_and_removes_orphans(
     config_file, bundle, generator_sources
 ):
     run = Recorder()
-    code, lines = run_apply(config_file, bundle, generator_sources, run)
+    code, _ = run_apply(config_file, bundle, generator_sources, run)
     assert code == 0
     assert (bundle / "rendered" / "compose.env").is_file()
     assert run.calls[0][:6] == [
@@ -86,7 +86,8 @@ def test_apply_renders_then_starts_with_a_build_and_removes_orphans(
     ]
     assert run.calls[0][6:] == ["up", "-d", "--remove-orphans", "--build"]
     assert len(run.calls) == 1  # the first render recreates nothing by hand
-    assert any("ova-deploy" in line for line in lines)
+    assert (bundle / "rendered" / "ova-store" / "Caddyfile").is_file()
+    assert not any("ova-deploy" in " ".join(call) for call in run.calls)
 
 
 def test_no_build_and_no_start_are_honoured(config_file, bundle, generator_sources):
@@ -115,9 +116,8 @@ def test_only_the_service_whose_file_changed_is_recreated(
 ):
     run_apply(config_file, bundle, generator_sources, Recorder())
     changed = yaml.safe_load(config_file.read_text())
-    changed["ova_deploy"]["external_url"] = (
-        "http://other-host:8003"  # changes the Caddyfile (the /ova/ route) and operator.env
-    )
+    changed["appliance"]["public_url"] = "https://ginn.lab"
+    changed["appliance"]["tls"] = {"mode": "self-signed"}  # changes only the Caddyfile
     config_file.write_text(yaml.safe_dump(changed))
     run = Recorder()
     code, lines = run_apply(config_file, bundle, generator_sources, run)
@@ -133,6 +133,12 @@ def test_only_the_service_whose_file_changed_is_recreated(
         "Recreated because their configuration changed: gateway" in line
         for line in lines
     )
+
+
+def test_the_ova_servers_own_file_is_owned_by_its_service():
+    assert operate.FILE_OWNERS["ova-store/Caddyfile"] == "ova-store"
+    assert "ova-store" in operate.STORE_USERS
+    assert "ova-deploy" not in operate.STORE_USERS
 
 
 def test_an_unchanged_config_recreates_nothing(config_file, bundle, generator_sources):
@@ -353,7 +359,7 @@ def test_a_template_store_volume_with_old_options_is_recreated_before_start(
     assert seen[0][-1] == "ginnungagap_template-store"
     commands = run.commands()
     assert commands[0].endswith(
-        "rm -sf template-esxi collector-esxi ova-deploy ginnungagap"
+        "rm -sf template-esxi collector-esxi ova-store ginnungagap"
     )
     assert commands[1] == "docker volume rm ginnungagap_template-store"
     assert commands[2].startswith(

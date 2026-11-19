@@ -20,6 +20,7 @@ from collections.abc import Callable
 from pathlib import Path
 
 from ginnungagap import config as config_module
+from ginnungagap import render as render_module
 
 ISSUE_FILE = "/etc/issue.d/ginnungagap.issue"
 STATE_DIR = "/var/lib/ginnungagap"
@@ -171,14 +172,21 @@ def web_lines(config_dir: Path, state_dir: Path, address: str | None) -> list[st
     config_file = config_dir / "ginnungagap.yml"
     if config_file.exists():
         try:
-            url = config_module.load(config_file)["appliance"]["public_url"]
+            config = config_module.load(config_file)
+            url = config["appliance"]["public_url"]
         except config_module.ConfigError:
             return [
                 f"A configuration exists in {config_file} but is not valid - check it with:",
                 f"  ginnungagap validate {config_file}",
             ]
+        lines = [f"Web interface: {url}"]
+        if config["services"]["ova_store"]:
+            port = config["templates"]["ova_port"]
+            lines.append(
+                f"OVA server for the ESXi hosts: {render_module.ova_base_url(config)} (no login: allow TCP {port} from the ESXi hosts only)"
+            )
         return [
-            f"Web interface: {url}",
+            *lines,
             "First login: admin / admin - change it once you are in (Admin panel > User accounts).",
         ]
     problems_file = state_dir / PROBLEMS

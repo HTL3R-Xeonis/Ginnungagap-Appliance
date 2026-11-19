@@ -71,8 +71,8 @@ What was done (and verified on the lab ESXi) to get the OVA, in order:
 
 ## Deploying a copy
 
-The OVA deploy service (`POST /deploy/ova`, `ova_filename`, `datastore`, `network` = `{"Network": "<port group>"}`) imports it
-like any other template. Before the first power-on set the VM's guestinfo - the whole configuration, and, for access,
+TopologyBuilder's OVA import (the ESXi host pulls the OVA from the appliance's OVA server, see "OVA server for the ESXi hosts"
+in the main README) imports it like any other template. Before the first power-on set the VM's guestinfo - the whole configuration, and, for access,
 `--ssh-key-file` (and `--sudo-nopasswd` only for automation):
 
 ```bash

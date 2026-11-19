@@ -7,7 +7,7 @@ import yaml
 from ginnungagap import console
 from ginnungagap import firstboot as fb
 
-VALID = {"generator": {"llm_servers": [{"name": "o", "url": "http://10.0.0.1:11434", "model": "m"}]}, "appliance": {"public_url": "http://ginn.lab"}, "ova_deploy": {"external_url": "http://10.0.0.2:8003"}}  # fmt: skip
+VALID = {"generator": {"llm_servers": [{"name": "o", "url": "http://10.0.0.1:11434", "model": "m"}]}, "appliance": {"public_url": "http://ginn.lab"}}  # fmt: skip
 
 
 def b64(data) -> str:

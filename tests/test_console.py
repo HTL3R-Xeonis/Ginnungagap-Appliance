@@ -12,7 +12,6 @@ from ginnungagap import console
 VALID_CONFIG = {
     "appliance": {"public_url": "http://ginn.lab"},
     "generator": {"llm_servers": [{"name": "o", "url": "http://10.0.0.1:11434", "model": "m"}]},
-    "ova_deploy": {"external_url": "http://10.0.0.2:8003"},
 }  # fmt: skip
 
 
@@ -149,6 +148,32 @@ def test_with_a_configuration_the_web_interface_is_named_from_it(tmp_path):
     lines, _ = refresh(tmp_path)
     assert "Web interface: http://ginn.lab" in lines
     assert any(line.startswith("First login: admin / admin") for line in lines)
+
+
+def test_the_console_names_the_ova_server_address_and_the_port_the_esxi_hosts_need(
+    tmp_path,
+):
+    etc = tmp_path / "etc"
+    etc.mkdir()
+    (etc / "ginnungagap.yml").write_text(yaml.safe_dump(VALID_CONFIG), encoding="utf-8")
+    lines, _ = refresh(tmp_path)
+    assert (
+        "OVA server for the ESXi hosts: http://ginn.lab:8088 (no login: allow TCP 8088 from the ESXi hosts only)"
+        in lines
+    )
+
+
+def test_the_console_names_no_ova_server_when_it_runs_elsewhere(tmp_path):
+    etc = tmp_path / "etc"
+    etc.mkdir()
+    elsewhere = {
+        **VALID_CONFIG,
+        "services": {"ova_store": False},
+        "templates": {"ova_base_url": "http://10.0.0.9"},
+    }
+    (etc / "ginnungagap.yml").write_text(yaml.safe_dump(elsewhere), encoding="utf-8")
+    lines, _ = refresh(tmp_path)
+    assert not any("OVA server" in line for line in lines)
 
 
 def test_an_unreadable_configuration_is_named_instead_of_guessing_an_address(tmp_path):
