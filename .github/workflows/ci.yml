@@ -22,11 +22,13 @@ jobs:
         with:
           python-version: ${{ env.PYTHON_VERSION }}
 
-      # PyYAML is the only runtime dependency; the tests need no Docker and no network
+      # PyYAML is the only runtime dependency; the tests need no Docker and no network. The package itself is NOT installed:
+      # the install test deletes the installed copy and expects the command to fail, which an installed or editable
+      # package of the checkout would hide (pytest.ini puts the checkout on the path).
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install -e ".[test]"
+          pip install "PyYAML>=6" "pytest>=8"
 
       # TESTS
       - name: Execute tests with pytest
