@@ -79,10 +79,17 @@ def _parser() -> argparse.ArgumentParser:
         "--to", required=True, help="folder to create the backup folder in"
     )
 
-    commands.add_parser(
+    build = commands.add_parser(
         "build-images",
         help="build and pull the images of every service (for an appliance image)",
-    ).add_argument("--generator-config", default=DEFAULT_GENERATOR_CONFIG)
+    )
+    build.add_argument("--generator-config", default=DEFAULT_GENERATOR_CONFIG)
+    build.add_argument(
+        "--remove-other-images",
+        action="store_true",
+        help="afterwards remove every tagged Docker image that the compose project does not use "
+        "(only for the build machine of an appliance image; remove the containers first)",
+    )
     first = commands.add_parser(
         "firstboot",
         help="first boot of an appliance image: the configuration from the hypervisor's guestinfo",
@@ -172,6 +179,10 @@ def main(argv: list[str] | None = None) -> int:
             return 1
         return operate.restore(args.backup, bundle)
     if args.command == "build-images":
+        if args.remove_other_images:
+            return operate.build_images(
+                bundle, args.generator_config, remove_other=True
+            )
         return operate.build_images(bundle, args.generator_config)
     if args.command == "firstboot":
         return firstboot.run(args.config_dir)

@@ -318,6 +318,99 @@ def test_build_images_builds_and_pulls_every_profile_and_leaves_no_rendered_file
     ).exists()  # nothing of the throw-away configuration stays in the image
 
 
+class Inspector:
+    """Stands in for the read-only docker calls: answers by the command."""
+
+    def __init__(self, needed, present):
+        self.needed, self.present = needed, present
+        self.calls = []
+
+    def __call__(self, args):
+        self.calls.append(args)
+        if "config" in args:
+            return self.needed
+        return self.present
+
+
+NEEDED = "ginnungagap-ginnungagap\ncaddy:2\nghcr.io/x/y:1.0\nregistry:5000/z\n"
+PRESENT = (
+    "ginnungagap-ginnungagap:latest\ncaddy:2\nghcr.io/x/y:1.0\nregistry:5000/z:latest\n"
+    "ginnungagap-ova-deploy:latest\ncaddy:1\n<none>:<none>\n"
+)
+
+
+def test_build_images_can_remove_every_tagged_image_the_compose_project_does_not_use(
+    bundle, generator_sources
+):
+    run = Recorder()
+    inspect = Inspector(NEEDED, PRESENT)
+    lines: list[str] = []
+    code = operate.build_images(
+        bundle,
+        generator_sources,
+        run=run,
+        out=lines.append,
+        remove_other=True,
+        inspect=inspect,
+    )
+    assert code == 0
+    removed = [c for c in run.calls if c[:3] == ["docker", "image", "rm"]]
+    assert removed == [
+        ["docker", "image", "rm", "caddy:1"],
+        ["docker", "image", "rm", "ginnungagap-ova-deploy:latest"],
+    ]
+    # the needed images are asked for while the rendered environment still exists, with every profile
+    assert inspect.calls[0][-4:] == ["--profile", "*", "config", "--images"]
+    assert not (bundle / "rendered").exists()
+
+
+def test_build_images_keeps_every_image_unless_asked(bundle, generator_sources):
+    run = Recorder()
+    operate.build_images(
+        bundle,
+        generator_sources,
+        run=run,
+        out=lambda m: None,
+        inspect=Inspector("", ""),
+    )
+    assert not any(c[:3] == ["docker", "image", "rm"] for c in run.calls)
+
+
+@pytest.mark.parametrize(
+    ("needed", "present"), [("", PRESENT), (NEEDED, None), (None, PRESENT)]
+)
+def test_no_image_is_removed_when_a_list_cannot_be_read(
+    bundle, generator_sources, needed, present
+):
+    run = Recorder()
+    lines: list[str] = []
+    code = operate.build_images(
+        bundle,
+        generator_sources,
+        run=run,
+        out=lines.append,
+        remove_other=True,
+        inspect=Inspector(needed, present),
+    )
+    assert code == 1
+    assert not any(c[:3] == ["docker", "image", "rm"] for c in run.calls)
+    assert any("no image was removed" in line for line in lines)
+    assert not (bundle / "rendered").exists()
+
+
+def test_a_failing_image_removal_fails_the_build_step(bundle, generator_sources):
+    run = Recorder([0, 0, 1])  # build, pull, then the first removal
+    code = operate.build_images(
+        bundle,
+        generator_sources,
+        run=run,
+        out=lambda m: None,
+        remove_other=True,
+        inspect=Inspector(NEEDED, PRESENT),
+    )
+    assert code == 1
+
+
 def test_build_images_stops_at_the_first_failure_and_still_cleans_up(
     bundle, generator_sources
 ):

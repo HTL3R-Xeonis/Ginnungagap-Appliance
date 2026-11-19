@@ -45,3 +45,18 @@ def test_the_generated_ssh_password_is_forgotten_but_the_sshd_drop_in_stays():
     assert "sshd_config.d" not in script.replace(
         "the sshd drop-in that allows password login stays", ""
     )
+
+
+def test_the_images_of_an_older_bundle_are_removed_after_the_containers_and_before_the_build_cache():
+    text = run("--dry-run").stdout
+    order = [
+        text.index("remove the containers and volumes"),
+        text.index("build and pull the images of every service"),
+        text.index(
+            "remove every image that is not part of the current compose project"
+        ),
+        text.index("remove the build cache and untagged image layers"),
+    ]
+    assert order == sorted(order)
+    script = SCRIPT.read_text()
+    assert "ginnungagap build-images --remove-other-images" in script

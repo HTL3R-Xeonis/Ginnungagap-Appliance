@@ -280,18 +280,65 @@ def apply(
     return 0 if status_module.healthy(rows) else 1
 
 
+def _image_reference(name: str) -> str:
+    """`name` the way `docker image ls` writes it: with a tag (`latest` when there is none)."""
+    last = name.rsplit("/", 1)[-1]
+    return name if ":" in last else f"{name}:latest"
+
+
+def remove_other_images(
+    bundle: Path,
+    run: Runner,
+    inspect: Inspect,
+    out: Callable[[str], None] = print,
+) -> int:
+    """
+    Removes every tagged Docker image that the compose project does not use (the rendered environment must exist): leftovers of
+    an older bundle, for example the image of a service that was dropped, which `docker image prune` keeps because it is tagged.
+    Nothing is removed when the list of the needed images cannot be read or is empty. Containers that still use an image keep
+    it, which is reported as a failure, so remove the containers first.
+    """
+    wanted_text = inspect(compose_args(bundle, "--profile", "*", "config", "--images"))
+    wanted = {
+        _image_reference(line.strip())
+        for line in (wanted_text or "").splitlines()
+        if line.strip()
+    }
+    if not wanted:
+        out("could not read the images the compose project needs; no image was removed")
+        return 1
+    present_text = inspect(
+        ["docker", "image", "ls", "--format", "{{.Repository}}:{{.Tag}}"]
+    )
+    if present_text is None:
+        out("could not list the Docker images; no image was removed")
+        return 1
+    present = {line.strip() for line in present_text.splitlines() if line.strip()}
+    others = sorted(ref for ref in present if "<none>" not in ref and ref not in wanted)
+    for ref in others:
+        out(f"removing the image {ref}, which the compose project does not use")
+        if run(["docker", "image", "rm", ref]) != 0:
+            out(f"removing the image {ref} failed")
+            return 1
+    return 0
+
+
 def build_images(
     bundle: Path,
     generator_config: str | Path | None,
     run: Runner | None = None,
     out: Callable[[str], None] = print,
+    remove_other: bool = False,
+    inspect: Inspect | None = None,
 ) -> int:
     """
     Builds and pulls the images of EVERY service, without starting anything - for an appliance image, which must come up
     without internet and without a build. A configuration with everything switched on is rendered only to give compose its
-    environment, and removed again afterwards, so no file of it ends up in the image.
+    environment, and removed again afterwards, so no file of it ends up in the image. With `remove_other` every tagged image
+    that does not belong to the compose project is removed afterwards (only for the build machine of an image).
     """
     run = _runner(run, bundle)
+    inspect = inspect or (lambda args: default_inspect(args, cwd=bundle))
     config = config_module.normalise(
         {
             "services": {"ova_store": True},
@@ -321,6 +368,8 @@ def build_images(
             if run(compose_args(bundle, *command)) != 0:
                 out(f"{step} the images failed")
                 return 1
+        if remove_other and remove_other_images(bundle, run, inspect, out) != 0:
+            return 1
     finally:
         shutil.rmtree(rendered, ignore_errors=True)
     out("All images are in the local image store.")

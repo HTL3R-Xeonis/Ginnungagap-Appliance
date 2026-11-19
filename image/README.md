@@ -54,8 +54,10 @@ What was done (and verified on the lab ESXi) to get the OVA, in order:
 1. A Debian 13 VM, installed with `sudo ./install.sh --repos-dir /srv/repos --install-packages --image --no-start`
    (Docker, compose, buildx, `python3-yaml`, `open-vm-tools`, `nfs-common`; the first-boot unit is enabled, SSH password
    login is switched on by a drop-in, there is no configuration).
-2. `sudo image/prepare-image.sh --yes --zero-free-space` stops the setup watcher, then builds and pulls the images of
-   every service for offline startup. It removes the configuration, staged and rejected Wizard submissions, containers,
+2. `sudo image/prepare-image.sh --yes --zero-free-space` stops the setup watcher, removes the containers and volumes, then
+   builds and pulls the images of every service for offline startup and removes every other tagged Docker image
+   (`ginnungagap build-images --remove-other-images`: a service of an older bundle, such as the dropped `ova-deploy`, must not
+   stay in the image). It removes the configuration, staged and rejected Wizard submissions, containers,
    volumes, SSH keys, the generated admin SSH password, the login account's password hash and shadow backups, machine ID,
    DHCP leases, passwordless sudo rules, histories and logs. The login account stays in the image so each clone can set up
    its own SSH access at first boot. Shut the VM down with

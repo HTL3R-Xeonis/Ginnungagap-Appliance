@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Prepares THIS machine to become the appliance image, as the last step before it is shut down and exported
 # (image/export_ova.py). It builds the images of every service (so the image starts without internet and without a build)
-# and removes everything that belongs to one particular machine: the configuration, the services' data, the SSH host keys,
+# and removes every Docker image that the current compose project does not use (a service of an older bundle must not stay in
+# the image), and everything that belongs to one particular machine: the configuration, the services' data, the SSH host keys,
 # the machine id, every authorized SSH key, passwordless sudo rules, shell histories and logs, and the admin's generated
 # initial SSH password and the login account's password hash. The sshd drop-in stays for the next first boot.
 #
@@ -43,7 +44,7 @@ act() {  # description, then the function to run
   if [ "$DRY" = 1 ]; then echo "would: $1"; else echo "== $1"; "$2"; fi
 }
 
-build_images() { ginnungagap build-images; }
+build_images() { ginnungagap build-images --remove-other-images; }
 
 stop_setup() {
   systemctl stop ginnungagap-setup-apply.path ginnungagap-setup-apply.service
@@ -52,6 +53,9 @@ stop_setup() {
 remove_services() {
   docker ps -aq --filter "label=com.docker.compose.project=$PROJECT" | xargs -r docker rm -f >/dev/null
   docker volume ls -q | grep "^${PROJECT}_" | xargs -r docker volume rm -f >/dev/null || true
+}
+
+remove_build_leftovers() {
   docker builder prune -af >/dev/null 2>&1 || true
   docker image prune -f >/dev/null 2>&1 || true  # layers of earlier builds
 }
@@ -116,8 +120,10 @@ zero_free_space() {
 }
 
 act "stop the setup watcher" stop_setup
-act "build and pull the images of every service" build_images
+# the containers go first: an image that a container still uses cannot be removed
 act "remove the containers and volumes of the project '$PROJECT'" remove_services
+act "build and pull the images of every service and remove every image that is not part of the current compose project" build_images
+act "remove the build cache and untagged image layers" remove_build_leftovers
 act "remove the configuration, the rendered files, the first-boot marker and the generated SSH password" remove_configuration
 act "remove staged and rejected setup files" remove_staged_configuration
 act "remove the SSH host keys, the machine id and DHCP leases" remove_identity

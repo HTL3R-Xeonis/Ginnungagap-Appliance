@@ -69,10 +69,25 @@ def test_bootstrap_refreshes_the_console_only_after_starting(
 def test_build_images_command_is_wired(tmp_path, monkeypatch):
     seen = []
     monkeypatch.setattr(
-        cli.operate, "build_images", lambda bundle, gen: seen.append(gen) or 0
+        cli.operate,
+        "build_images",
+        lambda bundle, gen, remove_other=False: seen.append((gen, remove_other)) or 0,
     )
     assert cli.main(["build-images", "--generator-config", str(tmp_path)]) == 0
-    assert seen == [str(tmp_path)]
+    assert seen == [(str(tmp_path), False)]  # other images stay unless asked for
+    seen.clear()
+    assert (
+        cli.main(
+            [
+                "build-images",
+                "--remove-other-images",
+                "--generator-config",
+                str(tmp_path),
+            ]
+        )
+        == 0
+    )
+    assert seen == [(str(tmp_path), True)]
 
 
 def test_issue_command_rewrites_the_console_text(tmp_path, console_refreshes):
