@@ -60,8 +60,8 @@ VERSION_FILES = {
     "appliance": "ginnungagap/version.py",
     "operator": "app/version.py",
     "builder": "pyproject.toml",
-    "docker-server-files": "VERSION",
-    "topology-generator": "VERSION",
+    "template-services": "VERSION",
+    "generator": "VERSION",
 }
 _PY_VERSION = re.compile(r'^__version__\s*=\s*["\']([^"\']+)["\']\s*$', re.MULTILINE)
 _COMMIT = re.compile(r"^[0-9a-f]{40}$")
@@ -90,7 +90,7 @@ def version_in_file(component: str, text: str) -> str | None:
         except tomllib.TOMLDecodeError:
             return None
         return version if isinstance(version, str) else None
-    if component in ("docker-server-files", "topology-generator"):
+    if component in ("template-services", "generator"):
         return text.strip() or None
     found = _PY_VERSION.search(text)
     return found.group(1) if found else None

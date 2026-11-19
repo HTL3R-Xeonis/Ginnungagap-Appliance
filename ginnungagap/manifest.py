@@ -25,40 +25,114 @@ from typing import Any
 SCHEMA = 1
 
 # The five components of schema 1 (section 5 of the update plan) and what belongs to each of them. New components need a new
-# schema, so a client can refuse a manifest it does not understand.
+# schema, so a client can refuse a manifest it does not understand. A key names the ROLE of a component, never a repository
+# or a code name: the repositories can be renamed without touching a key (PLAN_component_codenames.md, section 2).
 COMPONENT_NAMES = (
     "appliance",
     "operator",
     "builder",
-    "docker-server-files",
-    "topology-generator",
+    "template-services",
+    "generator",
 )
+# The current repository of each component. The same name is the prefix of the release tarball (`<name>-<version>.tar.gz`), its
+# top folder, the folder under releases/ and components/ on the appliance and the sibling folder compose.yml builds from. The
+# tooling that BUILDS a release (release/build_release.py) enforces this table; a manifest that is only READ is checked for
+# consistency instead (see `_component`), so a later rename of a component repository does not lock an installed appliance out.
 REPO_NAMES = {
     "appliance": "Ginnungagap-Appliance",
-    "operator": "TopologyOperator",
-    "builder": "TopologyBuilder",
-    "docker-server-files": "Docker-Server-Files",
-    "topology-generator": "TopologyGenerator",
+    "operator": "Igdrasyl",
+    "builder": "Mjonyr",
+    "template-services": "Hugyn-and-Munyn",
+    "generator": "Mimyr",
 }
-# the folder of a component's checkout on the appliance (components/<name>, releases/<name>/<version>): the names compose.yml and
-# install.sh use, which for the generator is not the name of its GitHub repository
-CHECKOUT_NAMES = {**REPO_NAMES, "topology-generator": "topology-generator"}
+CHECKOUT_NAMES = REPO_NAMES
+# The names this appliance used before the code names (read, never written): the old component keys, and per component the
+# old repository / checkout folder names. They are needed for `--adopt` of checkouts that still carry them, for manifests of
+# releases that were built with them and for an installed.json written by an earlier version of this program.
+LEGACY_KEYS = {
+    "docker-server-files": "template-services",
+    "topology-generator": "generator",
+}
+LEGACY_NAMES = {
+    "appliance": (),
+    "operator": ("TopologyOperator",),
+    "builder": ("TopologyBuilder",),
+    "template-services": ("Docker-Server-Files",),
+    "generator": ("TopologyGenerator", "topology-generator"),
+}
+# The names people use for the parts. The spelling is deliberate (the standard mythological spellings are wrong here;
+# tests/test_codenames.py guards it). The appliance itself has no code name: it is the product, Ginnungagap.
+CODE_NAMES = {
+    "operator": "Igdrasyl",
+    "builder": "Mjonyr",
+    "template-services": "Hugyn and Munyn",
+    "generator": "Mimyr",
+}
+# the same for the services of the compose project (the ESXi side is Hugyn, the GNS3 side Munyn)
+SERVICE_CODE_NAMES = {
+    "ginnungagap": "Igdrasyl",
+    "template-esxi": "Hugyn",
+    "collector-esxi": "Hugyn",
+    "template-gns3": "Munyn",
+    "collector-gns3": "Munyn",
+    "generator": "Mimyr",
+}
 DEFAULT_SERVICES = {
     "appliance": ("setup",),
     "operator": ("ginnungagap",),
     "builder": ("ginnungagap",),
-    "docker-server-files": (
+    "template-services": (
         "template-esxi",
         "collector-esxi",
         "template-gns3",
         "collector-gns3",
     ),
-    "topology-generator": ("generator",),
+    "generator": ("generator",),
 }
 KNOWN_SERVICES = frozenset(
     service for services in DEFAULT_SERVICES.values() for service in services
 )
 CHANNELS = ("stable", "prerelease")
+
+
+def _alias_table() -> dict[str, str]:
+    table = {key: key for key in COMPONENT_NAMES}
+    table.update(LEGACY_KEYS)
+    for key, code in CODE_NAMES.items():
+        table[code.lower().replace(" ", "-")] = key
+    table["hugyn"] = table["munyn"] = (
+        "template-services"  # both halves are one component (one release, one tarball)
+    )
+    for key, repo in REPO_NAMES.items():
+        table[repo.lower()] = key
+    for key, names in LEGACY_NAMES.items():
+        for name in names:
+            table[name.lower()] = key
+    return table
+
+
+_ALIASES = _alias_table()
+
+
+def resolve_component(name: str) -> str | None:
+    """
+    The component key for what a person typed: the key itself, an old key, a code name (`igdrasyl`, `hugyn-and-munyn`) or a
+    repository name, in any letter case. None when it is none of them.
+    """
+    return _ALIASES.get(name.strip().lower()) if isinstance(name, str) else None
+
+
+def display_name(key: str) -> str:
+    """`operator (Igdrasyl)`: the key with the code name of the part, for tables people read (the appliance has none)."""
+    code = CODE_NAMES.get(key)
+    return f"{key} ({code})" if code else key
+
+
+def service_display_name(service: str) -> str:
+    """`template-esxi (Hugyn)`: the same for a service of the compose project."""
+    code = SERVICE_CODE_NAMES.get(service)
+    return f"{service} ({code})" if code else service
+
 
 _SEMVER = re.compile(
     r"^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)"
@@ -149,12 +223,12 @@ class Component:
 
     @property
     def repo_name(self) -> str:
-        """The repository's name: the prefix of the tarball, its top folder and the asset name."""
-        return REPO_NAMES[self.name]
+        """The repository's name as the manifest gives it: the prefix of the tarball, its top folder and the asset name."""
+        return self.repo.rsplit("/", 1)[-1]
 
     @property
     def checkout(self) -> str:
-        """The folder name under releases/ and components/."""
+        """The folder name under releases/ and components/: this program's own name for the component (compose.yml uses it)."""
         return CHECKOUT_NAMES[self.name]
 
 
@@ -189,7 +263,6 @@ def _component(name: str, data: Any, problems: list[str]) -> Component | None:
         problems.append(f"{where}: must be an object")
         return None
     start = len(problems)
-    expected_repo = REPO_NAMES[name]
 
     def text(key: str) -> str:
         value = data.get(key)
@@ -200,8 +273,14 @@ def _component(name: str, data: Any, problems: list[str]) -> Component | None:
 
     repo = text("repo")
     match = _REPO.match(repo) if repo else None
-    if repo and (match is None or match.group(1) != expected_repo):
-        problems.append(f"{where}.repo: must be <owner>/{expected_repo}, not {repo!r}")
+    # consistency, not identity: whatever the repository is called now (or was called when the release was built), the asset
+    # has to be named after it. The signature and the checksums are the trust anchor, the name is only a label.
+    repo_name = match.group(1) if match else ""
+    if repo and (match is None or not _DIRNAME.match(repo_name)):
+        problems.append(
+            f"{where}.repo: must look like <owner>/<repository>, not {repo!r}"
+        )
+        repo_name = ""
     version = text("version")
     if version and not is_semver(version):
         problems.append(f"{where}.version: {version!r} is not a version like 1.3.0")
@@ -212,9 +291,9 @@ def _component(name: str, data: Any, problems: list[str]) -> Component | None:
     if commit and not _COMMIT.match(commit):
         problems.append(f"{where}.commit: must be 40 lower-case hex digits")
     asset = text("asset")
-    if asset and version and asset != _asset_name(expected_repo, version):
+    if asset and version and repo_name and asset != _asset_name(repo_name, version):
         problems.append(
-            f"{where}.asset: must be {_asset_name(expected_repo, version)}, not {asset!r}"
+            f"{where}.asset: must be {_asset_name(repo_name, version)} (the repository's name, the version), not {asset!r}"
         )
     sha = text("sha256")
     if sha and not _SHA256.match(sha):
@@ -327,6 +406,9 @@ def validate(data: Any) -> Manifest:
     if not isinstance(raw_components, dict):
         problems.append("components: must be an object")
     else:
+        # a release built before the code names carries the old keys: read them as the roles they stand for
+        raw_components = _modernize_keys(raw_components, "components", problems)
+        data = {**data, "components": raw_components}
         missing = [n for n in COMPONENT_NAMES if n not in raw_components]
         extra = sorted(set(raw_components) - set(COMPONENT_NAMES))
         if missing:
@@ -368,6 +450,62 @@ def validate(data: Any) -> Manifest:
         images=images,
         raw=copy.deepcopy(data),
     )
+
+
+def _modernize_keys(
+    mapping: dict[str, Any], where: str, problems: list[str] | None = None
+) -> dict[str, Any]:
+    """`mapping` with the old component keys renamed to their roles (a new dict; the same order)."""
+    result: dict[str, Any] = {}
+    for key, value in mapping.items():
+        current = LEGACY_KEYS.get(key, key)
+        if current in result or (current != key and current in mapping):
+            if problems is not None:
+                problems.append(
+                    f"{where}: {key} and {current} are the same component and are both given"
+                )
+            continue
+        result[current] = value
+    return result
+
+
+def _modernize_entry(key: str, entry: Any) -> Any:
+    """A component entry of a state file with the old repository / asset name replaced by the current one."""
+    if not isinstance(entry, dict):
+        return entry
+    entry = dict(entry)
+    current, legacy = REPO_NAMES.get(key), LEGACY_NAMES.get(key, ())
+    repo = entry.get("repo")
+    if current and isinstance(repo, str):
+        owner, _, name = repo.rpartition("/")
+        if name in legacy:
+            entry["repo"] = f"{owner}/{current}" if owner else current
+    asset, version = entry.get("asset"), entry.get("version")
+    if current and isinstance(asset, str) and isinstance(version, str):
+        for old in legacy:
+            if asset == _asset_name(old, version):
+                entry["asset"] = _asset_name(current, version)
+    return entry
+
+
+def has_legacy_names(data: Any) -> bool:
+    """True when a state file (installed.json, a history file) still uses the old component keys or repository names."""
+    return isinstance(data, dict) and modernize_state(data) != data
+
+
+def modernize_state(data: Any) -> Any:
+    """A state file read as the current program would write it: old keys renamed, old repository names replaced."""
+    if not isinstance(data, dict):
+        return data
+    result = dict(data)
+    components = data.get("components")
+    if isinstance(components, dict):
+        renamed = _modernize_keys(components, "components")
+        result["components"] = {k: _modernize_entry(k, v) for k, v in renamed.items()}
+    dirs = data.get("dirs")
+    if isinstance(dirs, dict):
+        result["dirs"] = _modernize_keys(dirs, "dirs")
+    return result
 
 
 def _valid_time(value: Any) -> bool:
@@ -473,7 +611,11 @@ class InstalledState:
 
     @classmethod
     def from_dict(cls, data: Any) -> InstalledState:
-        """:raises ManifestError: the file is not a state file this program wrote."""
+        """
+        :raises ManifestError: the file is not a state file this program wrote. A file written before the code names (old
+        component keys, old repository names) is read as the current names.
+        """
+        data = modernize_state(data)
         if not isinstance(data, dict) or not isinstance(data.get("appliance"), dict):
             raise ManifestError(["installed.json: not an installed-state file"])
         appliance = data["appliance"]
@@ -615,6 +757,25 @@ def load_installed(path: str | Path) -> InstalledState | None:
 
 def save_installed(path: str | Path, state: InstalledState) -> None:
     write_json_atomic(path, state.to_dict())
+
+
+def release_version(update_dir: str | Path | None = None) -> str:
+    """
+    The appliance release this machine runs, as `ginnungagap status` and the console login text name it: the release
+    `installed.json` records, and the program's own version (`ginnungagap/version.py`) when none is recorded yet, the record is
+    damaged or the machine only has adopted checkouts (those are no release).
+    """
+    from ginnungagap import statelock
+    from ginnungagap.version import __version__
+
+    folder = Path(update_dir) if update_dir is not None else statelock.update_dir()
+    try:
+        state = load_installed(folder / "installed.json")
+    except (ManifestError, OSError):
+        return __version__
+    if state is None or state.adopted or not is_semver(state.appliance_version):
+        return __version__
+    return state.appliance_version
 
 
 @dataclass(frozen=True)

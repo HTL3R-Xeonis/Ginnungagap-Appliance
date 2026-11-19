@@ -53,9 +53,9 @@ from tests.helpers import fake_release
 work = Path(sys.argv[1])
 rel = work / "releases"
 fake_release.make_release(rel / "a", appliance="1.3.0")
-fake_release.make_release(rel / "b", appliance="1.3.1", components={"docker-server-files": "1.0.1"})
-fake_release.make_release(rel / "broken", appliance="1.3.2", components={"docker-server-files": "1.0.2"}, break_service="template-esxi")
-fake_release.make_release(rel / "c", appliance="1.3.3", components={"docker-server-files": "1.0.3"})
+fake_release.make_release(rel / "b", appliance="1.3.1", components={"template-services": "1.0.1"})
+fake_release.make_release(rel / "broken", appliance="1.3.2", components={"template-services": "1.0.2"}, break_service="template-esxi")
+fake_release.make_release(rel / "c", appliance="1.3.3", components={"template-services": "1.0.3"})
 PY
 cat >"$WORK/app/compose.yml" <<'YML'
 name: ginnupdsmoke
@@ -68,23 +68,23 @@ x-probe: &probe
 services:
   ginnungagap:
     profiles: [ginnungagap]
-    build: ${REPOS_DIR}/TopologyOperator
+    build: ${REPOS_DIR}/Igdrasyl
     healthcheck: *probe
     volumes: ["data:/data"]
   template-esxi:
     profiles: [template-esxi]
-    build: ${REPOS_DIR}/Docker-Server-Files/yaml-api
+    build: ${REPOS_DIR}/Hugyn-and-Munyn/yaml-api
     healthcheck: *probe
   template-gns3:
     profiles: [template-gns3]
     build:
-      context: ${REPOS_DIR}/Docker-Server-Files/gns3-template-api
+      context: ${REPOS_DIR}/Hugyn-and-Munyn/gns3-template-api
       dockerfile: gns3_api.Dockerfile
     healthcheck: *probe
   generator:
     profiles: [generator]
     build:
-      context: ${REPOS_DIR}/topology-generator
+      context: ${REPOS_DIR}/Mimyr
       dockerfile: topology.Dockerfile
     healthcheck: *probe
 volumes:
@@ -156,7 +156,7 @@ check "template-esxi runs 1.0.0" "$(inside template-esxi)" "1.0.0"
 docker run --rm -v "${PROJECT}_data:/data" --entrypoint sh "$(docker inspect --format '{{.Config.Image}}' "$(container_of ginnungagap)")" -c 'echo keep-me > /data/marker'
 ID_GEN=$(container_of generator); ID_GNS=$(container_of template-gns3); ID_ESXI=$(container_of template-esxi)
 
-say "update to B: only the Docker-Server-Files services change"
+say "update to B: only the Hugyn-and-Munyn services change"
 update apply --offline-dir "$WORK/releases/b" && ok "update to B" || bad "update to B failed"
 check "template-esxi runs 1.0.1" "$(inside template-esxi)" "1.0.1"
 check "template-gns3 runs 1.0.1" "$(inside template-gns3)" "1.0.1"
@@ -170,7 +170,7 @@ set +e; update apply --offline-dir "$WORK/releases/broken"; CODE=$?; set -e
 check "exit code" "$CODE" "2"
 check "template-esxi still runs 1.0.1" "$(inside template-esxi)" "1.0.1"
 check "and in the same container" "$(container_of template-esxi)" "$ID_ESXI"
-check "the link is back on 1.0.1" "$(readlink "$WORK/state/components/Docker-Server-Files")" "../releases/Docker-Server-Files/1.0.1"
+check "the link is back on 1.0.1" "$(readlink "$WORK/state/components/Hugyn-and-Munyn")" "../releases/Hugyn-and-Munyn/1.0.1"
 [ ! -e "$GINNUNGAGAP_UPDATE_DIR/transaction.json" ] && ok "no transaction left" || bad "transaction.json is still there"
 
 say "a good update C, then --rollback (no build, no network)"
@@ -184,6 +184,34 @@ say "the audit log"
 check "started/ok pairs and the rolled-back one" "$(python3 -c "
 import json,os
 print(','.join(f\"{r['action']}:{r['result']}\" for r in map(json.loads, open(os.environ['GINNUNGAGAP_UPDATE_DIR']+'/audit.log'))))")" "apply:started,apply:ok,apply:started,apply:ok,apply:started,apply:rolled_back,apply:started,apply:ok,rollback:started,rollback:ok"
+
+say "a state written before the code names (old keys, old folders) is moved to the current names, then an update works"
+python3 - "$WORK/state" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+state = Path(sys.argv[1])
+folders = {"Igdrasyl": "TopologyOperator", "Mjonyr": "TopologyBuilder", "Hugyn-and-Munyn": "Docker-Server-Files", "Mimyr": "topology-generator"}
+keys = {"template-services": "docker-server-files", "generator": "topology-generator"}
+for new, old in folders.items():
+    (state / "releases" / new).rename(state / "releases" / old)
+    link = state / "components" / new
+    folder = link.readlink().name
+    link.unlink()
+    (state / "components" / old).symlink_to(f"../releases/{old}/{folder}")
+for path in [state / "update" / "installed.json", *(state / "update" / "history").glob("*.json")]:
+    data = json.loads(path.read_text())
+    for part in ("components", "dirs"):
+        data[part] = {keys.get(k, k): v for k, v in data[part].items()}
+    path.write_text(json.dumps(data))
+PY
+update apply --offline-dir "$WORK/releases/c" && ok "update to C from the old-name state" || bad "update to C from the old-name state failed"
+check "template-esxi runs 1.0.3" "$(inside template-esxi)" "1.0.3"
+check "the link has the current name" "$(readlink "$WORK/state/components/Hugyn-and-Munyn")" "../releases/Hugyn-and-Munyn/1.0.3"
+check "the old name is a link to the new one" "$(readlink "$WORK/state/components/Docker-Server-Files")" "Hugyn-and-Munyn"
+[ ! -e "$WORK/state/releases/Docker-Server-Files" ] && ok "the old releases folder is gone" || bad "releases/Docker-Server-Files is still there"
+check "installed.json has the role keys" "$(python3 -c "import json,os; c = json.load(open(os.environ['GINNUNGAGAP_UPDATE_DIR']+'/installed.json'))['components']; print('template-services' in c and 'generator' in c and 'docker-server-files' not in c)")" "True"
 
 echo
 if [ "$FAILED" = 0 ]; then echo "update smoke test passed"; else echo "update smoke test FAILED"; exit 1; fi

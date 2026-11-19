@@ -13,5 +13,5 @@ repository. Licenses were read from the image and package metadata (November 202
 | bcrypt | the setup container | Apache-2.0 |
 | Docker Engine and Compose (installed from the Debian archive by `install.sh`) | running the containers | Apache-2.0 |
 
-The other components (TopologyOperator, TopologyBuilder, topology-generator, Docker-Server-Files) are separate
+The other components (Igdrasyl, Mjonyr, Mimyr, Hugyn and Munyn) are separate
 repositories, all under GPL-3.0; their own `THIRD_PARTY_NOTICES.md` files list what they use.

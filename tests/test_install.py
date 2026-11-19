@@ -14,10 +14,10 @@ ROOT = Path(__file__).resolve().parent.parent
 def place(tmp_path):
     repos = tmp_path / "repos"
     for name in (
-        "TopologyOperator",
-        "TopologyBuilder",
-        "Docker-Server-Files",
-        "topology-generator",
+        "Igdrasyl",
+        "Mjonyr",
+        "Hugyn-and-Munyn",
+        "Mimyr",
     ):
         (repos / name).mkdir(parents=True)
     return {
@@ -36,17 +36,25 @@ def install(place, *extra, check=True, path=None, script=None):
     command = [
         "bash",
         str(script or ROOT / "install.sh"),
-        "--prefix", str(place["prefix"]),
-        "--config-dir", str(place["config"]),
-        "--bin-dir", str(place["bin"]),
-        "--unit-dir", str(place["units"]),
-        "--staging-dir", str(place["staging"]),
-        "--sshd-dropin-dir", str(place["sshd"]),
-        "--state-dir", str(place["state"]),
-        "--repos-dir", str(place["repos"]),
+        "--prefix",
+        str(place["prefix"]),
+        "--config-dir",
+        str(place["config"]),
+        "--bin-dir",
+        str(place["bin"]),
+        "--unit-dir",
+        str(place["units"]),
+        "--staging-dir",
+        str(place["staging"]),
+        "--sshd-dropin-dir",
+        str(place["sshd"]),
+        "--state-dir",
+        str(place["state"]),
+        "--repos-dir",
+        str(place["repos"]),
         "--no-start",
         *extra,
-    ]  # fmt: skip
+    ]
     env = {**os.environ, **({"PATH": path} if path else {})}
     return subprocess.run(command, capture_output=True, text=True, check=False, env=env)
 
@@ -70,10 +78,7 @@ def test_installs_program_command_config_and_unit(place):
     assert config.read_text() == (ROOT / "ginnungagap.example.yml").read_text()
     env = (place["config"] / "install.env").read_text()
     assert f"PYTHONPATH={app}" in env and f"REPOS_DIR={place['repos']}" in env
-    assert (
-        f"GINNUNGAGAP_GENERATOR_CONFIG={place['repos']}/topology-generator/config"
-        in env
-    )
+    assert f"GINNUNGAGAP_GENERATOR_CONFIG={place['repos']}/Mimyr/config" in env
     unit = (place["units"] / "ginnungagap.service").read_text()
     assert (
         f"ExecStart={place['bin']}/ginnungagap apply {place['config']}/ginnungagap.yml --no-build"
@@ -148,10 +153,98 @@ def test_no_systemd_writes_no_unit(place):
 
 
 def test_a_missing_repository_stops_before_anything_is_written(place):
-    shutil.rmtree(place["repos"] / "topology-generator")
+    shutil.rmtree(place["repos"] / "Mimyr")
     result = install(place)
-    assert result.returncode == 1 and "topology-generator" in result.stderr
+    assert result.returncode == 1 and "Mimyr" in result.stderr
     assert not place["prefix"].exists() and not place["config"].exists()
+
+
+OLD_NAMES = (
+    "TopologyOperator",
+    "TopologyBuilder",
+    "Docker-Server-Files",
+    "topology-generator",
+)
+
+
+def use_old_names(place, only=None):
+    for new, old in zip(
+        ("Igdrasyl", "Mjonyr", "Hugyn-and-Munyn", "Mimyr"), OLD_NAMES, strict=True
+    ):
+        if only is None or new in only:
+            (place["repos"] / new).rename(place["repos"] / old)
+
+
+def test_checkouts_under_the_old_names_install_and_point_to_adopt(place):
+    use_old_names(place)
+    result = install(place)
+    assert result.returncode == 0, result.stderr
+    assert "update --adopt" in result.stdout and "Igdrasyl" in result.stdout
+    env = (place["config"] / "install.env").read_text()
+    assert f"REPOS_DIR={place['repos']}" in env
+    # the generator's config is looked for where the generator really is
+    assert (
+        f"GINNUNGAGAP_GENERATOR_CONFIG={place['repos']}/topology-generator/config"
+        in env
+    )
+
+
+def test_checkouts_under_the_old_names_are_not_started_by_install(place, tmp_path):
+    use_old_names(place)
+    fake = tmp_path / "fakebin"
+    fake.mkdir()
+    (fake / "docker").write_text("#!/bin/sh\nexit 0\n")  # the checks for Docker pass
+    (fake / "docker").chmod(0o755)
+    command = [
+        "bash",
+        str(ROOT / "install.sh"),
+        "--prefix",
+        str(place["prefix"]),
+        "--config-dir",
+        str(place["config"]),
+        "--bin-dir",
+        str(place["bin"]),
+        "--unit-dir",
+        str(place["units"]),
+        "--staging-dir",
+        str(place["staging"]),
+        "--sshd-dropin-dir",
+        str(place["sshd"]),
+        "--state-dir",
+        str(place["state"]),
+        "--repos-dir",
+        str(place["repos"]),
+    ]
+    place["config"].mkdir(parents=True)
+    # an existing (here: invalid) configuration would make the final `apply` fail, so a clean exit shows it was not run
+    (place["config"] / "ginnungagap.yml").write_text("version: 1\n")
+    env = {**os.environ, "PATH": f"{fake}:{os.environ['PATH']}"}
+    result = subprocess.run(
+        command, capture_output=True, text=True, check=False, env=env
+    )
+    assert result.returncode == 0, result.stderr
+    assert "update --adopt" in result.stdout
+
+
+def test_a_mixed_folder_installs_too_and_the_current_name_wins(place):
+    use_old_names(place, only={"Mimyr"})
+    result = install(place)
+    assert result.returncode == 0, result.stderr
+    assert "update --adopt" in result.stdout
+    (
+        place["repos"] / "Mimyr"
+    ).mkdir()  # both names present: the current one is used, nothing to adopt
+    again = install(place)
+    assert again.returncode == 0 and "update --adopt" not in again.stdout
+    assert (
+        f"GINNUNGAGAP_GENERATOR_CONFIG={place['repos']}/Mimyr/config"
+        in (place["config"] / "install.env").read_text()
+    )
+
+
+def test_the_current_names_install_without_a_word_about_old_ones(place):
+    result = install(place)
+    assert result.returncode == 0 and "adopt" not in result.stdout
 
 
 def test_without_no_start_docker_is_required(place, tmp_path):
@@ -161,7 +254,20 @@ def test_without_no_start_docker_is_required(place, tmp_path):
         found = shutil.which(tool)
         if found:
             (only_basics / tool).symlink_to(found)
-    command = ["bash", str(ROOT / "install.sh"), "--prefix", str(place["prefix"]), "--config-dir", str(place["config"]), "--bin-dir", str(place["bin"]), "--unit-dir", str(place["units"]), "--repos-dir", str(place["repos"])]  # fmt: skip
+    command = [
+        "bash",
+        str(ROOT / "install.sh"),
+        "--prefix",
+        str(place["prefix"]),
+        "--config-dir",
+        str(place["config"]),
+        "--bin-dir",
+        str(place["bin"]),
+        "--unit-dir",
+        str(place["units"]),
+        "--repos-dir",
+        str(place["repos"]),
+    ]
     result = subprocess.run(
         command,
         capture_output=True,
@@ -415,7 +521,23 @@ def test_without_repos_dir_a_rerun_keeps_the_recorded_one_and_a_new_install_uses
 ):
     install(place)
     # re-run without --repos-dir: the recorded folder stays (the script's own parent folder has no repositories)
-    command = ["bash", str(ROOT / "install.sh"), "--prefix", str(place["prefix"]), "--config-dir", str(place["config"]), "--bin-dir", str(place["bin"]), "--unit-dir", str(place["units"]), "--staging-dir", str(place["staging"]), "--state-dir", str(place["state"]), "--no-start"]  # fmt: skip
+    command = [
+        "bash",
+        str(ROOT / "install.sh"),
+        "--prefix",
+        str(place["prefix"]),
+        "--config-dir",
+        str(place["config"]),
+        "--bin-dir",
+        str(place["bin"]),
+        "--unit-dir",
+        str(place["units"]),
+        "--staging-dir",
+        str(place["staging"]),
+        "--state-dir",
+        str(place["state"]),
+        "--no-start",
+    ]
     again = subprocess.run(command, capture_output=True, text=True, check=False)
     assert again.returncode == 0, again.stderr
     assert (
@@ -429,10 +551,10 @@ def test_without_repos_dir_a_rerun_keeps_the_recorded_one_and_a_new_install_uses
         "state": tmp_path / "state2",
     }
     for repo in (
-        "TopologyOperator",
-        "TopologyBuilder",
-        "Docker-Server-Files",
-        "topology-generator",
+        "Igdrasyl",
+        "Mjonyr",
+        "Hugyn-and-Munyn",
+        "Mimyr",
     ):
         target = tmp_path / "releases" / repo
         target.mkdir(parents=True)
@@ -502,3 +624,51 @@ def test_a_signers_file_with_a_key_is_installed_and_one_without_is_not(place, ch
     assert (
         "ssh-ed25519" in (trust / "allowed_signers").read_text()
     )  # a file without a key never removes the installed one
+
+
+def test_the_web_panels_request_folder_is_private_and_named_in_install_env(place):
+    assert install(place).returncode == 0
+    folder = place["state"] / "update-requests"
+    assert stat.S_IMODE(folder.stat().st_mode) == 0o700
+    env = (place["config"] / "install.env").read_text()
+    assert f"GINNUNGAGAP_UPDATE_REQUEST_DIR={folder}" in env
+    assert list(folder.iterdir()) == []  # install never leaves a request behind
+
+
+def test_a_request_from_the_web_panel_is_picked_up_by_a_path_unit_that_only_looks_or_installs_what_was_confirmed(
+    place,
+):
+    assert install(place).returncode == 0
+    path_unit = (place["units"] / "ginnungagap-update-request.path").read_text()
+    assert f"PathExists={place['state']}/update-requests/request.json" in path_unit
+    assert "WantedBy=multi-user.target" in path_unit
+    service = (place["units"] / "ginnungagap-update-request.service").read_text()
+    command = next(l for l in service.splitlines() if l.startswith("ExecStart="))
+    assert command == (
+        f"ExecStart={place['bin']}/ginnungagap apply-update-request "
+        f"--requests-dir {place['state']}/update-requests --config-dir {place['config']}"
+    )
+    assert (
+        "--apply" not in service and "--yes" not in service
+    )  # what to do is in the request, validated by the program
+    assert (
+        "SuccessExitStatus=1" in service
+    )  # a refused request is shown in the panel, not a failed unit
+    assert "Type=oneshot" in service
+
+
+def test_the_request_units_are_removed_by_uninstall_and_the_folder_stays(place):
+    install(place)
+    install(place, "--uninstall")
+    for name in ("update-request.path", "update-request.service"):
+        assert not (place["units"] / f"ginnungagap-{name}").exists()
+    assert (place["state"] / "update-requests").is_dir()
+
+
+def test_the_path_unit_is_enabled_and_started_without_a_reboot():
+    script = (ROOT / "install.sh").read_text()
+    assert (
+        "ginnungagap-update-resume.service ginnungagap-update-request.path >/dev/null"
+        in script
+    )
+    assert "systemctl start ginnungagap-update-request.path" in script

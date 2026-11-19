@@ -97,7 +97,8 @@ PY
 )
   case "$token_file" in /*) rm -f -- "$token_file" ;; esac
   rm -rf -- "$dir/history" "$dir/downloads"
-  rm -f -- "$dir/transaction.json" "$dir/audit.log" "$dir/available.json" "$dir/lock"
+  rm -f -- "$dir/transaction.json" "$dir/audit.log" "$dir/available.json" "$dir/web-status.json" "$dir/lock"
+  rm -f -- "$base/update-requests"/* 2>/dev/null || true  # a request the web panel left (it names who asked)
   rm -rf -- "$base/backups"/* 2>/dev/null || true  # pre-update backups: the configuration (API keys) and the data of this machine
   # the installed release stays but has nothing to go back to: a copy starts with no "previous" release
   if [ -f "$dir/installed.json" ]; then

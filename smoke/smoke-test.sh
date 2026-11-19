@@ -74,7 +74,7 @@ YML
 # the renderer runs in a throw-away python container, so the machine needs nothing but Docker
 # (as your own user, so that the key file it writes - mode 0600 - stays readable for docker compose)
 docker run --rm --user "$(id -u):$(id -g)" -e HOME=/tmp -e PYTHONPATH=/tmp/py -v "$HERE:/src:ro" -v "$WORK:/work" \
-  -v "$REPOS_DIR/topology-generator/config:/gen:ro" -w /src python:3.12-slim \
+  -v "$REPOS_DIR/Mimyr/config:/gen:ro" -w /src python:3.12-slim \
   sh -c 'pip install -q --target /tmp/py pyyaml >/dev/null 2>&1 && python -m ginnungagap render /work/ginnungagap.yml --out /work/project/rendered --generator-config /gen >/dev/null'
 printf 'esxi:\n  ip: 10.255.255.1\n  username: root\n  gns3_vm_name: TEST-VM\n' > "$WORK/app-settings.yml"
 cat > "$PROJ/override.yml" <<YML
@@ -160,7 +160,7 @@ else
   check "status lists the generator" "$(grep -c '^  generator ' "$WORK/status.txt")" "1"
 
   before=$(compose ps -q | sort | tr '\n' ' ')
-  if ginn apply "$WORK/ginnungagap.yml" --generator-config "$REPOS_DIR/topology-generator/config" --no-build >"$WORK/apply.txt" 2>&1; then ok "apply on the unchanged file succeeds"; else bad "apply failed: $(tail -3 "$WORK/apply.txt" | tr '\n' '|')"; fi
+  if ginn apply "$WORK/ginnungagap.yml" --generator-config "$REPOS_DIR/Mimyr/config" --no-build >"$WORK/apply.txt" 2>&1; then ok "apply on the unchanged file succeeds"; else bad "apply failed: $(tail -3 "$WORK/apply.txt" | tr '\n' '|')"; fi
   check "apply recreated no container" "$(compose ps -q | sort | tr '\n' ' ')" "$before"
 
   docker run --rm -v "${PROJECT}_data:/data" --entrypoint sh python:3.12-slim -c 'echo before > /data/marker'
@@ -176,7 +176,7 @@ else
 
   say "TLS: self-signed certificate at the gateway (applied to the running project)"
   sed -i 's|^appliance: .*|appliance: {public_url: "https://localhost", timezone: UTC, tls: {mode: self-signed}, http_port: '"$PORT"', https_port: '"$((PORT + 1))"'}|' "$WORK/ginnungagap.yml"
-  if ginn apply "$WORK/ginnungagap.yml" --generator-config "$REPOS_DIR/topology-generator/config" --no-build >"$WORK/apply-tls.txt" 2>&1; then ok "apply with TLS succeeds"; else bad "apply with TLS failed: $(tail -3 "$WORK/apply-tls.txt" | tr '\n' '|')"; fi
+  if ginn apply "$WORK/ginnungagap.yml" --generator-config "$REPOS_DIR/Mimyr/config" --no-build >"$WORK/apply-tls.txt" 2>&1; then ok "apply with TLS succeeds"; else bad "apply with TLS failed: $(tail -3 "$WORK/apply-tls.txt" | tr '\n' '|')"; fi
   sleep 3
   check "https answers (certificate not trusted here, so -k)" "$(curl -sk -o /dev/null -w '%{http_code}' "https://localhost:$((PORT + 1))/health")" "200"
   HOSTIP=$(hostname -I | awk '{print $1}')

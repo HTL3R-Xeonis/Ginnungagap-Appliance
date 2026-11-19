@@ -113,3 +113,32 @@ def test_both_secrets_are_optional_because_the_repositories_are_public():
         "RELEASE_SIGNING_KEY is not set" in text
         and "COMPONENTS_READ_TOKEN is not set" in text
     )
+
+
+# ---- the component repositories' release workflows name the same repository the manifest expects ----
+
+SIBLINGS = Path(__file__).resolve().parent.parent.parent
+
+
+@pytest.mark.parametrize(
+    "component", ["operator", "builder", "template-services", "generator"]
+)
+def test_the_release_workflow_of_a_component_repository_is_named_like_the_manifest_expects(
+    component,
+):
+    from ginnungagap import manifest as mf
+
+    folders = (mf.REPO_NAMES[component], *mf.LEGACY_NAMES[component])
+    workflow = next(
+        (
+            SIBLINGS / folder / ".github" / "workflows" / "release.yml"
+            for folder in folders
+            if (SIBLINGS / folder / ".github" / "workflows" / "release.yml").is_file()
+        ),
+        None,
+    )
+    if workflow is None:
+        pytest.skip(f"{mf.REPO_NAMES[component]} is not next to this repository")
+    data = yaml.safe_load(workflow.read_text(encoding="utf-8"))
+    # the asset is `${COMPONENT}-<version>.tar.gz`: it has to be the repository's name, which is what the manifest checks
+    assert data["env"]["COMPONENT"] == mf.REPO_NAMES[component]

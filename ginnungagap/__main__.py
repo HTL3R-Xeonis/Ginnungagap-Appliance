@@ -1,4 +1,4 @@
-"""Command line: python -m ginnungagap validate|show|render|apply|status|backup|restore|build-images|firstboot|issue|update|versions."""
+"""Command line: python -m ginnungagap validate|show|render|apply|status|backup|restore|build-images|firstboot|issue|update|versions|apply-update-request."""
 
 from __future__ import annotations
 
@@ -12,13 +12,17 @@ import yaml
 
 from ginnungagap import bootstrap as bootstrap_module
 from ginnungagap import config as config_module
-from ginnungagap import console, firstboot, operate, setup_watcher
+from ginnungagap import console, firstboot, operate, setup_watcher, statelock
+from ginnungagap import manifest as manifest_module
 from ginnungagap import render as render_module
 from ginnungagap import status as status_module
 from ginnungagap import update as update_module
+from ginnungagap import update_request as update_request_module
 
 DEFAULT_GENERATOR_CONFIG = os.environ.get("GINNUNGAGAP_GENERATOR_CONFIG") or str(
-    Path(__file__).resolve().parent.parent.parent / "topology-generator" / "config"
+    Path(__file__).resolve().parent.parent.parent
+    / manifest_module.CHECKOUT_NAMES["generator"]
+    / "config"
 )
 
 
@@ -43,7 +47,7 @@ def _parser() -> argparse.ArgumentParser:
     render.add_argument(
         "--generator-config",
         default=DEFAULT_GENERATOR_CONFIG,
-        help="config folder of the topology-generator repository",
+        help="config folder of the generator repository (Mimyr)",
     )
 
     apply = with_file(
@@ -149,6 +153,20 @@ def _parser() -> argparse.ArgumentParser:
     staged.add_argument(
         "--no-build", action="store_true", help="use the images already on disk"
     )
+    web = commands.add_parser(
+        "apply-update-request",
+        help="act on the update request the web panel left, if any (run by the systemd path unit)",
+    )
+    web.add_argument(
+        "--requests-dir",
+        default=os.environ.get(
+            "GINNUNGAGAP_UPDATE_REQUEST_DIR", "/var/lib/ginnungagap/update-requests"
+        ),
+    )
+    web.add_argument(
+        "--config-dir",
+        default=os.environ.get("GINNUNGAGAP_CONFIG_DIR", "/etc/ginnungagap"),
+    )
     _update_parser(commands)
     return parser
 
@@ -169,6 +187,14 @@ def _update_parser(commands) -> None:
     update = commands.add_parser(
         "update",
         help="look for a new release of the appliance components, install it, go back (see the README, Updating components)",
+        description=(
+            "Idynoun, the updater of the appliance: looks for a new release, installs it component by component and goes "
+            "back when something is wrong. Components: "
+            + ", ".join(
+                manifest_module.display_name(n) for n in manifest_module.COMPONENT_NAMES
+            )
+            + "."
+        ),
     )
     actions = update.add_mutually_exclusive_group()
     for flag, text in (
@@ -217,7 +243,10 @@ def _update_parser(commands) -> None:
         "--component",
         action="append",
         default=[],
-        help="only this component (repeatable; not the tested combination)",
+        help=(
+            "only this component (repeatable; not the tested combination); a key, a code name such as igdrasyl, or "
+            "a key of an earlier version (see the README)"
+        ),
     )
     update.add_argument(
         "--yes", action="store_true", help="do not ask for confirmation"
@@ -342,6 +371,13 @@ def main(argv: list[str] | None = None) -> int:
         )
         _refresh_console(args.config_dir)
         return result
+    if args.command == "apply-update-request":
+        return update_request_module.process(
+            args.requests_dir,
+            statelock.update_dir(),
+            Path(args.config_dir) / "ginnungagap.yml",
+            bundle,
+        )
     if args.command == "apply":
         result = operate.apply(
             args.file,
@@ -384,6 +420,7 @@ def main(argv: list[str] | None = None) -> int:
         rows = status_module.check(
             config, status_module.base_url(config, args.url), fetch
         )
+        print(status_module.title_line())
         print(status_module.render_table(rows))
         return 0 if status_module.healthy(rows) else 1
     elif args.command == "backup":

@@ -35,19 +35,19 @@ Apply = Callable[..., int]
 MAX_STAGED_BYTES = 1_000_000
 
 
-def _read_regular(path: Path) -> str | None:
-    """The file's text, or None when it is a symlink, not a regular file or too large - never follows a link."""
+def _read_regular(path: Path, limit: int = MAX_STAGED_BYTES) -> str | None:
+    """The file's text, or None when it is a symlink, not a regular file or larger than `limit` - never follows a link."""
     try:
         fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
     except OSError:
         return None
     with os.fdopen(fd, "rb") as handle:
         info = os.fstat(handle.fileno())
-        if not stat.S_ISREG(info.st_mode) or info.st_size > MAX_STAGED_BYTES:
+        if not stat.S_ISREG(info.st_mode) or info.st_size > limit:
             return None
         try:
-            raw = handle.read(MAX_STAGED_BYTES + 1)
-            return raw.decode("utf-8") if len(raw) <= MAX_STAGED_BYTES else None
+            raw = handle.read(limit + 1)
+            return raw.decode("utf-8") if len(raw) <= limit else None
         except UnicodeDecodeError:
             return None
 

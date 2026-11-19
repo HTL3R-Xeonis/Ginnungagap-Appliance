@@ -1,5 +1,5 @@
 # Added by COMPOSE_FILE when appliance.legacy_ports is true: the services also answer on the ports they used before, so
-# clients that still point at them (TopologyBuilder's built-in addresses, saved settings files) keep working meanwhile.
+# clients that still point at them (Mjonyr's built-in addresses, saved settings files) keep working meanwhile.
 services:
   ginnungagap:
     ports: ["8123:8123"]

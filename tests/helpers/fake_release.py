@@ -21,37 +21,50 @@ from pathlib import Path
 
 REPOS = {
     "appliance": "Ginnungagap-Appliance",
+    "operator": "Igdrasyl",
+    "builder": "Mjonyr",
+    "template-services": "Hugyn-and-Munyn",
+    "generator": "Mimyr",
+}
+# what the repositories were called before the code names (for releases and checkouts of the old layout)
+OLD_REPOS = {
+    "appliance": "Ginnungagap-Appliance",
     "operator": "TopologyOperator",
     "builder": "TopologyBuilder",
-    "docker-server-files": "Docker-Server-Files",
-    "topology-generator": "TopologyGenerator",
+    "template-services": "Docker-Server-Files",
+    "generator": "TopologyGenerator",
+}
+# the keys of before the roles: components.json and installed.json of that time
+OLD_KEYS = {
+    "template-services": "docker-server-files",
+    "generator": "topology-generator",
 }
 SERVICES = {
     "appliance": ["setup"],
     "operator": ["ginnungagap"],
     "builder": ["ginnungagap"],
-    "docker-server-files": [
+    "template-services": [
         "template-esxi",
         "collector-esxi",
         "template-gns3",
         "collector-gns3",
     ],
-    "topology-generator": ["generator"],
+    "generator": ["generator"],
 }
 DEFAULT_VERSIONS = {
     "operator": "1.2.1",
     "builder": "1.0.0",
-    "docker-server-files": "1.0.0",
-    "topology-generator": "1.0.0",
+    "template-services": "1.0.0",
+    "generator": "1.0.0",
 }
 OWNER = "HTL3R-Xeonis"
 
 # where a service's Dockerfile sits in its component's tarball (the context compose builds from)
 DOCKERFILES = {
     "ginnungagap": ("operator", "Dockerfile"),
-    "template-esxi": ("docker-server-files", "yaml-api/Dockerfile"),
-    "template-gns3": ("docker-server-files", "gns3-template-api/gns3_api.Dockerfile"),
-    "generator": ("topology-generator", "topology.Dockerfile"),
+    "template-esxi": ("template-services", "yaml-api/Dockerfile"),
+    "template-gns3": ("template-services", "gns3-template-api/gns3_api.Dockerfile"),
+    "generator": ("generator", "topology.Dockerfile"),
     "setup": ("appliance", "setup/Dockerfile"),
 }
 
@@ -112,7 +125,7 @@ def _files(name: str, version: str, broken: set[str]) -> dict[str, str]:
         )
     else:
         files["VERSION"] = f"{version}\n"
-    if name == "topology-generator":
+    if name == "generator":
         # what `ginnungagap render` reads from the generator's checkout
         files["config/prompt_template.txt"] = "PROMPT {request}\n"
         files["config/example_topology.yml"] = "nodes: []\n"
@@ -206,6 +219,8 @@ def make_release(
     min_installed: str | None = None,
     notes: str = "",
     owner: str = OWNER,
+    legacy: bool = False,
+    repo_names: dict[str, str] | None = None,
 ) -> Path:
     """
     Writes one release into the folder `dest` (made if needed) and returns it.
@@ -215,6 +230,8 @@ def make_release(
                     `keys_of(dest)`); a Path: sign with that private key
     break_service   the service whose Dockerfile fails to build
     data_migration  True: the operator component says it migrates data; or a set of component names
+    legacy          True: a release as it was built before the code names (old keys, old repository and asset names)
+    repo_names      other repository names for some components (a later rename), by component key
     """
     dest = Path(dest)
     dest.mkdir(parents=True, exist_ok=True)
@@ -223,12 +240,12 @@ def make_release(
     migrating = {"operator"} if data_migration is True else set(data_migration or ())
     entries = {}
     sums = {}
-    for name, repo in REPOS.items():
+    for name, repo in ((OLD_REPOS if legacy else REPOS) | (repo_names or {})).items():
         version = versions[name]
         asset = f"{repo}-{version}.tar.gz"
         path = dest / asset
         write_tarball(path, f"{repo}-{version}", _files(name, version, broken))
-        entries[name] = {
+        entries[OLD_KEYS.get(name, name) if legacy else name] = {
             "repo": f"{owner}/{repo}",
             "version": version,
             "tag": f"v{version}",
@@ -239,7 +256,7 @@ def make_release(
             "services": SERVICES[name],
             "data_migration": name in migrating,
         }
-        sums[asset] = entries[name]["sha256"]
+        sums[asset] = sha256_of(path)
     manifest = {
         "schema": 1,
         "appliance": {

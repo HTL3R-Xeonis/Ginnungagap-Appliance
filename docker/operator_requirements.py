@@ -1,4 +1,4 @@
-"""Prints the app's pinned dependencies except TopologyBuilder (installed from the sibling checkout, not from GitHub)."""
+"""Prints the app's pinned dependencies except Mjonyr, whose distribution is still called topologybuilder (installed from the sibling checkout, not from GitHub)."""
 
 import sys
 import tomllib

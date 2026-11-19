@@ -310,12 +310,14 @@ def _short_date(stamp: str) -> str:
 
 
 def _check_component_names(names: list[str]) -> list[str]:
-    unknown = [n for n in names if n not in mf.COMPONENT_NAMES]
+    """The component keys for what was typed after --component: a key, an old key, a code name or a repository name."""
+    unknown = [n for n in names if mf.resolve_component(n) is None]
     if unknown:
         raise UpdateError(
-            f"unknown component {', '.join(unknown)}; the components are {', '.join(mf.COMPONENT_NAMES)}"
+            f"unknown component {', '.join(unknown)}; the components are "
+            f"{', '.join(mf.display_name(n) for n in mf.COMPONENT_NAMES)}"
         )
-    return list(dict.fromkeys(names))
+    return list(dict.fromkeys(mf.resolve_component(n) for n in names))
 
 
 def read_version_py(path: Path) -> str | None:
@@ -434,7 +436,7 @@ def rewrite_install_env(path: Path, repos_dir: Path) -> bool:
     wanted = {
         "REPOS_DIR": str(repos_dir),
         "GINNUNGAGAP_GENERATOR_CONFIG": str(
-            repos_dir / "topology-generator" / "config"
+            repos_dir / mf.CHECKOUT_NAMES["generator"] / "config"
         ),
     }
     seen = set()
@@ -810,7 +812,7 @@ class Updater:
             if change.kind in ("same", "skipped"):
                 rows.append(
                     (
-                        change.component,
+                        mf.display_name(change.component),
                         change.from_version or "-",
                         change.to_version,
                         "-" if change.kind == "same" else "not selected",
@@ -823,7 +825,7 @@ class Updater:
                 restarts += " (about 10-20 s of downtime)"
             rows.append(
                 (
-                    change.component,
+                    mf.display_name(change.component),
                     change.from_version or "-",
                     change.to_version,
                     {"replace": "replace"}.get(change.kind, change.kind),
@@ -991,11 +993,14 @@ class Updater:
             self.say(
                 f"Appliance release: {label} (installed {installed.installed_at or 'at an unknown time'}); program {PROGRAM_VERSION}"
             )
-            width = max(len(n) for n in mf.COMPONENT_NAMES)
+            width = max(len(mf.display_name(n)) for n in mf.COMPONENT_NAMES)
             for name in mf.COMPONENT_NAMES:
+                label = mf.display_name(name)
                 version = installed.version_of(name) or "-"
                 where = installed.dirs.get(name, "")
-                self.say(f"  {name.ljust(width)}  {version.ljust(10)} {where}".rstrip())
+                self.say(
+                    f"  {label.ljust(width)}  {version.ljust(10)} {where}".rstrip()
+                )
             if installed.partial:
                 self.say(
                     "  (a partial update: not the tested combination of one release)"
@@ -1097,7 +1102,12 @@ class Updater:
             return None
         sources: dict[str, Path] = {}
         for name in mf.COMPONENT_NAMES:
+            # the current folder name first, then the names of before the code names (the checkouts of an appliance image
+            # up to v1.2.x, or a folder that was only partly renamed): they are copied under the current names either way
             candidate = repos / mf.CHECKOUT_NAMES[name]
+            for old in mf.LEGACY_NAMES[name]:
+                if not candidate.is_dir():
+                    candidate = repos / old
             if name == "appliance" and not candidate.is_dir():
                 candidate = self.bundle
             if not candidate.is_dir():
@@ -1132,6 +1142,7 @@ class Updater:
             raise UpdateError(str(exc), EXIT_REFUSED) from exc
 
     def _adopt_locked(self) -> int:
+        self.migrate_legacy_layout()
         if self.installed() is not None:
             self.say(
                 "The installed components are already recorded (see `ginnungagap update --versions`)."
@@ -1145,8 +1156,15 @@ class Updater:
         found = self.describe_checkouts()
         if found is None:
             raise UpdateError(
-                "nothing to adopt: REPOS_DIR does not hold the checkouts of TopologyOperator, TopologyBuilder, Docker-Server-Files and "
-                "topology-generator (or it already is the update's own components folder)"
+                "nothing to adopt: REPOS_DIR does not hold the checkouts of "
+                + ", ".join(
+                    mf.CHECKOUT_NAMES[n] for n in mf.COMPONENT_NAMES if n != "appliance"
+                )
+                + " (or of the names they had before: "
+                + ", ".join(
+                    old for n in mf.COMPONENT_NAMES for old in mf.LEGACY_NAMES[n]
+                )
+                + "), or it already is the update's own components folder"
             )
         self.adopt_now(*found)
         return EXIT_OK
@@ -1181,7 +1199,7 @@ class Updater:
             self.flip_link(name, state.dirs[name])
         os.environ["REPOS_DIR"] = str(self.layout.components)
         os.environ["GINNUNGAGAP_GENERATOR_CONFIG"] = str(
-            self.layout.components / "topology-generator" / "config"
+            self.layout.components / mf.CHECKOUT_NAMES["generator"] / "config"
         )
         if not rewrite_install_env(self.layout.install_env, self.layout.components):
             self.say(
@@ -1210,6 +1228,72 @@ class Updater:
             f"symlinks in {self.layout.components}). Nothing in the old folder was changed or deleted."
         )
         return state
+
+    def _symlink(self, link: Path, target: str) -> None:
+        """Makes `link` a symlink to `target`, atomically (a temporary link renamed over the old one)."""
+        temporary = link.with_name(f".{link.name}.new")
+        temporary.unlink(missing_ok=True)
+        temporary.symlink_to(target)
+        os.replace(temporary, link)
+
+    def migrate_legacy_layout(self) -> bool:
+        """
+        Brings a state that an earlier version of this program wrote (before the code names) to the current names, once, under
+        the update lock: `releases/<old>` becomes `releases/<new>`, `components/<new>` points at the same release as
+        `components/<old>` did, `install.env` and `installed.json` follow. The old name stays as a link to the new one, so
+        the compose file of a release from before the rename (which asks for the old folder names) still finds its sources
+        after a rollback. Every step is one `os.replace` and can be run again after a crash. Returns whether it changed anything.
+        """
+        releases, components = self.layout.releases, self.layout.components
+        changes: list[str] = []
+        try:
+            for key in mf.COMPONENT_NAMES:
+                new = mf.CHECKOUT_NAMES[key]
+                for old in mf.LEGACY_NAMES[key]:
+                    old_dir = releases / old
+                    if old_dir.is_dir() and not old_dir.is_symlink():
+                        new_dir = releases / new
+                        if not new_dir.exists():
+                            os.replace(old_dir, new_dir)
+                        else:  # both exist: bring over what is not there yet
+                            for child in sorted(old_dir.iterdir()):
+                                if not (new_dir / child.name).exists():
+                                    os.replace(child, new_dir / child.name)
+                            with contextlib.suppress(OSError):
+                                old_dir.rmdir()
+                        changes.append(f"releases/{old} -> releases/{new}")
+                    old_link, new_link = components / old, components / new
+                    if old_link.is_symlink() and os.readlink(old_link) != new:
+                        folder = posixpath.basename(os.readlink(old_link))
+                        if not new_link.is_symlink() and not new_link.exists():
+                            self._symlink(new_link, f"../releases/{new}/{folder}")
+                        self._symlink(old_link, new)
+                        changes.append(f"components/{old} -> components/{new}")
+            raw = mf.read_json(self.layout.installed)
+            if mf.has_legacy_names(raw):
+                state = self.installed()
+                if state is not None:
+                    mf.save_installed(self.layout.installed, state)
+                    changes.append("installed.json")
+        except (OSError, mf.ManifestError) as exc:
+            raise UpdateError(
+                f"bringing the update state to the current component names failed ({exc}); nothing else was changed"
+            ) from exc
+        if not changes:
+            return False
+        with contextlib.suppress(OSError):
+            if self.current_repos_dir() == components:
+                rewrite_install_env(self.layout.install_env, components)
+        os.environ["GINNUNGAGAP_GENERATOR_CONFIG"] = str(
+            components / mf.CHECKOUT_NAMES["generator"] / "config"
+        )
+        self.audit("rename-components", "ok", changed=", ".join(changes))
+        self.say(
+            "Moved the update state to the current component names ("
+            + ", ".join(changes)
+            + ")."
+        )
+        return True
 
     def record_state(
         self,
@@ -1255,6 +1339,7 @@ class Updater:
     def locked(self, function: Callable[[], Any]) -> Any:
         try:
             with statelock.hold(self.layout.lock, timeout=0, out=self.say):
+                self.migrate_legacy_layout()
                 return function()
         except statelock.LockTimeout as exc:
             raise UpdateError(
@@ -1721,7 +1806,7 @@ class Updater:
         tx.setdefault("flipped", []).extend(tx["new_dirs"])
         os.environ["REPOS_DIR"] = str(self.layout.components)
         os.environ["GINNUNGAGAP_GENERATOR_CONFIG"] = str(
-            self.layout.components / "topology-generator" / "config"
+            self.layout.components / mf.CHECKOUT_NAMES["generator"] / "config"
         )
         self.save_transaction(tx, "switched")
         if not build:
@@ -1730,7 +1815,9 @@ class Updater:
             if operate.build_services(self.bundle, build, self.run, self.say) != 0:
                 raise StepFailed("building the images failed")
         else:
-            generator = self.layout.components / "topology-generator" / "config"
+            generator = (
+                self.layout.components / mf.CHECKOUT_NAMES["generator"] / "config"
+            )
             if operate.build_images(self.bundle, generator, self.run, self.say) != 0:
                 raise StepFailed("building the images failed")
         self.save_transaction(tx, "built")

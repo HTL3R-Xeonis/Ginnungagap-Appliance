@@ -1,4 +1,5 @@
-# The pin file of the appliance release: which tag of which component repository goes into it.
+# The pin file of the appliance release (the keys are roles: operator = Igdrasyl, builder = Mjonyr,
+# template-services = Hugyn and Munyn, generator = Mimyr): which tag of which component repository goes into it.
 # `release/build_release.py` reads it, fetches (or archives) each tarball, checks that every tag equals the version file
 # inside the tarball and writes components.json. Change it when a component gets a new release; the appliance's own tag is
 # the version of the release (ginnungagap/version.py must say the same, without the leading v).
@@ -15,16 +16,16 @@ components:
     repo: HTL3R-Xeonis/Ginnungagap-Appliance
     tag: v1.3.0
   operator:
-    repo: HTL3R-Xeonis/TopologyOperator
+    repo: HTL3R-Xeonis/Igdrasyl
     tag: v1.2.1
   builder:
-    repo: HTL3R-Xeonis/TopologyBuilder
+    repo: HTL3R-Xeonis/Mjonyr
     tag: v1.0.0
-  docker-server-files:
-    repo: HTL3R-Xeonis/Docker-Server-Files
+  template-services:
+    repo: HTL3R-Xeonis/Hugyn-and-Munyn
     tag: v1.0.0
-  topology-generator:
-    repo: HTL3R-Xeonis/TopologyGenerator
+  generator:
+    repo: HTL3R-Xeonis/Mimyr
     tag: v1.0.0
   # data_migration: true on a component whose new version changes persistent data in a way the old one can not read
   # (then a rollback also restores the data backup, and the pre-update backup can not be skipped)

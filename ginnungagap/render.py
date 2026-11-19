@@ -34,6 +34,8 @@ _OPERATOR_PATHS = {
     "TOPOLOGYOPERATOR_HOLDS_FILE": "/data/holds.json",
     "TOPOLOGYOPERATOR_PROJECT_SELECTIONS": "/data/project_selections.json",
     "TOPOLOGYOPERATOR_DOWNLOAD_DIR": "/data/downloads",
+    # who did what (users, updates): kept on the data volume, so an update that recreates the container does not erase it
+    "TOPOLOGYOPERATOR_AUDIT_LOG_FILE": "/data/audit.log",
 }
 
 
@@ -105,15 +107,22 @@ def project_name() -> str:
 
 def host_paths() -> dict[str, str]:
     """
-    The two host folders the setup wizard's container is bind-mounted onto (config, read-only; a staging folder,
-    read-write) - install.sh writes these into install.env so they match what it actually created; the defaults here
-    are only for a manual `ginnungagap render`/`apply` run outside install.sh.
+    The host folders the containers are bind-mounted onto: for the setup wizard the config (read-only) and a staging folder
+    (read-write), for the web panel's update button the update state (read-only) and a request folder (read-write) -
+    install.sh writes these into install.env so they match what it actually created; the defaults here are only for a
+    manual `ginnungagap render`/`apply` run outside install.sh.
     """
     return {
         "GINNUNGAGAP_CONFIG_DIR": os.environ.get("GINNUNGAGAP_CONFIG_DIR")
         or "/etc/ginnungagap",
         "GINNUNGAGAP_SETUP_STAGING_DIR": os.environ.get("GINNUNGAGAP_SETUP_STAGING_DIR")
         or "/var/lib/ginnungagap/setup",
+        "GINNUNGAGAP_UPDATE_DIR": os.environ.get("GINNUNGAGAP_UPDATE_DIR")
+        or "/var/lib/ginnungagap/update",
+        "GINNUNGAGAP_UPDATE_REQUEST_DIR": os.environ.get(
+            "GINNUNGAGAP_UPDATE_REQUEST_DIR"
+        )
+        or "/var/lib/ginnungagap/update-requests",
     }
 
 
@@ -179,7 +188,10 @@ def operator_env(config: dict[str, Any]) -> str:
             "TZ": config["appliance"]["timezone"],
             **_OPERATOR_PATHS,
             **share,
-            # the service addresses TopologyBuilder reads (below the settings file, above its built-in lab addresses)
+            # where the admin panel's update section finds the update state and leaves its request (compose.yml mounts them)
+            "TOPOLOGYOPERATOR_UPDATE_STATE_DIR": "/update-state",
+            "TOPOLOGYOPERATOR_UPDATE_REQUEST_DIR": "/update-requests",
+            # the service addresses Mjonyr (the builder) reads (below the settings file, above its built-in lab addresses)
             "ESXI_TEMPLATE_SERVER_URL": urls["esxi"],
             "GNS3_TEMPLATE_SERVER_URL": urls["gns3"],
             "TOPOLOGY_GENERATOR_URL": urls["generator"],
@@ -364,7 +376,7 @@ def render(
         for name in ("prompt_template.txt", "example_topology.yml"):
             if source is None or not (source / name).is_file():
                 raise RenderError(
-                    f"{name} of the generator was not found; pass the topology-generator config folder (--generator-config)"
+                    f"{name} of the generator was not found; pass the config folder of the generator, Mimyr (--generator-config)"
                 )
             extra[f"generator/{name}"] = (
                 (source / name).read_text(encoding="utf-8"),

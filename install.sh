@@ -2,7 +2,7 @@
 # Installs the Ginnungagap appliance on this machine: the program under PREFIX, the `ginnungagap` command, a configuration
 # folder (your ginnungagap.yml stays where it is on a re-run) and a systemd unit that applies the configuration at boot.
 # The services themselves run as containers, so Docker with compose has to be installed already, and so do the sibling
-# repositories the images are built from (TopologyOperator, TopologyBuilder, Docker-Server-Files, topology-generator).
+# repositories the images are built from (Igdrasyl, Mjonyr, Hugyn-and-Munyn, Mimyr).
 #
 #   sudo ./install.sh --repos-dir /srv/repos           # install (or update) and start
 #   sudo ./install.sh --uninstall                      # remove program, command and units; config and data are kept
@@ -59,6 +59,7 @@ done
 
 STAGING_DIR=${STAGING_DIR:-$STATE_DIR/setup}
 UPDATE_DIR="$STATE_DIR/update"
+UPDATE_REQUEST_DIR="$STATE_DIR/update-requests"
 COMPONENTS_DIR="$STATE_DIR/components"
 TRUST_DIR="$CONFIG_DIR/update-trust"
 UNIT="$UNIT_DIR/ginnungagap.service"
@@ -72,6 +73,8 @@ ISSUE_CHANGE_UNIT="$UNIT_DIR/ginnungagap-issue-changed.service"
 UPDATE_CHECK_SERVICE_UNIT="$UNIT_DIR/ginnungagap-update-check.service"
 UPDATE_CHECK_TIMER_UNIT="$UNIT_DIR/ginnungagap-update-check.timer"
 UPDATE_RESUME_UNIT="$UNIT_DIR/ginnungagap-update-resume.service"
+UPDATE_REQUEST_PATH_UNIT="$UNIT_DIR/ginnungagap-update-request.path"
+UPDATE_REQUEST_SERVICE_UNIT="$UNIT_DIR/ginnungagap-update-request.service"
 SSHD_DROPIN="$SSHD_DROPIN_DIR/10-ginnungagap.conf"
 # systemctl is only touched when installing into the real unit folder of a running systemd (not for a test --unit-dir)
 REAL_SYSTEMD=0
@@ -82,8 +85,8 @@ WRAPPER="$BIN_DIR/ginnungagap"
 APP="$PREFIX/app"
 
 if [ "$UNINSTALL" = 1 ]; then
-  [ "$REAL_SYSTEMD" = 1 ] && systemctl disable ginnungagap.service ginnungagap-firstboot.service ginnungagap-bootstrap.service ginnungagap-setup-apply.path ginnungagap-issue.path ginnungagap-issue.service ginnungagap-update-check.timer ginnungagap-update-resume.service >/dev/null 2>&1 || true
-  rm -f "$UNIT" "$FIRSTBOOT_UNIT" "$BOOTSTRAP_UNIT" "$SETUP_APPLY_PATH_UNIT" "$SETUP_APPLY_SERVICE_UNIT" "$ISSUE_UNIT" "$ISSUE_PATH_UNIT" "$ISSUE_CHANGE_UNIT" "$UPDATE_CHECK_SERVICE_UNIT" "$UPDATE_CHECK_TIMER_UNIT" "$UPDATE_RESUME_UNIT" "$SSHD_DROPIN" "$WRAPPER"
+  [ "$REAL_SYSTEMD" = 1 ] && systemctl disable ginnungagap.service ginnungagap-firstboot.service ginnungagap-bootstrap.service ginnungagap-setup-apply.path ginnungagap-issue.path ginnungagap-issue.service ginnungagap-update-check.timer ginnungagap-update-resume.service ginnungagap-update-request.path >/dev/null 2>&1 || true
+  rm -f "$UNIT" "$FIRSTBOOT_UNIT" "$BOOTSTRAP_UNIT" "$SETUP_APPLY_PATH_UNIT" "$SETUP_APPLY_SERVICE_UNIT" "$ISSUE_UNIT" "$ISSUE_PATH_UNIT" "$ISSUE_CHANGE_UNIT" "$UPDATE_CHECK_SERVICE_UNIT" "$UPDATE_CHECK_TIMER_UNIT" "$UPDATE_RESUME_UNIT" "$UPDATE_REQUEST_PATH_UNIT" "$UPDATE_REQUEST_SERVICE_UNIT" "$SSHD_DROPIN" "$WRAPPER"
   rm -rf "$APP"
   rmdir "$PREFIX" 2>/dev/null || true  # only when nothing else lives there
   [ "$REAL_SYSTEMD" = 1 ] && systemctl daemon-reload || true
@@ -112,24 +115,42 @@ if [ "$START" = 1 ]; then
   command -v docker >/dev/null 2>&1 || die "docker is required (or use --no-start to only install)"
   docker compose version >/dev/null 2>&1 || die "the docker compose plugin is required"
 fi
-COMPONENT_REPOS="TopologyOperator TopologyBuilder Docker-Server-Files topology-generator"
-has_repos() {  # every checkout the images are built from is in folder $1 (a symlink to a folder counts)
-  local repo
-  for repo in $COMPONENT_REPOS; do [ -d "$1/$repo" ] || return 1; done
+# the current folder name of each checkout, then the names it had before the code names (appliance images up to v1.2.x):
+# those are read, never created
+COMPONENT_REPOS="Igdrasyl:TopologyOperator Mjonyr:TopologyBuilder Hugyn-and-Munyn:Docker-Server-Files Mimyr:topology-generator:TopologyGenerator"
+has_repos() {  # every checkout the images are built from is in folder $1 under its current name (a symlink to a folder counts)
+  local entry
+  for entry in $COMPONENT_REPOS; do [ -d "$1/${entry%%:*}" ] || return 1; done
+}
+repo_folder() {  # the folder in $1 that holds the checkout whose names are $2 (current first, then the old ones); empty: none
+  local name
+  for name in $(echo "$2" | tr ':' ' '); do
+    if [ -d "$1/$name" ]; then echo "$name"; return 0; fi
+  done
+}
+has_any_repos() {  # every checkout is in folder $1 under its current or an old name
+  local entry
+  for entry in $COMPONENT_REPOS; do [ -n "$(repo_folder "$1" "$entry")" ] || return 1; done
 }
 if [ -z "$REPOS_DIR" ]; then
   # no --repos-dir: a re-run keeps what the installation already uses; otherwise the folder `ginnungagap update` fills
   # (the update state's components folder, symlinks to the installed releases), and only then the folder next to this checkout
   recorded=$(sed -n 's/^REPOS_DIR=//p' "$CONFIG_DIR/install.env" 2>/dev/null | head -n1 || true)
-  if [ -n "$recorded" ] && has_repos "$recorded"; then REPOS_DIR=$recorded
+  if [ -n "$recorded" ] && has_any_repos "$recorded"; then REPOS_DIR=$recorded
   elif has_repos "$COMPONENTS_DIR"; then REPOS_DIR=$COMPONENTS_DIR
   else REPOS_DIR=$(cd "$HERE/.." && pwd)
   fi
 fi
 REPOS_DIR=$(cd "$REPOS_DIR" 2>/dev/null && pwd) || die "repos dir does not exist"
-for repo in $COMPONENT_REPOS; do
-  [ -d "$REPOS_DIR/$repo" ] || die "missing $REPOS_DIR/$repo (the images are built from it; set --repos-dir)"
+# the checkouts may still carry the old names: that installs fine, but nothing can be built from them until
+# `ginnungagap update --adopt` has copied them under the current names (it does not touch the old folders)
+LEGACY_LAYOUT=0
+for entry in $COMPONENT_REPOS; do
+  found=$(repo_folder "$REPOS_DIR" "$entry")
+  [ -n "$found" ] || die "missing $REPOS_DIR/${entry%%:*} (the images are built from it; set --repos-dir)"
+  [ "$found" = "${entry%%:*}" ] || LEGACY_LAYOUT=1
 done
+GENERATOR_DIR=$(repo_folder "$REPOS_DIR" "Mimyr:topology-generator:TopologyGenerator")
 [ -z "$MANIFEST" ] || [ -f "$MANIFEST" ] || die "--manifest: $MANIFEST is not a file"
 
 # ---- program: replace the code, keep rendered/ (the running project's files)
@@ -163,6 +184,9 @@ install -d -m 0700 "$STAGING_DIR"
 # token is optional and only ever written by `ginnungagap update --set-token` (0600, never in the configuration).
 install -d -m 0755 "$STATE_DIR"
 install -d -m 0700 "$UPDATE_DIR" "$STATE_DIR/backups"
+# the web panel's request folder (Igdrasyl, Updates): the one place its container may write to, and only one small request
+# file at a time; ginnungagap-update-request.path hands it to `ginnungagap apply-update-request`, which re-validates it as root
+install -d -m 0700 "$UPDATE_REQUEST_DIR"
 install -d -m 0755 "$STATE_DIR/releases" "$COMPONENTS_DIR"
 # the public key the release manifest is signed with. A file that still has no key in it (only comments) is not installed:
 # `update.require_signature: auto` enforces the signature as soon as this file exists, and with no key every update would fail.
@@ -175,10 +199,11 @@ cat >"$CONFIG_DIR/install.env" <<ENV
 # Written by install.sh; where the program and the repositories it builds from are.
 PYTHONPATH=$APP
 REPOS_DIR=$REPOS_DIR
-GINNUNGAGAP_GENERATOR_CONFIG=$REPOS_DIR/topology-generator/config
+GINNUNGAGAP_GENERATOR_CONFIG=$REPOS_DIR/$GENERATOR_DIR/config
 GINNUNGAGAP_CONFIG_DIR=$CONFIG_DIR
 GINNUNGAGAP_SETUP_STAGING_DIR=$STAGING_DIR
 GINNUNGAGAP_UPDATE_DIR=$UPDATE_DIR
+GINNUNGAGAP_UPDATE_REQUEST_DIR=$UPDATE_REQUEST_DIR
 ENV
 
 # ---- the command
@@ -381,6 +406,33 @@ ExecStart=$WRAPPER update --resume
 [Install]
 WantedBy=multi-user.target
 UPDATERESUME
+  # the web panel's hand-off (Igdrasyl, Updates): the moment its container leaves a request file in $UPDATE_REQUEST_DIR, this path
+  # unit runs the service unit as root. It does what the command line does (`update --check`, or `update --apply --yes` for the
+  # one release an admin confirmed), re-validates the request first and never starts anything else - see ginnungagap/update_request.py.
+  # Always armed, but nothing is ever installed without such a request: the check timer above only looks.
+  cat >"$UPDATE_REQUEST_PATH_UNIT" <<UPDATEREQUESTPATH
+[Unit]
+Description=Watch for an update request from the web panel
+
+[Path]
+PathExists=$UPDATE_REQUEST_DIR/request.json
+
+[Install]
+WantedBy=multi-user.target
+UPDATEREQUESTPATH
+  cat >"$UPDATE_REQUEST_SERVICE_UNIT" <<UPDATEREQUESTSERVICE
+[Unit]
+Description=Ginnungagap: act on an update request from the web panel
+Requires=docker.service
+After=docker.service
+
+[Service]
+Type=oneshot
+TimeoutStartSec=3600
+# exit 1 is a refused or failed request: the panel shows why (web-status.json), the unit is not a failure
+SuccessExitStatus=1
+ExecStart=$WRAPPER apply-update-request --requests-dir $UPDATE_REQUEST_DIR --config-dir $CONFIG_DIR
+UPDATEREQUESTSERVICE
   if [ "$REAL_SYSTEMD" = 1 ]; then
     systemctl daemon-reload
     if [ "$IMAGE" = 1 ]; then
@@ -393,11 +445,17 @@ UPDATERESUME
     if [ "$CREATED" = 0 ]; then
       systemctl enable ginnungagap.service >/dev/null 2>&1 || true
     fi
-    systemctl enable ginnungagap-bootstrap.service ginnungagap-setup-apply.path ginnungagap-issue.service ginnungagap-issue.path ginnungagap-update-check.timer ginnungagap-update-resume.service >/dev/null 2>&1 || true
+    systemctl enable ginnungagap-bootstrap.service ginnungagap-setup-apply.path ginnungagap-issue.service ginnungagap-issue.path ginnungagap-update-check.timer ginnungagap-update-resume.service ginnungagap-update-request.path >/dev/null 2>&1 || true
+    # armed now, not only at the next boot: an update of the tooling itself installs this unit on a machine that keeps running
+    systemctl start ginnungagap-update-request.path >/dev/null 2>&1 || true
   fi
 fi
 
 echo "Installed: program in $APP, command $WRAPPER, configuration in $CONFIG_DIR."
+if [ "$LEGACY_LAYOUT" = 1 ]; then
+  echo "The checkouts in $REPOS_DIR still carry the names of before the code names (TopologyOperator, TopologyBuilder, Docker-Server-Files, topology-generator); the images are built from the current ones (Igdrasyl, Mjonyr, Hugyn-and-Munyn, Mimyr)."
+  echo "Run  sudo ginnungagap update --adopt  (copies checkouts under the current names and leaves $REPOS_DIR alone; for the update state's own components folder it renames in place), then  sudo ginnungagap apply $CONFIG_DIR/ginnungagap.yml."
+fi
 if [ "$IMAGE" = 1 ]; then
   echo "Prepared for an appliance image: the first-boot unit is enabled, SSH password login is on, the console is text mode (systemctl set-default graphical.target brings the desktop back), there is no configuration yet (image/prepare-image.sh is the next step)."
   exit 0
@@ -408,7 +466,7 @@ if [ "$CREATED" = 1 ]; then
   [ "$SYSTEMD" = 1 ] && echo "and, so that it also starts at boot:  sudo systemctl enable ginnungagap.service"
   exit 0
 fi
-if [ "$START" = 1 ]; then
+if [ "$START" = 1 ] && [ "$LEGACY_LAYOUT" = 0 ]; then
   # not from this folder: python puts the current folder first on its path, so an update run inside the checkout would
   # apply the checkout's code and render into it, not the program that was just installed
   (cd / && "$WRAPPER" apply "$CONFIG_DIR/ginnungagap.yml")

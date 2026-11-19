@@ -113,6 +113,7 @@ def refresh(tmp_path, address="192.0.2.5", user="junioradmin", changed=False):
         local_address_fn=lambda: address,
         login_user_fn=lambda: user,
         password_changed=lambda u: changed,
+        release_fn=lambda: "1.3.0",
     )
     return lines, issue.read_text(encoding="utf-8")
 
@@ -127,9 +128,49 @@ def test_the_composer_is_the_only_writer_and_ends_the_text_with_blank_lines(tmp_
     (tmp_path / "etc").mkdir()
     _, text = refresh(tmp_path)
     assert text.startswith(
-        "\nGinnungagap appliance\nSSH: ssh junioradmin@192.0.2.5 -p 22\n"
+        "\nGinnungagap appliance v1.3.0\nSSH: ssh junioradmin@192.0.2.5 -p 22\n"
     )
     assert text.endswith("\n\n")
+
+
+def test_the_first_line_names_the_release_and_falls_back_to_the_product_alone(tmp_path):
+    issue = tmp_path / "issue.d" / "x.issue"
+    console.write_issue(issue, ["line"])
+    assert issue.read_text(encoding="utf-8").startswith("\nGinnungagap appliance\nline")
+    console.write_issue(issue, ["line"], "1.4.0")
+    assert issue.read_text(encoding="utf-8").startswith(
+        "\nGinnungagap appliance v1.4.0\nline"
+    )
+
+
+def test_refresh_reads_the_release_from_the_installed_state_by_default(
+    tmp_path, monkeypatch
+):
+    from ginnungagap import manifest as mf
+    from tests.helpers import fake_release
+
+    release = fake_release.make_release(tmp_path / "r", appliance="1.9.0")
+    state = mf.state_from_manifest(
+        mf.load(release / "components.json"),
+        {n: "1" for n in mf.COMPONENT_NAMES},
+        "2026-11-19T10:00:00Z",
+        None,
+    )
+    update = tmp_path / "update"
+    mf.save_installed(update / "installed.json", state)
+    monkeypatch.setenv("GINNUNGAGAP_UPDATE_DIR", str(update))
+    issue = tmp_path / "issue.d" / "ginnungagap.issue"
+    console.refresh(
+        tmp_path / "etc",
+        state_dir=tmp_path / "state",
+        issue_file=issue,
+        ssh_dir=tmp_path / "ssh",
+        local_address_fn=lambda: None,
+        login_user_fn=lambda: None,
+    )
+    assert issue.read_text(encoding="utf-8").startswith(
+        "\nGinnungagap appliance v1.9.0\n"
+    )
 
 
 def test_without_an_address_the_placeholder_is_shown_in_both_sections(tmp_path):

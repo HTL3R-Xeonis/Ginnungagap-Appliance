@@ -240,3 +240,32 @@ def test_a_200_without_the_services_own_data_is_not_healthy(make_config):
         and "wrong host name" in by["ginnungagap"].detail
     )
     assert by["generator"].state == "down"
+
+
+def test_the_table_shows_the_code_name_of_the_part_next_to_the_service(make_config):
+    text = st.render_table(st.check(make_config(), "http://g", answers(ALL_OK)))
+    for shown in (
+        "ginnungagap (Igdrasyl)",
+        "template-esxi (Hugyn)",
+        "template-gns3 (Munyn)",
+        "generator (Mimyr)",
+    ):
+        assert shown in text
+    rows = [line.split()[0] for line in text.splitlines()]
+    assert "ova-store" in rows  # the OVA server is no part of its own: no code name
+    assert "ova-store (" not in text
+    # the rows themselves keep the plain service names (the update's health gate and other callers use them)
+    assert [r.name for r in st.check(make_config(), "http://g", answers(ALL_OK))][
+        :2
+    ] == [
+        "ginnungagap",
+        "template-esxi",
+    ]
+
+
+def test_the_title_line_names_the_appliance_release(tmp_path, monkeypatch):
+    from ginnungagap.version import __version__
+
+    monkeypatch.setenv("GINNUNGAGAP_UPDATE_DIR", str(tmp_path / "nothing-here"))
+    assert st.title_line() == f"Ginnungagap appliance v{__version__}"
+    assert st.title_line(tmp_path) == f"Ginnungagap appliance v{__version__}"

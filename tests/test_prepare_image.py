@@ -25,9 +25,15 @@ def test_the_dry_run_lists_every_step_and_changes_nothing():
     steps = result.stdout.splitlines()
     assert all(line.startswith("would: ") for line in steps)
     text = result.stdout
-    for part in ("build and pull the images", "containers and volumes of the project 'ginnungagap'", "first-boot marker and the generated SSH password",
-                 "SSH host keys, the machine id", "remove the login password hash, shadow backups",
-                 "authorized SSH keys, passwordless sudo", "clean logs"):  # fmt: skip
+    for part in (
+        "build and pull the images",
+        "containers and volumes of the project 'ginnungagap'",
+        "first-boot marker and the generated SSH password",
+        "SSH host keys, the machine id",
+        "remove the login password hash, shadow backups",
+        "authorized SSH keys, passwordless sudo",
+        "clean logs",
+    ):
         assert part in text
     assert "zeros" not in text  # only on request
     assert "stop the setup watcher" in text
@@ -154,18 +160,24 @@ def _fill(machine):
     (update / "history").mkdir()
     (update / "history" / "x.json").write_text("{}")
     (update / "downloads" / "1.3.0").mkdir(parents=True)
-    for name in ("transaction.json", "audit.log", "available.json", "lock"):
+    for name in (
+        "transaction.json",
+        "audit.log",
+        "available.json",
+        "web-status.json",
+        "lock",
+    ):
         (update / name).write_text("x")
+    (state / "update-requests").mkdir()
+    (state / "update-requests" / "request.json").write_text("{}")
     (state / "backups" / "pre-update-1").mkdir(parents=True)
     (state / "backups" / "pre-update-1" / "ginnungagap.yml").write_text(
         "api_key: secret"
     )
     for version in ("1.0.0", "1.1.0"):
-        (state / "releases" / "TopologyOperator" / version).mkdir(parents=True)
+        (state / "releases" / "Igdrasyl" / version).mkdir(parents=True)
     (state / "components").mkdir()
-    (state / "components" / "TopologyOperator").symlink_to(
-        "../releases/TopologyOperator/1.1.0"
-    )
+    (state / "components" / "Igdrasyl").symlink_to("../releases/Igdrasyl/1.1.0")
     (etc / "update-token").write_text("ghp_default")
     (etc / "ginnungagap.yml").write_text(
         f"update:\n  token_file: {etc}/elsewhere-token\n"
@@ -190,16 +202,18 @@ def test_the_image_keeps_its_installed_release_and_loses_everything_else_of_the_
         "transaction.json",
         "audit.log",
         "available.json",
+        "web-status.json",
         "lock",
     ):
         assert not (update / gone).exists(), gone
+    assert list((state / "update-requests").iterdir()) == []
     assert list((state / "backups").iterdir()) == []
     assert (
         not (etc / "update-token").exists() and not (etc / "elsewhere-token").exists()
     )
-    assert (state / "releases" / "TopologyOperator" / "1.1.0").is_dir()
-    assert not (state / "releases" / "TopologyOperator" / "1.0.0").exists()
-    assert (state / "components" / "TopologyOperator").is_symlink()
+    assert (state / "releases" / "Igdrasyl" / "1.1.0").is_dir()
+    assert not (state / "releases" / "Igdrasyl" / "1.0.0").exists()
+    assert (state / "components" / "Igdrasyl").is_symlink()
     assert "image rm ginnungagap-setup:rollback-1.2.0" in machine["log"].read_text()
     assert "ginnungagap-setup:latest" not in machine["log"].read_text()
 

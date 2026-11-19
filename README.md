@@ -11,12 +11,36 @@ TLS. It passes on a Docker host (Docker 29, Compose 5). What it does not cover: 
 appliance image (OVA: deployed on the lab ESXi, first boot from guestinfo, NFS template store, reboot) were verified on
 Debian 13 VMs in the lab; see `image/README.md`.
 
+<!-- BEGIN code names -->
+## The parts and their code names
+
+The appliance runs, and updates, five components. **Ginnungagap** is the name of the whole product: this repository, the
+appliance image, the `ginnungagap` command and everything you log into. The parts have code names, used in the READMEs, the
+documentation and next to the plain role in the tables of `ginnungagap status`, `ginnungagap versions` and
+`ginnungagap update --check` (`operator (Igdrasyl)`, `template-esxi (Hugyn)`); the landing page and error messages of the app do not use them.
+
+| Code name | Plain role | Repository | Component key | Services |
+|---|---|---|---|---|
+| **Igdrasyl** | the web app (operator): GUI, gateway, backends | `HTL3R-Xeonis/Igdrasyl` (formerly TopologyOperator) | `operator` | `ginnungagap` |
+| **Mjonyr** | the builder: deploy and orchestration library with its CLI | `HTL3R-Xeonis/Mjonyr` (formerly TopologyBuilder) | `builder` | `ginnungagap` (it is the app's library) |
+| **Hugyn and Munyn** | the template services: **Hugyn** is the ESXi side, **Munyn** the GNS3 side | `HTL3R-Xeonis/Hugyn-and-Munyn` (formerly Docker-Server-Files) | `template-services` | Hugyn: `template-esxi`, `collector-esxi`; Munyn: `template-gns3`, `collector-gns3` |
+| **Mimyr** | the generator: LLM topology and configuration drafts | `HTL3R-Xeonis/Mimyr` (formerly TopologyGenerator, checkout folder topology-generator) | `generator` | `generator` |
+| **Idynoun** | the updater: `ginnungagap update` (check, apply, roll back) | this repository | `appliance` | - |
+| **Haymdal** | the watchman: the health view `ginnungagap status`, the `/health` endpoints and the app's "Connection lost" overlay | this repository and Igdrasyl | - | - |
+
+The keys of the manifest, the configuration and compose are **roles**, never a repository or a code name, so a later rename of a
+repository does not touch them. The identifiers inside (compose service and image names, systemd units, `TOPOLOGYOPERATOR_*` and
+`XEONIS_*` variables, the markers the app writes on ESXi VMs, the image names `ginnungagap-appliance-v<version>`) keep their
+names. What an appliance that was set up before the code names keeps working is described under "Names before the code names"
+in "Updating components".
+<!-- END code names -->
+
 ## Use
 
 ```bash
 cp ginnungagap.example.yml ginnungagap.yml      # edit; keep it readable by root only, it holds API keys
 python -m ginnungagap validate ginnungagap.yml  # every problem at once, nothing is changed on error
-python -m ginnungagap render ginnungagap.yml --out rendered --generator-config ../topology-generator/config
+python -m ginnungagap render ginnungagap.yml --out rendered --generator-config ../Mimyr/config
 docker compose --env-file rendered/compose.env up -d --build
 ```
 
@@ -24,12 +48,13 @@ docker compose --env-file rendered/compose.env up -d --build
 the template store), `Caddyfile`, `operator.env`, `generator/`, `generator.env` (the only file with API keys, mode 0600),
 `collector-gns3/`. Files are rewritten in place because Docker mounts single files by inode.
 
-The compose file builds the services from the sibling checkouts `../TopologyOperator`, `../TopologyBuilder`,
-`../Docker-Server-Files` and `../topology-generator` (set `REPOS_DIR` for another place).
+The compose file builds the services from the sibling checkouts `../Igdrasyl`, `../Mjonyr`, `../Hugyn-and-Munyn` and `../Mimyr`
+(set `REPOS_DIR` for another place; checkouts that still have the old folder names are recorded under the new ones by
+`ginnungagap update --adopt`, see "Names before the code names").
 
 ### OVA server for the ESXi hosts
 
-TopologyBuilder does not upload an OVA any more: it reads the OVF descriptor over HTTP and the **ESXi host pulls the disks
+Mjonyr (the builder) does not upload an OVA any more: it reads the OVF descriptor over HTTP and the **ESXi host pulls the disks
 itself**. So the hosts need an HTTP address that serves the OVAs of the template store as `<address>/<folder>/<file>.ova`
 (`<folder>` and `<file>` are the template's `_source_dir` and `file` in the ESXi template API, which is the layout of the
 store itself). The `ova-store` container does that: `services.ova_store: true` (the default), published on
@@ -76,7 +101,9 @@ python -m ginnungagap restore /var/backups/ginnungagap-backup-20261102-123005 --
   nothing changed and leave the gateway on an old `Caddyfile`. With `appliance.auth` set, `apply` only knows the password's hash,
   so it can not look behind the login: a gateway that answers 401 counts as success (with a note to run `status --user`) as long
   as nothing else is down.
-* `status` exits non-zero if anything is down or degraded, so it can be used from a monitor or a script. Behind a login
+* `status` prints the appliance release (`Ginnungagap appliance v1.3.0`, from `update/installed.json`, else the program's own
+  version) as its first line, then the table. The same line heads the text at the VM's console login. It exits non-zero if
+  anything is down or degraded, so it can be used from a monitor or a script. Behind a login
   (`appliance.auth`) pass `--user NAME`; the password is asked for or read from `GINNUNGAGAP_PASSWORD`.
 * `GET /appliance/health` through Caddy reports the bundled services as JSON. It returns HTTP 200 when healthy
   and HTTP 503 before setup or when a bundled service is down or degraded. Services configured to run elsewhere
@@ -93,7 +120,7 @@ sudo ginnungagap apply /etc/ginnungagap/ginnungagap.yml
 ```
 
 It needs Docker with the compose plugin, `python3` (3.12+) with `python3-yaml`, and the four sibling repositories the images
-are built from. A systemd unit (`ginnungagap.service`) applies the configuration at boot; the containers restart by
+are built from (Igdrasyl, Mjonyr, Hugyn-and-Munyn, Mimyr). A systemd unit (`ginnungagap.service`) applies the configuration at boot; the containers restart by
 themselves, so this only picks up an edited file. Running `install.sh` again updates the program and keeps your
 configuration; `sudo ./install.sh --uninstall` removes program, command and unit and keeps the configuration and the data.
 
@@ -143,7 +170,7 @@ Appliances installed with `--image` use the prebuilt images for both startup and
 skips pulls and builds in this mode. Build the images on the preparation VM before exporting the OVA, and use
 `ginnungagap build-images` to refresh them on an installed appliance with network access.
 
-Out of scope: it never touches TopologyOperator's own user store -
+Out of scope: it never touches Igdrasyl's own user store -
 the appliance's `admin`/`admin` bootstrap login is unrelated and mentioned only in the console hint once setup is done.
 ESXi/GNS3 host profiles are not configured here either; that is the app's own "Design a host" dialog, after the first
 login.
@@ -244,12 +271,12 @@ docker compose --env-file rendered/compose.env ps
 | Service | Profile | Inside the network | Health |
 |---|---|---|---|
 | gateway (Caddy: one entry point, optional TLS and basic auth) | `gateway` | 80, 443 | - |
-| ginnungagap (the app with TopologyBuilder) | `ginnungagap` | `ginnungagap:8123` | `/health` |
-| ESXi template API | `template-esxi` | `template-esxi:8000` | `/health` |
-| ESXi template collector | `collector-esxi` | - (writes `templates.yml`) | - |
-| GNS3 template API | `template-gns3` | `template-gns3:8000` | `/health` |
-| GNS3 template collector (hosts from the app's profiles) | `collector-gns3` | - (writes `gns3_templates.yml`) | - |
-| topology generator | `generator` | `generator:8000` | `/health` |
+| ginnungagap (the app, Igdrasyl, with Mjonyr) | `ginnungagap` | `ginnungagap:8123` | `/health` |
+| ESXi template API (Hugyn) | `template-esxi` | `template-esxi:8000` | `/health` |
+| ESXi template collector (Hugyn) | `collector-esxi` | - (writes `templates.yml`) | - |
+| GNS3 template API (Munyn) | `template-gns3` | `template-gns3:8000` | `/health` |
+| GNS3 template collector (Munyn; hosts from the app's profiles) | `collector-gns3` | - (writes `gns3_templates.yml`) | - |
+| topology generator (Mimyr) | `generator` | `generator:8000` | `/health` |
 | OVA server for the ESXi hosts (Caddy, read-only, `*.ova` only, no login) | `ova-store` | 8088 (published, `templates.ova_port`) | `/health` |
 | setup wizard (see "Setup wizard" above) | `setup` | `setup:8000`, at `/setup/` with Basic Auth after configuration | `/health` |
 
@@ -263,8 +290,8 @@ server publish ports, read-only mounts for the template store and the host profi
 <!-- BEGIN update configuration (the `update:` block, installer and image) -->
 ## Updating the components: the `update:` block
 
-`ginnungagap update` brings newer versions of the installed components (the appliance tooling, TopologyOperator, TopologyBuilder,
-Docker-Server-Files, topology-generator) onto a running appliance. The sources are the **public** GitHub releases of
+`ginnungagap update` (**Idynoun**, the updater) brings newer versions of the installed components (the appliance tooling, Igdrasyl,
+Mjonyr, Hugyn-and-Munyn, Mimyr) onto a running appliance. The sources are the **public** GitHub releases of
 `Ginnungagap-Appliance` (one release holds every component), or a folder with the files of one release. **No login and no token
 are needed**; nothing is ever installed by itself (the optional daily timer only looks).
 
@@ -354,17 +381,55 @@ Good to know:
 * **Anonymous by default.** No `Authorization` header is sent unless the token file exists; a token is only ever sent to the API host, never to the
   download address GitHub redirects to. When GitHub's rate limit (60 requests per hour and address without a token) is hit, the
   message names the time to try again and how to store a token.
-* **Only what changed** is rebuilt and restarted; `--component NAME` (repeatable) limits an update further and warns that this is not the combination that
+* **Only what changed** is rebuilt and restarted; `--component NAME` (repeatable; the key such as `operator`, a code name such as `igdrasyl` or `hugyn-and-munyn`, or a key of before the code names) limits an update further and warns that this is not the combination that
   was tested together. `--no-start` unpacks, verifies and builds without restarting anything (for an appliance image). `--dry-run`
   shows the plan after checking the manifest and the signature and changes nothing.
-* **Short downtime**: restarting the app drops the browser sessions for about 10-20 seconds; expect a reload.
+* **Names before the code names.** Releases and machines from before the repositories got their code names keep working; the
+  old names are only ever read, never written: (1) `--adopt` (and the first `--apply`) finds checkouts under the old folder names:
+  old `TopologyOperator`, `TopologyBuilder`, `Docker-Server-Files`, `topology-generator` or `TopologyGenerator`; it records them under
+  the current ones, also when only some of them still have the old name; the old folders stay as they were. (2) An update state that
+  was written with the old component keys (`docker-server-files`, `topology-generator`) or old folder names under `releases/` and
+  `components/` is renamed once, under the update lock, by the next `--apply`, `--rollback`, `--resume` or `--adopt`; the old name
+  stays as a link to the new one so that the compose file of an older release still finds its sources. (3) A manifest of an
+  older release (rollback, `--version X --allow-downgrade`) with the old keys and repository names is read as the roles they
+  stand for. (4) A manifest is checked for consistency, not for a fixed repository name: the asset has to be
+  `<repository>-<version>.tar.gz` of the repository the manifest names, so a later rename of a component repository does not
+  lock an installed appliance out of updates. `install.sh` accepts a `--repos-dir` with the old folder names, tells you to run
+  `ginnungagap update --adopt` and does not start anything until then.
+* **Short downtime**: restarting the app drops the browser sessions for about 10-20 seconds; the admin panel's "Connection lost" overlay
+  covers that gap and the page reloads by itself once the new version answers.
+* **From the browser** (Igdrasyl's admin panel, section Updates; see "Updating from the web" below): the same check and the same apply,
+  admin only, never automatic.
 * **Building needs the internet** (pip, Docker Hub), as `apply` without `--no-build` always did; a folder source (`--offline-dir`) only
   removes the need for GitHub. A rollback needs no build while the rollback images are there.
-* **Files**: `/var/lib/ginnungagap/update/{installed.json,history/,available.json,transaction.json,audit.log,lock}`; every apply, rollback,
+* **Files**: `/var/lib/ginnungagap/update/{installed.json,history/,available.json,transaction.json,web-status.json,audit.log,lock}`; every apply, rollback,
   resume and token change is one JSON line in `audit.log` (who, from, to, result) and in the journal (`journalctl -t ginnungagap-update`).
 * Tests: `tests/test_manifest.py`, `test_releases.py`, `test_update.py`, `test_update_failures.py` (the failure matrix) run against a
   fake appliance and a fake GitHub on localhost; `smoke/update-smoke.sh` does the real Docker part (build, recreate only what changed,
   automatic rollback, `--rollback`).
+### Updating from the web
+
+Igdrasyl's admin panel has a section **Updates**: installed and available version per component (with the code names), a
+**Check for updates** button, and, once a check found a release, **Update now...** with a confirmation that names the release, the
+services it restarts and the backup that is made first. Nothing in the browser installs anything by itself, and nothing is
+automatic: a release is only installed after an admin clicked the confirmation, and the daily check timer (`update.check: daily`)
+only looks.
+
+The app's container has no Docker socket and no root; the update runs on the host, through the same hand-off as the setup wizard:
+
+| | |
+|---|---|
+| what the app may read | the update state folder, **read-only** (`/var/lib/ginnungagap/update` mounted at `/update-state`): `installed.json`, `available.json`, `transaction.json` (the phase of a running update) and `web-status.json` (how the last request ended) - all written by the host |
+| what the app may write | one request file `request.json` in `/var/lib/ginnungagap/update-requests` (mode 0700, mounted at `/update-requests`); nothing else is writable |
+| who acts on it | `ginnungagap-update-request.path` (armed by `install.sh`, also on a running machine) starts `ginnungagap-update-request.service`, i.e. `ginnungagap apply-update-request`, as root |
+| what a request may say | `check`, or `apply` of exactly the version the admin was shown with `confirmed: true`; the requester (`role: admin`) is recorded. The program reads the file without following links, caps its size, consumes it at once and refuses any other field - no source, folder, `--force`, `--no-backup`, downgrade or component selection can be asked for from the browser. It then runs `ginnungagap update --check`, or `--apply --yes --version X`, so the whole safety net applies: signature and checksums, backup, health gate, automatic rollback, the update lock |
+| audit | the engine's own `audit.log` lines carry `web:<user name>`, the request adds `web-request` lines (accepted / refused / outcome), the Operator's audit log gets `update_check_requested`, `update_apply_requested` and `update_result`; the Operator's audit log now lives on the data volume (`/data/audit.log`) so the restart of an update does not erase it |
+| result | `update/web-status.json`: state (`running`, `done`, `failed`, `refused`), outcome (`update_available`, `up_to_date`, `installed`, `rolled_back`, ...), the last lines of the output |
+
+The panel keeps asking while the app restarts and shows the progress phase from `transaction.json`. Where the folders are not
+mounted (an appliance whose app container was not recreated since the tooling update) the section says so; `ginnungagap apply` recreates
+the app once and mounts them. Tests: `tests/test_update_request.py` (the request file, against the real engine with a fake Docker),
+`tests/test_install.py`, `tests/test_compose.py`, `tests/test_render.py`.
 <!-- END updating components -->
 
 <!-- BEGIN releasing (for maintainers) -->
@@ -372,8 +437,8 @@ Good to know:
 
 A release of the appliance is a GitHub release of **this** repository whose files are everything the appliance needs:
 `components.json` (the manifest), `SHA256SUMS`, optionally `components.json.sig`, and one source tarball per component
-(`Ginnungagap-Appliance-<v>.tar.gz`, `TopologyOperator-<v>.tar.gz`, `TopologyBuilder-<v>.tar.gz`, `Docker-Server-Files-<v>.tar.gz`,
-`TopologyGenerator-<v>.tar.gz`, each with one top folder of its own name). The tooling lives in `release/`; **nothing in it
+(`Ginnungagap-Appliance-<v>.tar.gz`, `Igdrasyl-<v>.tar.gz`, `Mjonyr-<v>.tar.gz`, `Hugyn-and-Munyn-<v>.tar.gz`,
+`Mimyr-<v>.tar.gz`, each with one top folder of its own name). The tooling lives in `release/`; **nothing in it
 publishes or pushes on its own**.
 
 1. Release the components that changed (their own repositories, tag `vX.Y.Z` = the version file inside: `app/version.py`,

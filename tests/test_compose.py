@@ -88,6 +88,19 @@ def test_the_setup_wizard_is_its_own_container_with_no_extra_privilege(compose):
     assert service["build"]["additional_contexts"]["caddy"] == "docker-image://caddy:2"
 
 
+def test_the_operator_may_read_the_update_state_and_write_nothing_but_one_request(
+    compose,
+):
+    volumes = compose["services"]["ginnungagap"]["volumes"]
+    state = next(v for v in volumes if v.endswith(":/update-state:ro"))
+    assert (
+        "GINNUNGAGAP_UPDATE_DIR" in state
+    )  # the state is read-only: show, never change
+    requests = next(v for v in volumes if v.endswith(":/update-requests"))
+    assert "GINNUNGAGAP_UPDATE_REQUEST_DIR" in requests and not requests.endswith(":ro")
+    assert "docker.sock" not in " ".join(volumes)
+
+
 def test_the_store_is_mounted_read_only_and_the_collector_data_read_only_for_the_apis(
     compose,
 ):
@@ -210,9 +223,17 @@ def test_the_requirements_script_leaves_out_topologybuilder_and_keeps_the_pins(
 
 
 def test_the_requirements_script_on_the_real_app_if_it_is_next_to_this_repository():
-    pyproject = ROOT.parent / "TopologyOperator" / "pyproject.toml"
+    # the sibling folder is called Igdrasyl (the old folder name works as well)
+    pyproject = next(
+        (
+            ROOT.parent / folder / "pyproject.toml"
+            for folder in ("Igdrasyl", "TopologyOperator")
+            if (ROOT.parent / folder / "pyproject.toml").is_file()
+        ),
+        ROOT.parent / "Igdrasyl" / "pyproject.toml",
+    )
     if not pyproject.is_file():
-        pytest.skip("TopologyOperator is not next to this repository")
+        pytest.skip("Igdrasyl is not next to this repository")
     result = subprocess.run(
         [
             sys.executable,

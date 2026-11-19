@@ -209,24 +209,31 @@ class World:
         return up.run_update(options, config_file, self.env, self.layout, self.bundle)
 
     # -- the old installation: what `install.sh --repos-dir /srv/repos` left --
-    def make_old_installation(self, operator: str = "1.2.1") -> None:
-        for repo in (
-            "TopologyOperator",
-            "TopologyBuilder",
-            "Docker-Server-Files",
-            "topology-generator",
-            "Ginnungagap-Appliance",
-        ):
+    # `layout`: "old" is an appliance image up to v1.2.x (the folder names of before the code names), "new" the current names,
+    # "mixed" has the generator under its old name only
+    def make_old_installation(
+        self, operator: str = "1.2.1", layout: str = "old"
+    ) -> None:
+        names = {
+            "operator": "Igdrasyl",
+            "builder": "Mjonyr",
+            "template-services": "Hugyn-and-Munyn",
+            "generator": "Mimyr",
+        }
+        if layout in ("old", "mixed"):
+            old = fake_release.OLD_REPOS | {"generator": "topology-generator"}
+            names = old if layout == "old" else names | {"generator": old["generator"]}
+        for repo in (*names.values(), "Ginnungagap-Appliance"):
             (self.repos / repo).mkdir(parents=True, exist_ok=True)
             (self.repos / repo / "README.md").write_text(f"old {repo}\n")
-        (self.repos / "TopologyOperator" / "app").mkdir()
-        (self.repos / "TopologyOperator" / "app" / "version.py").write_text(
+        (self.repos / names["operator"] / "app").mkdir()
+        (self.repos / names["operator"] / "app" / "version.py").write_text(
             f'__version__ = "{operator}"\n'
         )
         (self.repos / "Ginnungagap-Appliance" / "install.sh").write_text(
             '#!/bin/sh\necho "old install.sh $*" >> "$GINNUNGAGAP_FAKE_INSTALL_LOG"\n'
         )
-        (self.repos / "topology-generator" / "config").mkdir()
+        (self.repos / names["generator"] / "config").mkdir()
         (self.repos / "Ginnungagap-Appliance" / ".git").mkdir()
 
     def release(self, name: str, **kwargs) -> Path:

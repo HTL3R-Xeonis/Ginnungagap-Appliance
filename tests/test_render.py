@@ -157,7 +157,7 @@ def test_the_app_gets_the_service_urls_and_its_data_paths(
     assert all(
         v.startswith("/data")
         for k, v in env.items()
-        if k.startswith("TOPOLOGYOPERATOR_")
+        if k.startswith("TOPOLOGYOPERATOR_") and "_UPDATE_" not in k
     )
     assert env["TOPOLOGYOPERATOR_SETTINGS_PROFILES_DIR"] == "/data/settings_profiles"
 
@@ -526,3 +526,28 @@ def test_the_gateway_also_answers_for_the_machines_own_address(
         "default_sni 10.20.20.222" in ip
         and "10.20.20.222, localhost, 127.0.0.1, :443 {" in ip
     )
+
+
+def test_the_update_panels_folders_reach_the_env_files(
+    make_config, out, generator_sources, monkeypatch
+):
+    monkeypatch.delenv("GINNUNGAGAP_UPDATE_DIR", raising=False)
+    monkeypatch.delenv("GINNUNGAGAP_UPDATE_REQUEST_DIR", raising=False)
+    render(make_config(), out, generator_sources)
+    compose = env_of(read(out, "compose.env"))
+    assert compose["GINNUNGAGAP_UPDATE_DIR"] == "/var/lib/ginnungagap/update"
+    assert (
+        compose["GINNUNGAGAP_UPDATE_REQUEST_DIR"]
+        == "/var/lib/ginnungagap/update-requests"
+    )
+    monkeypatch.setenv("GINNUNGAGAP_UPDATE_DIR", "/custom/update")
+    monkeypatch.setenv("GINNUNGAGAP_UPDATE_REQUEST_DIR", "/custom/requests")
+    render(make_config(), out, generator_sources)
+    compose = env_of(read(out, "compose.env"))
+    assert compose["GINNUNGAGAP_UPDATE_DIR"] == "/custom/update"
+    assert compose["GINNUNGAGAP_UPDATE_REQUEST_DIR"] == "/custom/requests"
+    # inside the container the folders are always the same two places (compose.yml mounts them there)
+    operator = env_of(read(out, "operator.env"))
+    assert operator["TOPOLOGYOPERATOR_UPDATE_STATE_DIR"] == "/update-state"
+    assert operator["TOPOLOGYOPERATOR_UPDATE_REQUEST_DIR"] == "/update-requests"
+    assert operator["TOPOLOGYOPERATOR_AUDIT_LOG_FILE"] == "/data/audit.log"

@@ -30,19 +30,25 @@ services:
       context: .
       dockerfile: docker/operator.Dockerfile
       additional_contexts:
-        operator: ${REPOS_DIR:-..}/TopologyOperator
-        builder: ${REPOS_DIR:-..}/TopologyBuilder
+        operator: ${REPOS_DIR:-..}/Igdrasyl
+        builder: ${REPOS_DIR:-..}/Mjonyr
     restart: unless-stopped
     env_file: [rendered/operator.env]
     volumes:
       - data:/data
+      # the update button of Igdrasyl's admin panel (Updates), see ginnungagap/update_request.py. The update state is read-only
+      # (what is installed, what the last check found, how a running update is doing); the request folder is the one place
+      # the app may write to - one small request file that the host's own ginnungagap-update-request.path unit validates and
+      # acts on. No Docker socket, no root on the host: the update itself runs on the host.
+      - ${GINNUNGAGAP_UPDATE_DIR:-/var/lib/ginnungagap/update}:/update-state:ro
+      - ${GINNUNGAGAP_UPDATE_REQUEST_DIR:-/var/lib/ginnungagap/update-requests}:/update-requests
     healthcheck:
       <<: *probe
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8123/health', timeout=4)"]
 
   template-esxi:
     profiles: [template-esxi]
-    build: ${REPOS_DIR:-..}/Docker-Server-Files/yaml-api
+    build: ${REPOS_DIR:-..}/Hugyn-and-Munyn/yaml-api
     restart: unless-stopped
     environment:
       TZ: ${TZ:-UTC}
@@ -61,7 +67,7 @@ services:
       context: .
       dockerfile: docker/collector-esxi.Dockerfile
       additional_contexts:
-        services: ${REPOS_DIR:-..}/Docker-Server-Files
+        services: ${REPOS_DIR:-..}/Hugyn-and-Munyn
     restart: unless-stopped
     environment:
       TZ: ${TZ:-UTC}
@@ -77,7 +83,7 @@ services:
   template-gns3:
     profiles: [template-gns3]
     build:
-      context: ${REPOS_DIR:-..}/Docker-Server-Files/gns3-template-api
+      context: ${REPOS_DIR:-..}/Hugyn-and-Munyn/gns3-template-api
       dockerfile: gns3_api.Dockerfile
     restart: unless-stopped
     environment:
@@ -95,7 +101,7 @@ services:
       context: .
       dockerfile: docker/collector-gns3.Dockerfile
       additional_contexts:
-        services: ${REPOS_DIR:-..}/Docker-Server-Files
+        services: ${REPOS_DIR:-..}/Hugyn-and-Munyn
     restart: unless-stopped
     environment:
       TZ: ${TZ:-UTC}
@@ -108,7 +114,7 @@ services:
   generator:
     profiles: [generator]
     build:
-      context: ${REPOS_DIR:-..}/topology-generator
+      context: ${REPOS_DIR:-..}/Mimyr
       dockerfile: topology.Dockerfile
     restart: unless-stopped
     env_file:
@@ -123,7 +129,7 @@ services:
       <<: *probe
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=4)"]
 
-  # Serves the OVA files of the template store to the ESXi hosts, which pull them themselves (TopologyBuilder only reads the
+  # Serves the OVA files of the template store to the ESXi hosts, which pull them themselves (Mjonyr only reads the
   # descriptor and starts the pull). Plain HTTP, read-only, *.ova only, no login (an ESXi host cannot send one): the
   # published port must only be reachable from the lab network. Its Caddyfile is rendered, see ginnungagap/render.py.
   ova-store:

@@ -39,6 +39,25 @@ def test_show_hides_the_keys(tmp_path, capsys, example):
     assert "gemini" in out and "sk-secret-123" not in out
 
 
+def test_status_prints_the_appliance_release_as_its_first_line(
+    tmp_path, capsys, monkeypatch, example
+):
+    import yaml
+
+    from ginnungagap import status as status_module
+    from ginnungagap.version import __version__
+
+    monkeypatch.setenv("GINNUNGAGAP_UPDATE_DIR", str(tmp_path / "update"))
+    path = tmp_path / "g.yml"
+    path.write_text(yaml.safe_dump(example))
+    rows = [status_module.Row("ginnungagap", "ok", "up")]
+    monkeypatch.setattr(status_module, "check", lambda *a, **k: rows)
+    assert cli.main(["status", str(path)]) == 0
+    lines = capsys.readouterr().out.splitlines()
+    assert lines[0] == f"Ginnungagap appliance v{__version__}"
+    assert "ginnungagap (Igdrasyl)" in lines[1]
+
+
 def test_firstboot_command_hands_the_config_folder_to_the_first_boot(
     tmp_path, monkeypatch
 ):

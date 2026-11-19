@@ -36,15 +36,15 @@ FILES = {
         "pyproject.toml",
         '[project]\nname = "topology-builder"\nversion = "{v}"\n',
     ),
-    "docker-server-files": ("VERSION", "{v}\n"),
-    "topology-generator": ("VERSION", "{v}\n"),
+    "template-services": ("VERSION", "{v}\n"),
+    "generator": ("VERSION", "{v}\n"),
 }
 VERSIONS = {
     "appliance": "1.3.0",
     "operator": "1.2.1",
     "builder": "1.0.0",
-    "docker-server-files": "1.0.0",
-    "topology-generator": "1.0.0",
+    "template-services": "1.0.0",
+    "generator": "1.0.0",
 }
 OWNER = "HTL3R-Xeonis"
 
@@ -128,14 +128,14 @@ def test_a_release_is_built_from_the_five_tarballs_and_the_result_is_a_valid_man
     assert manifest.released == "2026-12-01T10:00:00Z" and manifest.notes == "a note"
     assert document == json.loads((out / "components.json").read_text())
     operator = manifest.components["operator"]
-    assert operator.repo == f"{OWNER}/TopologyOperator" and operator.version == "1.2.1"
+    assert operator.repo == f"{OWNER}/Igdrasyl" and operator.version == "1.2.1"
     assert operator.commit == COMMIT and operator.services == ("ginnungagap",)
     tarball = out / operator.asset
     assert (
         operator.sha256 == hashlib.sha256(tarball.read_bytes()).hexdigest()
         and operator.size == tarball.stat().st_size
     )
-    assert manifest.components["docker-server-files"].services == (
+    assert manifest.components["template-services"].services == (
         "template-esxi",
         "collector-esxi",
         "template-gns3",
@@ -214,8 +214,8 @@ def test_each_version_file_format_is_read():
         and read("builder", "not toml [[") is None
     )
     assert (
-        read("topology-generator", "1.0.0\n\n") == "1.0.0"
-        and read("docker-server-files", "  \n") is None
+        read("generator", "1.0.0\n\n") == "1.0.0"
+        and read("template-services", "  \n") is None
     )
     assert read("appliance", "# nothing\n") is None
 
@@ -225,7 +225,7 @@ def test_a_tag_that_differs_from_the_version_file_is_refused_and_nothing_is_writ
 ):
     make_tarball(work["sources"], "operator", "1.2.1", declared="1.2.0")
     with pytest.raises(
-        build_release.ReleaseError, match=r"TopologyOperator.*v1\.2\.1.*says 1\.2\.0"
+        build_release.ReleaseError, match=r"Igdrasyl.*v1\.2\.1.*says 1\.2\.0"
     ):
         build(work)
     assert not work["out"].exists() and not list(work["tmp"].glob(".release-*"))
@@ -234,7 +234,7 @@ def test_a_tag_that_differs_from_the_version_file_is_refused_and_nothing_is_writ
 @pytest.mark.parametrize(
     ("kwargs", "message"),
     [
-        ({"top": "Wrong-1.0.0"}, "below TopologyOperator-1.2.1/"),
+        ({"top": "Wrong-1.0.0"}, "below Igdrasyl-1.2.1/"),
         ({"extra": {"../escape": b"x"}}, "leaves the folder"),
         ({"extra": {"/etc/passwd": b"x"}}, "leaves the folder"),
         ({"commit": None}, "no commit id"),
@@ -247,7 +247,7 @@ def test_a_tarball_with_the_wrong_layout_is_refused(work, kwargs, message):
 
 
 def test_a_tarball_without_the_version_file_or_not_a_tarball_is_refused(work):
-    path = work["sources"] / "TopologyOperator-1.2.1.tar.gz"
+    path = work["sources"] / "Igdrasyl-1.2.1.tar.gz"
     path.write_bytes(b"this is not a tarball")
     with pytest.raises(build_release.ReleaseError, match="not a readable"):
         build(work)
@@ -258,7 +258,7 @@ def test_a_tarball_without_the_version_file_or_not_a_tarball_is_refused(work):
         format=tarfile.PAX_FORMAT,
         pax_headers={"comment": COMMIT},
     ) as archive:
-        info = tarfile.TarInfo("TopologyOperator-1.2.1/README")
+        info = tarfile.TarInfo("Igdrasyl-1.2.1/README")
         archive.addfile(info, io.BytesIO(b""))
     path.write_bytes(buffer.getvalue())
     with pytest.raises(build_release.ReleaseError, match=r"app/version\.py is missing"):
@@ -266,10 +266,10 @@ def test_a_tarball_without_the_version_file_or_not_a_tarball_is_refused(work):
 
 
 def test_a_missing_tarball_names_the_file_and_the_ways_to_get_it(work):
-    (work["sources"] / "TopologyGenerator-1.0.0.tar.gz").unlink()
+    (work["sources"] / "Mimyr-1.0.0.tar.gz").unlink()
     with pytest.raises(
         build_release.ReleaseError,
-        match=r"TopologyGenerator-1\.0\.0\.tar\.gz.*--sources.*--checkouts.*--fetch",
+        match=r"Mimyr-1\.0\.0\.tar\.gz.*--sources.*--checkouts.*--fetch",
     ):
         build(work)
 
@@ -290,15 +290,44 @@ def test_a_non_empty_output_folder_is_refused_unless_forced(work):
 def test_the_pin_file_reports_every_problem_at_once(tmp_path):
     pins = tmp_path / "p.yml"
     pins.write_text(
-        "appliance: {min_installed: soon}\ncomponents:\n  operator: {repo: x/Wrong, tag: 1.2.1}\n  builder: {repo: o/TopologyBuilder, tag: v1.0.0, data_migration: 'yes'}\n  extra: {}\n"
+        "appliance: {min_installed: soon}\ncomponents:\n  operator: {repo: x/Wrong, tag: 1.2.1}\n  builder: {repo: o/Mjonyr, tag: v1.0.0, data_migration: 'yes'}\n  extra: {}\n"
     )
     with pytest.raises(build_release.ReleaseError) as raised:
         build_release.load_pins(pins)
     text = str(raised.value)
-    for fragment in ("components.appliance: missing", "components.operator.repo", "components.operator.tag", "components.builder.data_migration", "components.docker-server-files: missing", "unknown component(s) extra", "appliance.min_installed"):  # fmt: skip
+    for fragment in ("components.appliance: missing", "components.operator.repo", "components.operator.tag", "components.builder.data_migration", "components.template-services: missing", "unknown component(s) extra", "appliance.min_installed"):  # fmt: skip
         assert fragment in text
     pins.write_text("- a list\n")
     with pytest.raises(build_release.ReleaseError, match="components"):
+        build_release.load_pins(pins)
+
+
+def test_the_build_side_is_strict_about_names_and_refuses_the_old_ones(tmp_path):
+    # reading a manifest is lenient (consistency), building one is where the names are enforced
+    pins = tmp_path / "p.yml"
+    entries = "".join(
+        f"  {name}: {{repo: HTL3R-Xeonis/{repo}, tag: v1.0.0}}\n"
+        for name, repo in manifest_module.REPO_NAMES.items()
+    )
+    pins.write_text("components:\n" + entries)
+    assert set(build_release.load_pins(pins)["components"]) == set(
+        manifest_module.COMPONENT_NAMES
+    )
+    pins.write_text(
+        "components:\n" + entries.replace("Hugyn-and-Munyn", "Docker-Server-Files")
+    )
+    with pytest.raises(
+        build_release.ReleaseError,
+        match=r"components\.template-services\.repo: must be <owner>/Hugyn-and-Munyn",
+    ):
+        build_release.load_pins(pins)
+    pins.write_text(
+        "components:\n" + entries.replace("template-services:", "docker-server-files:")
+    )
+    with pytest.raises(
+        build_release.ReleaseError,
+        match=r"(?s)template-services: missing.*docker-server-files",
+    ):
         build_release.load_pins(pins)
 
 
@@ -356,14 +385,14 @@ def test_the_appliance_tarball_is_a_reproducible_git_archive_of_the_tag(work):
 @pytest.mark.skipif(shutil.which("git") is None, reason="needs git")
 def test_a_component_can_be_archived_from_a_checkout_at_its_tag(work):
     checkouts = work["tmp"] / "checkouts"
-    repo = checkouts / "TopologyOperator"
+    repo = checkouts / "Igdrasyl"
     (repo / "app").mkdir(parents=True)
     (repo / "app" / "version.py").write_text('__version__ = "1.2.1"\n')
     _git(repo, "init", "-q")
     _git(repo, "add", ".")
     _git(repo, "commit", "-q", "-m", "one")
     _git(repo, "tag", "v1.2.1")
-    (work["sources"] / "TopologyOperator-1.2.1.tar.gz").unlink()
+    (work["sources"] / "Igdrasyl-1.2.1.tar.gz").unlink()
     document = build(work, checkouts=checkouts)
     assert document["components"]["operator"]["commit"] == _git(
         repo, "rev-parse", "HEAD"
@@ -389,11 +418,11 @@ def test_verify_accepts_what_build_made_and_names_every_kind_of_tampering(work):
         for name, data in pristine.items():
             (out / name).write_bytes(data)
 
-    tarball = out / "TopologyOperator-1.2.1.tar.gz"
+    tarball = out / "Igdrasyl-1.2.1.tar.gz"
     tarball.write_bytes(tarball.read_bytes()[:-1] + b"X")
     with pytest.raises(
         build_release.ReleaseError,
-        match=r"TopologyOperator-1\.2\.1\.tar\.gz: the checksum differs from components\.json",
+        match=r"Igdrasyl-1\.2\.1\.tar\.gz: the checksum differs from components\.json",
     ):
         build_release.verify(out)
     restore()
@@ -401,16 +430,14 @@ def test_verify_accepts_what_build_made_and_names_every_kind_of_tampering(work):
         (out / "SHA256SUMS")
         .read_text()
         .replace(
-            hashlib.sha256(
-                (out / "TopologyBuilder-1.0.0.tar.gz").read_bytes()
-            ).hexdigest(),
+            hashlib.sha256((out / "Mjonyr-1.0.0.tar.gz").read_bytes()).hexdigest(),
             "0" * 64,
         )
     )
     (out / "SHA256SUMS").write_text(sums)
     with pytest.raises(
         build_release.ReleaseError,
-        match="TopologyBuilder-1.0.0.tar.gz: the checksum differs from SHA256SUMS",
+        match="Mjonyr-1.0.0.tar.gz: the checksum differs from SHA256SUMS",
     ):
         build_release.verify(out)
     restore()
@@ -420,9 +447,9 @@ def test_verify_accepts_what_build_made_and_names_every_kind_of_tampering(work):
     with pytest.raises(build_release.ReleaseError, match="bytes, components.json says"):
         build_release.verify(out)
     restore()
-    (out / "Docker-Server-Files-1.0.0.tar.gz").unlink()
+    (out / "Hugyn-and-Munyn-1.0.0.tar.gz").unlink()
     with pytest.raises(
-        build_release.ReleaseError, match="Docker-Server-Files-1.0.0.tar.gz: missing"
+        build_release.ReleaseError, match="Hugyn-and-Munyn-1.0.0.tar.gz: missing"
     ):
         build_release.verify(out)
     restore()
@@ -571,15 +598,13 @@ def test_the_release_notes_list_what_changed_since_the_previous_release(work, tm
         tmp_path / "previous.json",
     )
     assert "# Ginnungagap appliance 1.3.0" in notes and "Update of 1.2.9" in notes
-    assert "- operator (HTL3R-Xeonis/TopologyOperator): 1.2.0 -> 1.2.1" in notes
+    assert "- operator (HTL3R-Xeonis/Igdrasyl): 1.2.0 -> 1.2.1" in notes
     assert "- appliance (HTL3R-Xeonis/Ginnungagap-Appliance): 1.2.9 -> 1.3.0" in notes
     assert "builder" not in notes  # unchanged components are not listed
     plain = build_release.release_notes(
         json.loads((work["out"] / "components.json").read_text()), None
     )
-    assert (
-        "- builder (HTL3R-Xeonis/TopologyBuilder): 1.0.0" in plain and "a note" in plain
-    )
+    assert "- builder (HTL3R-Xeonis/Mjonyr): 1.0.0" in plain and "a note" in plain
 
 
 def test_the_command_line_builds_verifies_and_reports_errors_with_exit_codes(
@@ -757,7 +782,7 @@ def test_fetch_downloads_each_release_asset_verifies_its_checksum_and_sends_the_
         auth is None for _, auth in signed
     )  # the signed download address never gets the token
     assert any(
-        "/repos/HTL3R-Xeonis/TopologyOperator/releases/tags/v1.2.1" in path
+        "/repos/HTL3R-Xeonis/Igdrasyl/releases/tags/v1.2.1" in path
         for path, _ in api_calls
     )
     assert build_release.verify(work["out"]).version == "1.3.0"
@@ -793,10 +818,10 @@ def test_fetch_refuses_a_release_without_a_checksum_asset_or_without_the_tarball
 ):
     with pytest.raises(
         build_release.ReleaseError,
-        match=r"no usable TopologyBuilder-1\.0\.0\.tar\.gz\.sha256|no usable .*sha256",
+        match=r"no usable Mjonyr-1\.0\.0\.tar\.gz\.sha256|no usable .*sha256",
     ):
         _fetch(work, fake_github(drop_sums=True))
-    (work["sources"] / "TopologyOperator-1.2.1.tar.gz").unlink()
+    (work["sources"] / "Igdrasyl-1.2.1.tar.gz").unlink()
     with pytest.raises(build_release.ReleaseError, match=r"HTTP 404|no asset"):
         _fetch(work, fake_github())
 

@@ -13,8 +13,11 @@ import urllib.error
 import urllib.request
 from collections.abc import Callable
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
+
+from ginnungagap import manifest
 
 # state values: ok | degraded | down | login | external | off
 Fetch = Callable[[str], tuple[int | None, str, str | None]]
@@ -201,8 +204,16 @@ def healthy_behind_login(rows: list[Row]) -> bool:
     )
 
 
+def title_line(update_dir: str | Path | None = None) -> str:
+    """The first line `ginnungagap status` prints: which appliance release this is."""
+    return f"Ginnungagap appliance v{manifest.release_version(update_dir)}"
+
+
 def render_table(rows: list[Row]) -> str:
-    width = max(len(row.name) for row in rows)
+    """The table `ginnungagap status` prints; the part's code name stands next to the service (`template-esxi (Hugyn)`)."""
+    names = [manifest.service_display_name(row.name) for row in rows]
+    width = max(len(name) for name in names)
     return "\n".join(
-        f"  {row.name.ljust(width)}  {row.state.ljust(8)}  {row.detail}" for row in rows
+        f"  {name.ljust(width)}  {row.state.ljust(8)}  {row.detail}"
+        for name, row in zip(names, rows, strict=True)
     )

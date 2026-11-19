@@ -31,10 +31,7 @@ def test_a_valid_manifest_loads(release):
     assert manifest.channel == "stable"
     assert list(manifest.components) == list(mf.COMPONENT_NAMES)
     operator = manifest.components["operator"]
-    assert (
-        operator.services == ("ginnungagap",)
-        and operator.repo_name == "TopologyOperator"
-    )
+    assert operator.services == ("ginnungagap",) and operator.repo_name == "Igdrasyl"
     assert not manifest.data_migration
     assert manifest.to_dict()["schema"] == 1
 
@@ -97,6 +94,10 @@ def test_every_problem_is_reported_at_once(data):
         ),
         (
             lambda d: d["components"]["operator"].update(repo="HTL3R-Xeonis/Other"),
+            "components.operator.asset",  # the repository is only a label, but the asset has to be named after it
+        ),
+        (
+            lambda d: d["components"]["operator"].update(repo="Other"),
             "components.operator.repo",
         ),
         (
@@ -221,7 +222,7 @@ def test_diff_names_every_component_and_its_services(tmp_path, release):
     newer = fake_release.make_release(
         tmp_path / "n",
         appliance="1.4.0",
-        components={"docker-server-files": "1.0.1", "operator": "1.3.0"},
+        components={"template-services": "1.0.1", "operator": "1.3.0"},
     )
     changes = {
         c.component: c
@@ -233,8 +234,8 @@ def test_diff_names_every_component_and_its_services(tmp_path, release):
     )
     assert changes["operator"].kind == "minor"
     assert (
-        changes["docker-server-files"].kind == "patch"
-        and "template-esxi" in changes["docker-server-files"].services
+        changes["template-services"].kind == "patch"
+        and "template-esxi" in changes["template-services"].services
     )
     assert changes["builder"].kind == "same" and not changes["builder"].changed
 
@@ -306,3 +307,184 @@ def test_an_atomic_write_that_fails_leaves_the_old_file(tmp_path):
         mf.write_json_atomic(path, {"a": object()})
     assert json.loads(path.read_text()) == {"a": 1}
     assert [p.name for p in tmp_path.iterdir()] == ["x.json"]
+
+
+# ---- the names: roles as keys, old keys and names read, a name-independent check ----
+
+
+def test_a_manifest_of_a_release_built_with_the_old_keys_and_names_is_read_as_the_roles(
+    tmp_path,
+):
+    old = fake_release.make_release(tmp_path / "old", legacy=True)
+    raw = json.loads((old / "components.json").read_text())
+    assert {"docker-server-files", "topology-generator"} <= set(raw["components"])
+    manifest = mf.load(old / "components.json")
+    assert list(manifest.components) == list(mf.COMPONENT_NAMES)
+    generator = manifest.components["generator"]
+    assert generator.repo == "HTL3R-Xeonis/TopologyGenerator"
+    assert (
+        generator.repo_name == "TopologyGenerator"
+    )  # the tarball's top folder of that release
+    assert (
+        generator.checkout == "Mimyr"
+    )  # the folder on the appliance is this program's own name
+    assert (
+        manifest.components["template-services"].asset
+        == "Docker-Server-Files-1.0.0.tar.gz"
+    )
+    # what is recorded from it uses the roles
+    assert set(manifest.to_dict()["components"]) == set(mf.COMPONENT_NAMES)
+
+
+def test_an_old_key_and_its_role_together_are_refused(data):
+    data["components"]["docker-server-files"] = copy.deepcopy(
+        data["components"]["template-services"]
+    )
+    assert any("same component" in p for p in problems_of(data))
+
+
+def test_a_name_the_program_has_never_heard_of_is_fine_when_the_asset_is_named_after_it(
+    data,
+):
+    entry = data["components"]["builder"]
+    entry["repo"] = "SomeOwner/Brand-New-Name"
+    entry["asset"] = "Brand-New-Name-1.0.0.tar.gz"
+    manifest = mf.validate(data)
+    assert manifest.components["builder"].repo_name == "Brand-New-Name"
+
+
+@pytest.mark.parametrize(
+    "repo, asset",
+    [
+        (
+            "o/Brand-New-Name",
+            "Mjonyr-1.0.0.tar.gz",
+        ),  # the asset belongs to another repository
+        ("o/Brand-New-Name", "Brand-New-Name-9.9.9.tar.gz"),  # another version
+        ("o/Brand-New-Name", "Brand-New-Name-1.0.0.zip"),
+        ("Brand-New-Name", "Brand-New-Name-1.0.0.tar.gz"),  # no owner
+        ("o/../x", "..-1.0.0.tar.gz"),
+        ("o/a/b", "b-1.0.0.tar.gz"),
+    ],
+)
+def test_the_asset_has_to_be_named_after_the_repository_the_manifest_gives(
+    data, repo, asset
+):
+    data["components"]["builder"].update(repo=repo, asset=asset)
+    assert any(p.startswith("components.builder.") for p in problems_of(data))
+
+
+def test_an_installed_state_with_the_old_keys_and_names_reads_as_the_current_ones():
+    old = {
+        "schema": 1,
+        "appliance": {"version": "1.3.0"},
+        "components": {
+            "appliance": {"repo": "o/Ginnungagap-Appliance", "version": "1.3.0"},
+            "operator": {
+                "repo": "o/TopologyOperator",
+                "version": "1.2.1",
+                "asset": "TopologyOperator-1.2.1.tar.gz",
+            },
+            "docker-server-files": {
+                "repo": "o/Docker-Server-Files",
+                "version": "1.0.0",
+                "asset": "Docker-Server-Files-1.0.0.tar.gz",
+            },
+            "topology-generator": {"repo": "TopologyGenerator", "version": "unknown"},
+        },
+        "dirs": {
+            "docker-server-files": "1.0.0",
+            "topology-generator": "1.0.0",
+            "operator": "adopted-1",
+        },
+    }
+    assert mf.has_legacy_names(old)
+    state = mf.InstalledState.from_dict(old)
+    assert list(state.components) == [
+        "appliance",
+        "operator",
+        "template-services",
+        "generator",
+    ]
+    assert state.dirs == {
+        "template-services": "1.0.0",
+        "generator": "1.0.0",
+        "operator": "adopted-1",
+    }
+    assert state.components["operator"] == {
+        "repo": "o/Igdrasyl",
+        "version": "1.2.1",
+        "asset": "Igdrasyl-1.2.1.tar.gz",
+    }
+    assert (
+        state.components["generator"]["repo"] == "Mimyr"
+    )  # a bare name (adopted) stays bare
+    assert not mf.has_legacy_names(state.to_dict())
+    assert (
+        old["components"]["operator"]["repo"] == "o/TopologyOperator"
+    )  # the input is not changed
+
+
+def test_a_state_that_is_already_current_is_not_legacy(release, data):
+    state = mf.state_from_manifest(mf.validate(data), {}, "2026-12-01T10:00:00Z", None)
+    assert not mf.has_legacy_names(state.to_dict())
+
+
+def test_a_state_with_an_unknown_dirs_key_is_still_refused():
+    with pytest.raises(mf.ManifestError, match="dirs must map"):
+        mf.InstalledState.from_dict(
+            {"appliance": {"version": "1"}, "components": {}, "dirs": {"nope": "1"}}
+        )
+
+
+def test_resolve_component_knows_keys_old_keys_code_names_and_repositories():
+    for key in mf.COMPONENT_NAMES:
+        assert mf.resolve_component(key) == key
+        assert mf.resolve_component(mf.REPO_NAMES[key].upper()) == key
+    assert mf.resolve_component("  Docker-Server-Files ") == "template-services"
+    assert mf.resolve_component("TopologyGenerator") == "generator"
+    assert mf.resolve_component("hugyn-and-munyn") == "template-services"
+    assert (
+        mf.resolve_component("Hugyn and Munyn".replace(" ", "-")) == "template-services"
+    )
+    assert mf.resolve_component("nothing") is None and mf.resolve_component("") is None
+
+
+def test_the_display_names_put_the_code_name_next_to_the_role():
+    assert mf.display_name("operator") == "operator (Igdrasyl)"
+    assert mf.display_name("template-services") == "template-services (Hugyn and Munyn)"
+    assert mf.display_name("appliance") == "appliance"
+    assert mf.service_display_name("template-esxi") == "template-esxi (Hugyn)"
+    assert mf.service_display_name("collector-gns3") == "collector-gns3 (Munyn)"
+    assert mf.service_display_name("ova-store") == "ova-store"
+
+
+def test_the_release_version_is_the_installed_release_else_the_programs_own(
+    tmp_path, release
+):
+    from ginnungagap.version import __version__
+
+    folder = tmp_path / "update"
+    assert mf.release_version(folder) == __version__  # nothing recorded yet
+    state = installed_for(release)
+    state.appliance_version = "1.9.0"
+    mf.save_installed(folder / "installed.json", state)
+    assert mf.release_version(folder) == "1.9.0"
+    state.appliance_version = "adopted"
+    state.adopted = True
+    mf.save_installed(folder / "installed.json", state)
+    assert mf.release_version(folder) == __version__  # adopted checkouts are no release
+    (folder / "installed.json").write_text("{not json")
+    assert (
+        mf.release_version(folder) == __version__
+    )  # a damaged record never breaks the line
+
+
+def test_the_release_version_follows_the_update_folder_of_the_environment(
+    tmp_path, release, monkeypatch
+):
+    state = installed_for(release)
+    state.appliance_version = "2.0.0"
+    mf.save_installed(tmp_path / "installed.json", state)
+    monkeypatch.setenv("GINNUNGAGAP_UPDATE_DIR", str(tmp_path))
+    assert mf.release_version() == "2.0.0"

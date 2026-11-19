@@ -1,5 +1,5 @@
 """
-The text a person sees at the VM's console login: how to reach the machine over SSH (address and port, and the initial
+The text a person sees at the VM's console login (its first line names the appliance release): how to reach the machine over SSH (address and port, and the initial
 password while it has not been changed yet) and where its web interface is (or how to finish its setup).
 
 There is exactly one composer (`compose`) and exactly one writer (`write_issue`, used by `refresh`) of
@@ -20,6 +20,7 @@ from collections.abc import Callable
 from pathlib import Path
 
 from ginnungagap import config as config_module
+from ginnungagap import manifest as manifest_module
 from ginnungagap import render as render_module
 
 ISSUE_FILE = "/etc/issue.d/ginnungagap.issue"
@@ -227,12 +228,17 @@ def compose(
     return [*ssh, "", *web] if ssh else web
 
 
-def write_issue(issue_file: Path, lines: list[str]) -> None:
+def title(release: str | None) -> str:
+    """The first line of the console text: the product and, when it is known, the appliance release it runs."""
+    return f"Ginnungagap appliance v{release}" if release else "Ginnungagap appliance"
+
+
+def write_issue(issue_file: Path, lines: list[str], release: str | None = None) -> None:
     """The text shown at the console login (Debian reads /etc/issue.d/*.issue). A missing message must never stop a boot."""
     try:
         issue_file.parent.mkdir(parents=True, exist_ok=True)
         issue_file.write_text(
-            "\n".join(["", "Ginnungagap appliance", *lines, "", ""]), encoding="utf-8"
+            "\n".join(["", title(release), *lines, "", ""]), encoding="utf-8"
         )
     except OSError:
         pass
@@ -247,6 +253,7 @@ def refresh(
     local_address_fn: Callable[[], str | None] = local_address,
     login_user_fn: Callable[[], str | None] = login_user,
     password_changed: Callable[[str], bool] | None = None,
+    release_fn: Callable[[], str | None] = manifest_module.release_version,
 ) -> list[str]:
     """Rewrite the console text for the machine's current state. :return: the lines written (for tests and `issue`)."""
     config_dir, state_dir, ssh_dir = Path(config_dir), Path(state_dir), Path(ssh_dir)
@@ -258,7 +265,7 @@ def refresh(
         login_user_fn(),
         password_changed or shadow_password_changed,
     )
-    write_issue(Path(issue_file), lines)
+    write_issue(Path(issue_file), lines, release_fn())
     return lines
 
 

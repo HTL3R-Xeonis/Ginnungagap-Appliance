@@ -36,7 +36,7 @@ def installed(world):
 
 def b_release(world, **kwargs):
     kwargs.setdefault("appliance", "1.3.1")
-    kwargs.setdefault("components", {"docker-server-files": "1.0.1"})
+    kwargs.setdefault("components", {"template-services": "1.0.1"})
     return world.release("b", **kwargs)
 
 
@@ -99,7 +99,7 @@ def test_github_trouble_is_exit_1_and_plain(world, mode, words):
 
 def test_a_checksum_mismatch_is_exit_4_and_everything_staged_is_gone(world):
     a = world.release("a")
-    tarball = a / "TopologyBuilder-1.0.0.tar.gz"
+    tarball = a / "Mjonyr-1.0.0.tar.gz"
     data = bytearray(tarball.read_bytes())
     data[-1] ^= 0xFF  # same size, different content
     tarball.write_bytes(bytes(data))
@@ -116,16 +116,14 @@ def test_a_checksum_mismatch_is_exit_4_and_everything_staged_is_gone(world):
 
 def test_a_wrong_size_and_a_sha256sums_mismatch_are_refused(world):
     a = world.release("a")
-    (a / "TopologyBuilder-1.0.0.tar.gz").write_bytes(b"short")
+    (a / "Mjonyr-1.0.0.tar.gz").write_bytes(b"short")
     assert world.update("apply", offline=a) == up.EXIT_REFUSED
     assert "bytes" in world.text()
     b = world.release("b")
     sums = (b / "SHA256SUMS").read_text()
-    lines = [line for line in sums.splitlines() if "TopologyBuilder" not in line]
+    lines = [line for line in sums.splitlines() if "Mjonyr" not in line]
     lines = [
-        ("0" * 64 + "  TopologyOperator-1.2.1.tar.gz")
-        if "TopologyOperator" in line
-        else line
+        ("0" * 64 + "  Igdrasyl-1.2.1.tar.gz") if "Igdrasyl" in line else line
         for line in lines
     ]
     (b / "SHA256SUMS").write_text("\n".join(lines) + "\n")
@@ -222,16 +220,16 @@ def test_a_partial_update_touches_only_the_selected_component(world, installed):
     b = b_release(
         world,
         appliance="1.4.0",
-        components={"docker-server-files": "1.0.1", "topology-generator": "1.0.1"},
+        components={"template-services": "1.0.1", "generator": "1.0.1"},
     )
-    assert world.update("apply", offline=b, components=["topology-generator"]) == 0
+    assert world.update("apply", offline=b, components=["generator"]) == 0
     assert "not the combination that was tested together" in world.text()
     commands = world.docker.compose()
     assert next(c for c in commands if c.startswith("build")) == "build generator"
     state = world.installed()
     assert state["partial"] is True and state["appliance"]["version"] == "1.3.0"
-    assert state["components"]["topology-generator"]["version"] == "1.0.1"
-    assert state["components"]["docker-server-files"]["version"] == "1.0.0"
+    assert state["components"]["generator"]["version"] == "1.0.1"
+    assert state["components"]["template-services"]["version"] == "1.0.0"
     assert world.update("apply", offline=b, components=["nonsense"]) == up.EXIT_ERROR
 
 
@@ -261,7 +259,7 @@ def test_a_failing_build_flips_the_links_back_and_touches_no_running_service(
         in world.docker.commands()
     )
     nothing_changed(world, before)
-    assert not (world.layout.releases / "Docker-Server-Files" / "1.0.1").exists()
+    assert not (world.layout.releases / "Hugyn-and-Munyn" / "1.0.1").exists()
     audit = [(a["action"], a["result"]) for a in world.audit()]
     assert audit[-2:] == [("apply", "started"), ("apply", "rolled_back")]
 
@@ -353,15 +351,13 @@ def test_no_backup_flag_skips_the_backup_and_a_failing_backup_stops_before_any_c
     world.backups.clear()
     assert world.update("apply", offline=b, no_backup=True) == 0
     assert world.backups == [] and world.installed()["backup"] is None
-    c = world.release(
-        "c", appliance="1.3.2", components={"docker-server-files": "1.0.2"}
-    )
+    c = world.release("c", appliance="1.3.2", components={"template-services": "1.0.2"})
     world.backup_ok = False
     before = world.installed()
     assert world.update("apply", offline=c) == up.EXIT_ERROR
     assert "backup failed" in world.text()
     nothing_changed(world, before)
-    assert not (world.layout.releases / "Docker-Server-Files" / "1.0.2").exists()
+    assert not (world.layout.releases / "Hugyn-and-Munyn" / "1.0.2").exists()
 
 
 # ---- power loss in the middle: `update --resume` ----
@@ -371,8 +367,8 @@ def test_no_backup_flag_skips_the_backup_and_a_failing_backup_stops_before_any_c
     "crash_on, selected, phase, tooling",
     [
         ("backup", [], "downloaded", False),
-        ("docker tag", ["docker-server-files"], "unpacked", False),
-        (" build ", ["docker-server-files"], "switched", False),
+        ("docker tag", ["template-services"], "unpacked", False),
+        (" build ", ["template-services"], "switched", False),
         (f"{UP_FLAGS} ginnungagap", ["operator"], "restarting", False),
         ("bash ", [], "tooling", True),
         (" build ", [], "switched", True),
@@ -384,7 +380,7 @@ def test_resume_after_a_crash_in_every_phase(
     before = world.installed()
     link_before = links(world)
     release = b_release(
-        world, components={"docker-server-files": "1.0.1", "operator": "1.3.0"}
+        world, components={"template-services": "1.0.1", "operator": "1.3.0"}
     )
     if crash_on == "backup":
 
@@ -404,7 +400,7 @@ def test_resume_after_a_crash_in_every_phase(
     assert world.update("resume") == 0
     assert not world.layout.transaction.exists()
     assert links(world) == link_before and world.installed() == before
-    assert not (world.layout.releases / "Docker-Server-Files" / "1.0.1").exists()
+    assert not (world.layout.releases / "Hugyn-and-Munyn" / "1.0.1").exists()
     assert not list(world.layout.downloads.glob("*"))
     if phase in ("downloaded", "unpacked"):
         assert "discarding it" in world.text()
@@ -452,8 +448,8 @@ def test_rollback_goes_back_one_release_without_the_network(world, installed):
     state = world.installed()
     assert state["appliance"]["version"] == "1.3.0" and state["previous"] is None
     assert (
-        os.readlink(world.layout.components / "Docker-Server-Files")
-        == "../releases/Docker-Server-Files/1.0.0"
+        os.readlink(world.layout.components / "Hugyn-and-Munyn")
+        == "../releases/Hugyn-and-Munyn/1.0.0"
     )
     commands = world.docker.commands()
     assert (
@@ -531,12 +527,10 @@ def test_adopt_records_the_checkouts_and_is_idempotent(world):
     assert state["components"]["operator"]["version"] == "1.2.1"
     assert state["components"]["builder"]["version"] == "unknown"
     assert (
-        os.readlink(world.layout.components / "TopologyOperator")
-        == "../releases/TopologyOperator/adopted-1"
+        os.readlink(world.layout.components / "Igdrasyl")
+        == "../releases/Igdrasyl/adopted-1"
     )
-    assert (
-        world.layout.components / "TopologyOperator" / "app" / "version.py"
-    ).is_file()
+    assert (world.layout.components / "Igdrasyl" / "app" / "version.py").is_file()
     assert (
         "docker tag ginnungagap-ginnungagap:latest ginnungagap-ginnungagap:rollback-adopted"
         in world.docker.commands()
@@ -606,8 +600,8 @@ def test_a_fresh_machine_with_no_checkouts_installs_everything_with_no_start(wor
     state = world.installed()
     assert state["appliance"]["version"] == "1.3.0" and state["previous"] is None
     assert (
-        os.readlink(world.layout.components / "TopologyOperator")
-        == "../releases/TopologyOperator/1.2.1"
+        os.readlink(world.layout.components / "Igdrasyl")
+        == "../releases/Igdrasyl/1.2.1"
     )
     assert any("--profile * build" in c for c in world.docker.compose())
     assert any(c.startswith("bash ") for c in world.docker.commands())
@@ -767,20 +761,18 @@ def test_safe_extract_unpacks_a_good_archive_and_a_damaged_one_is_refused(tmp_pa
 
 def test_a_hostile_tarball_in_a_release_fails_the_update_cleanly(world):
     a = world.release("a")
-    fake_release.hostile_tarball(
-        a / "TopologyBuilder-1.0.0.tar.gz", "parent", "TopologyBuilder-1.0.0"
-    )
+    fake_release.hostile_tarball(a / "Mjonyr-1.0.0.tar.gz", "parent", "Mjonyr-1.0.0")
     fake_release.rewrite_manifest(
         a,
         lambda d: d["components"]["builder"].update(
-            sha256=fake_release.sha256_of(a / "TopologyBuilder-1.0.0.tar.gz"),
-            size=(a / "TopologyBuilder-1.0.0.tar.gz").stat().st_size,
+            sha256=fake_release.sha256_of(a / "Mjonyr-1.0.0.tar.gz"),
+            size=(a / "Mjonyr-1.0.0.tar.gz").stat().st_size,
         ),
     )
     sums = (a / "SHA256SUMS").read_text().splitlines()
     sums = [
-        f"{fake_release.sha256_of(a / 'TopologyBuilder-1.0.0.tar.gz')}  TopologyBuilder-1.0.0.tar.gz"
-        if "TopologyBuilder" in x
+        f"{fake_release.sha256_of(a / 'Mjonyr-1.0.0.tar.gz')}  Mjonyr-1.0.0.tar.gz"
+        if "Mjonyr" in x
         else x
         for x in sums
     ]
@@ -806,10 +798,7 @@ def test_rewrite_install_env_keeps_everything_else(tmp_path):
         and "B=2\n" in text
         and f"REPOS_DIR={tmp_path}/components\n" in text
     )
-    assert (
-        f"GINNUNGAGAP_GENERATOR_CONFIG={tmp_path}/components/topology-generator/config"
-        in text
-    )
+    assert f"GINNUNGAGAP_GENERATOR_CONFIG={tmp_path}/components/Mimyr/config" in text
     assert oct(path.stat().st_mode & 0o777) == "0o640"
     assert not up.rewrite_install_env(tmp_path / "missing", tmp_path)
 

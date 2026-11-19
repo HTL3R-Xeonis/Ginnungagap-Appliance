@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://github.com/HTL3R-Xeonis/Ginnungagap-Appliance/schema/components.schema.json",
   "title": "Ginnungagap appliance release manifest (components.json), schema 1",
-  "description": "Written by release/build_release.py. The authority is ginnungagap/manifest.py (it also checks that tags, asset names and the channel agree with the versions); this file is for tools and for the test that compares both.",
+  "description": "Written by release/build_release.py. The authority is ginnungagap/manifest.py (it also checks that tags, asset names and the channel agree with the versions); this file is for tools and for the test that compares both. The component keys are the roles appliance, operator (Igdrasyl), builder (Mjonyr), template-services (Hugyn and Munyn) and generator (Mimyr).",
   "type": "object",
   "required": [
     "schema",
@@ -63,315 +63,25 @@
         "appliance",
         "operator",
         "builder",
-        "docker-server-files",
-        "topology-generator"
+        "template-services",
+        "generator"
       ],
       "additionalProperties": false,
       "properties": {
         "appliance": {
-          "type": "object",
-          "required": [
-            "repo",
-            "version",
-            "tag",
-            "commit",
-            "asset",
-            "sha256",
-            "size",
-            "services"
-          ],
-          "properties": {
-            "repo": {
-              "type": "string",
-              "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]*/Ginnungagap-Appliance$"
-            },
-            "version": {
-              "$ref": "#/$defs/version"
-            },
-            "tag": {
-              "type": "string",
-              "pattern": "^v"
-            },
-            "commit": {
-              "type": "string",
-              "pattern": "^[0-9a-f]{40}$"
-            },
-            "asset": {
-              "type": "string",
-              "pattern": "^Ginnungagap-Appliance-.+\\.tar\\.gz$"
-            },
-            "sha256": {
-              "type": "string",
-              "pattern": "^[0-9a-f]{64}$"
-            },
-            "size": {
-              "type": "integer",
-              "minimum": 1
-            },
-            "services": {
-              "type": "array",
-              "minItems": 1,
-              "uniqueItems": true,
-              "items": {
-                "enum": [
-                  "setup",
-                  "ginnungagap",
-                  "template-esxi",
-                  "collector-esxi",
-                  "template-gns3",
-                  "collector-gns3",
-                  "generator"
-                ]
-              }
-            },
-            "data_migration": {
-              "type": "boolean"
-            }
-          }
+          "$ref": "#/$defs/component"
         },
         "operator": {
-          "type": "object",
-          "required": [
-            "repo",
-            "version",
-            "tag",
-            "commit",
-            "asset",
-            "sha256",
-            "size",
-            "services"
-          ],
-          "properties": {
-            "repo": {
-              "type": "string",
-              "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]*/TopologyOperator$"
-            },
-            "version": {
-              "$ref": "#/$defs/version"
-            },
-            "tag": {
-              "type": "string",
-              "pattern": "^v"
-            },
-            "commit": {
-              "type": "string",
-              "pattern": "^[0-9a-f]{40}$"
-            },
-            "asset": {
-              "type": "string",
-              "pattern": "^TopologyOperator-.+\\.tar\\.gz$"
-            },
-            "sha256": {
-              "type": "string",
-              "pattern": "^[0-9a-f]{64}$"
-            },
-            "size": {
-              "type": "integer",
-              "minimum": 1
-            },
-            "services": {
-              "type": "array",
-              "minItems": 1,
-              "uniqueItems": true,
-              "items": {
-                "enum": [
-                  "setup",
-                  "ginnungagap",
-                  "template-esxi",
-                  "collector-esxi",
-                  "template-gns3",
-                  "collector-gns3",
-                  "generator"
-                ]
-              }
-            },
-            "data_migration": {
-              "type": "boolean"
-            }
-          }
+          "$ref": "#/$defs/component"
         },
         "builder": {
-          "type": "object",
-          "required": [
-            "repo",
-            "version",
-            "tag",
-            "commit",
-            "asset",
-            "sha256",
-            "size",
-            "services"
-          ],
-          "properties": {
-            "repo": {
-              "type": "string",
-              "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]*/TopologyBuilder$"
-            },
-            "version": {
-              "$ref": "#/$defs/version"
-            },
-            "tag": {
-              "type": "string",
-              "pattern": "^v"
-            },
-            "commit": {
-              "type": "string",
-              "pattern": "^[0-9a-f]{40}$"
-            },
-            "asset": {
-              "type": "string",
-              "pattern": "^TopologyBuilder-.+\\.tar\\.gz$"
-            },
-            "sha256": {
-              "type": "string",
-              "pattern": "^[0-9a-f]{64}$"
-            },
-            "size": {
-              "type": "integer",
-              "minimum": 1
-            },
-            "services": {
-              "type": "array",
-              "minItems": 1,
-              "uniqueItems": true,
-              "items": {
-                "enum": [
-                  "setup",
-                  "ginnungagap",
-                  "template-esxi",
-                  "collector-esxi",
-                  "template-gns3",
-                  "collector-gns3",
-                  "generator"
-                ]
-              }
-            },
-            "data_migration": {
-              "type": "boolean"
-            }
-          }
+          "$ref": "#/$defs/component"
         },
-        "docker-server-files": {
-          "type": "object",
-          "required": [
-            "repo",
-            "version",
-            "tag",
-            "commit",
-            "asset",
-            "sha256",
-            "size",
-            "services"
-          ],
-          "properties": {
-            "repo": {
-              "type": "string",
-              "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]*/Docker-Server-Files$"
-            },
-            "version": {
-              "$ref": "#/$defs/version"
-            },
-            "tag": {
-              "type": "string",
-              "pattern": "^v"
-            },
-            "commit": {
-              "type": "string",
-              "pattern": "^[0-9a-f]{40}$"
-            },
-            "asset": {
-              "type": "string",
-              "pattern": "^Docker-Server-Files-.+\\.tar\\.gz$"
-            },
-            "sha256": {
-              "type": "string",
-              "pattern": "^[0-9a-f]{64}$"
-            },
-            "size": {
-              "type": "integer",
-              "minimum": 1
-            },
-            "services": {
-              "type": "array",
-              "minItems": 1,
-              "uniqueItems": true,
-              "items": {
-                "enum": [
-                  "setup",
-                  "ginnungagap",
-                  "template-esxi",
-                  "collector-esxi",
-                  "template-gns3",
-                  "collector-gns3",
-                  "generator"
-                ]
-              }
-            },
-            "data_migration": {
-              "type": "boolean"
-            }
-          }
+        "template-services": {
+          "$ref": "#/$defs/component"
         },
-        "topology-generator": {
-          "type": "object",
-          "required": [
-            "repo",
-            "version",
-            "tag",
-            "commit",
-            "asset",
-            "sha256",
-            "size",
-            "services"
-          ],
-          "properties": {
-            "repo": {
-              "type": "string",
-              "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]*/TopologyGenerator$"
-            },
-            "version": {
-              "$ref": "#/$defs/version"
-            },
-            "tag": {
-              "type": "string",
-              "pattern": "^v"
-            },
-            "commit": {
-              "type": "string",
-              "pattern": "^[0-9a-f]{40}$"
-            },
-            "asset": {
-              "type": "string",
-              "pattern": "^TopologyGenerator-.+\\.tar\\.gz$"
-            },
-            "sha256": {
-              "type": "string",
-              "pattern": "^[0-9a-f]{64}$"
-            },
-            "size": {
-              "type": "integer",
-              "minimum": 1
-            },
-            "services": {
-              "type": "array",
-              "minItems": 1,
-              "uniqueItems": true,
-              "items": {
-                "enum": [
-                  "setup",
-                  "ginnungagap",
-                  "template-esxi",
-                  "collector-esxi",
-                  "template-gns3",
-                  "collector-gns3",
-                  "generator"
-                ]
-              }
-            },
-            "data_migration": {
-              "type": "boolean"
-            }
-          }
+        "generator": {
+          "$ref": "#/$defs/component"
         }
       }
     },
@@ -384,6 +94,68 @@
     "version": {
       "type": "string",
       "pattern": "^(0|[1-9]\\d*)\\.(0|[1-9]\\d*)\\.(0|[1-9]\\d*)(-((0|[1-9]\\d*|\\d*[A-Za-z-][0-9A-Za-z-]*)(\\.(0|[1-9]\\d*|\\d*[A-Za-z-][0-9A-Za-z-]*))*))?$"
+    },
+    "component": {
+      "type": "object",
+      "required": [
+        "repo",
+        "version",
+        "tag",
+        "commit",
+        "asset",
+        "sha256",
+        "size",
+        "services"
+      ],
+      "properties": {
+        "repo": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]*/[A-Za-z0-9][A-Za-z0-9._-]*$"
+        },
+        "version": {
+          "$ref": "#/$defs/version"
+        },
+        "tag": {
+          "type": "string",
+          "pattern": "^v"
+        },
+        "commit": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{40}$"
+        },
+        "asset": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]*-.+\\.tar\\.gz$"
+        },
+        "sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "size": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "services": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {
+            "enum": [
+              "setup",
+              "ginnungagap",
+              "template-esxi",
+              "collector-esxi",
+              "template-gns3",
+              "collector-gns3",
+              "generator"
+            ]
+          }
+        },
+        "data_migration": {
+          "type": "boolean"
+        }
+      },
+      "description": "One component of the release. The keys of `components` are roles (never a repository or a code name); `repo` and `asset` carry the repository's name of the time of the release, and the asset has to be <repository name>-<version>.tar.gz (ginnungagap/manifest.py checks that; a schema cannot)."
     }
   }
 }

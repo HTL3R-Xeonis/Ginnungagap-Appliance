@@ -384,11 +384,9 @@ def test_a_folder_that_is_not_a_release(tmp_path):
 def test_a_missing_file_oversized_file_and_odd_names_in_a_folder(folders, tmp_path):
     src = rl.DirectorySource(folders[2])
     release = src.list_releases("stable")[0]
-    (folders[2] / "TopologyOperator-1.2.1.tar.gz").unlink()
-    with pytest.raises(
-        rl.SourceError, match="has no file TopologyOperator-1.2.1.tar.gz"
-    ):
-        src.fetch(release, "TopologyOperator-1.2.1.tar.gz", tmp_path / "dl")
+    (folders[2] / "Igdrasyl-1.2.1.tar.gz").unlink()
+    with pytest.raises(rl.SourceError, match="has no file Igdrasyl-1.2.1.tar.gz"):
+        src.fetch(release, "Igdrasyl-1.2.1.tar.gz", tmp_path / "dl")
     with pytest.raises(rl.SourceError, match="larger than the 5 bytes"):
         src.fetch(release, "components.json", tmp_path / "dl", max_bytes=5)
     with pytest.raises(rl.SourceError, match="not a plain file name"):

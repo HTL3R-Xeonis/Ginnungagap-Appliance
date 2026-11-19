@@ -93,16 +93,15 @@ def test_the_first_apply_adopts_the_old_checkouts_and_updates_everything(world):
     assert installed["components"]["operator"]["version"] == "1.2.1"
     # every component but the operator (1.2.1 = 1.2.1) was 'unknown' and is replaced
     link = world.layout.components
-    assert os.readlink(link / "TopologyBuilder") == "../releases/TopologyBuilder/1.0.0"
+    # (the old checkouts carry the names of before the code names: they are recorded under the current ones)
+    assert os.readlink(link / "Mjonyr") == "../releases/Mjonyr/1.0.0"
+    assert os.readlink(link / "Mimyr") == "../releases/Mimyr/1.0.0"
+    assert os.readlink(link / "Igdrasyl") == "../releases/Igdrasyl/adopted-1"
+    assert (link / "Mjonyr" / "pyproject.toml").is_file()
     assert (
-        os.readlink(link / "topology-generator")
-        == "../releases/topology-generator/1.0.0"
+        not (link / "TopologyBuilder").exists()
+        and not (link / "topology-generator").exists()
     )
-    assert (
-        os.readlink(link / "TopologyOperator")
-        == "../releases/TopologyOperator/adopted-1"
-    )
-    assert (link / "TopologyBuilder" / "pyproject.toml").is_file()
     # the old checkout was copied (without .git), never touched
     assert (
         world.layout.releases / "Ginnungagap-Appliance" / "adopted-1" / "install.sh"
@@ -115,7 +114,7 @@ def test_the_first_apply_adopts_the_old_checkouts_and_updates_everything(world):
     env = (world.config_dir / "install.env").read_text()
     assert (
         f"REPOS_DIR={link}" in env
-        and f"GINNUNGAGAP_GENERATOR_CONFIG={link}/topology-generator/config" in env
+        and f"GINNUNGAGAP_GENERATOR_CONFIG={link}/Mimyr/config" in env
     )
     assert os.environ["REPOS_DIR"] == str(link)
 
@@ -168,9 +167,7 @@ def test_only_what_changed_is_rebuilt_and_restarted(world):
     a = operators_only(world)
     assert world.update("apply", offline=a) == 0
     world.docker.calls.clear()
-    b = world.release(
-        "b", appliance="1.3.1", components={"docker-server-files": "1.0.1"}
-    )
+    b = world.release("b", appliance="1.3.1", components={"template-services": "1.0.1"})
     assert world.update("apply", offline=b) == 0
     commands = world.docker.compose()
     # appliance changed too (1.3.0 -> 1.3.1): setup and the four template/collector services, nothing else
@@ -186,14 +183,14 @@ def test_only_what_changed_is_rebuilt_and_restarted(world):
         installed["appliance"]["version"] == "1.3.1"
         and installed["previous"] == "1.3.0"
     )
-    assert installed["components"]["docker-server-files"]["version"] == "1.0.1"
+    assert installed["components"]["template-services"]["version"] == "1.0.1"
     assert (
-        os.readlink(world.layout.components / "Docker-Server-Files")
-        == "../releases/Docker-Server-Files/1.0.1"
+        os.readlink(world.layout.components / "Hugyn-and-Munyn")
+        == "../releases/Hugyn-and-Munyn/1.0.1"
     )
     # the previous version stays for the rollback, nothing older
-    assert (world.layout.releases / "Docker-Server-Files" / "1.0.0").is_dir()
-    assert not (world.layout.releases / "Docker-Server-Files" / "adopted-1").exists()
+    assert (world.layout.releases / "Hugyn-and-Munyn" / "1.0.0").is_dir()
+    assert not (world.layout.releases / "Hugyn-and-Munyn" / "adopted-1").exists()
     assert not world.layout.transaction.exists() and not list(
         world.layout.downloads.glob("*")
     )
