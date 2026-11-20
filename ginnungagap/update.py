@@ -161,6 +161,7 @@ class Settings:
     directory: str = ""
     channel: str = "stable"
     token_file: str = "/etc/ginnungagap/update-token"
+    api: str = "auto"  # auto | always | never: whether the GitHub REST API is used (see ginnungagap.releases)
     require_signature: str | bool = "auto"
     keep_releases: int = 2
     step_timeout_seconds: int = 90
@@ -304,6 +305,9 @@ class Env:
     read_secret: Callable[[], str] | None = None
     opener: Any = None  # for the GitHub source; None = the real network
     api_base: str = rl.API_BASE
+    web_base: str = (
+        rl.WEB_BASE
+    )  # github.com: the latest release and the downloads that need no API call
     requester: str | None = None
 
 
@@ -780,6 +784,8 @@ class Updater:
             opener=self.env.opener,
             api_base=self.env.api_base,
             cache_path=self.layout.etag_cache,
+            web_base=self.env.web_base,
+            api=rl.api_mode(self.settings.api),
         )
 
     def token_state(self) -> str:
@@ -794,8 +800,15 @@ class Updater:
     # -- the release to look at --
     def pick(self, source: rl.ReleaseSource) -> rl.ReleaseInfo:
         """The release asked for with --version, else the newest of the channel."""
-        releases = source.list_releases(self.channel)
         wanted = self.opts.version
+        candidates = getattr(
+            source, "candidates", None
+        )  # GitHub: the latest stable release without the API when it can
+        releases = (
+            candidates(self.channel, wanted)
+            if candidates
+            else source.list_releases(self.channel)
+        )
         if wanted:
             for release in releases:
                 if release.version == wanted:

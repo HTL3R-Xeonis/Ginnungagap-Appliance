@@ -56,6 +56,7 @@ update:                                 # `ginnungagap update`: new versions of 
   # directory: /srv/templates/ginnungagap-releases/v1.3.0   # only for source: directory (also the default of --offline-dir); needs an absolute path
   channel: stable                       # stable | prerelease (release candidates, vX.Y.Z-rc.N)
   # token_file: /etc/ginnungagap/update-token   # OPTIONAL access token (only for a private repo or the rate limit); the file is written by `ginnungagap update --set-token`, never put a token in this file
+  api: auto                             # auto: the latest stable release without GitHub's rate-limited API (the API for a token, pre-releases, listings) | always: API only | never: no API call at all
   check: off                            # off | daily (a timer that only LOOKS for a new version and never installs one)
   require_signature: auto               # auto: enforced as soon as /etc/ginnungagap/update-trust/allowed_signers exists | true | false
   keep_releases: 2                      # unpacked versions kept per component (2 = current + previous, what a rollback needs)

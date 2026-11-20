@@ -318,6 +318,7 @@ update:
   directory: ""                  # for source: directory: the absolute path of a folder with the files of ONE release
   channel: stable                # stable | prerelease (release candidates)
   token_file: /etc/ginnungagap/update-token   # OPTIONAL, see below; the file does not have to exist
+  api: auto                      # auto | always | never: whether GitHub's rate-limited REST API is used, see "Updating components"
   check: off                     # off | daily  (the timer only looks for a new version, it never installs one)
   require_signature: auto        # auto | true | false
   keep_releases: 2               # unpacked versions kept per component; 2 = the current and the previous one (what a rollback needs)
@@ -327,9 +328,9 @@ update:
 Every key is optional; the block can be left out. `ginnungagap validate` checks it like the rest of the file. The setup wizard has no
 fields for it and keeps a changed `update:` block when the form is submitted again.
 
-* **Access token (optional).** Anonymous access is the default and enough for public repositories (GitHub allows 60 anonymous
-  requests per hour per address, plenty for a check now and then). A token is only for a private repository or a shared address
-  that runs into that limit. It **never goes into `ginnungagap.yml`** (a `token:` key there is refused and the message says where
+* **Access token (optional).** Anonymous access is the default and enough for public repositories (the latest stable release is found
+  without GitHub's API, whose limit is 60 anonymous requests per hour and address, see `update.api` below). A token is only for a
+  private repository or for pre-release listings on a shared address that runs into that limit. It **never goes into `ginnungagap.yml`** (a `token:` key there is refused and the message says where
   it belongs): it lives in the file `update.token_file` names, readable by root only (mode 0600), and is handed over without
   showing it or putting it on a command line:
 
@@ -380,12 +381,12 @@ ginnungagap versions                      # the same as update --versions
 
 | action | what it does |
 |---|---|
-| `--check` (default) | asks the source (GitHub Releases, no login needed; or `--offline-dir`), compares with what is installed, prints the table and writes `update/available.json`. Exit `10` = an update is available |
+| `--check` (default) | asks the source (GitHub Releases, no login needed, normally without the API; or `--offline-dir`), compares with what is installed, prints the table and writes `update/available.json`. Exit `10` = an update is available |
 | `--apply` | downloads only the components whose version changed, verifies checksums (and the signature when a key is trusted), backs up the configuration and the app's data, unpacks, rebuilds only the services that use the changed components, restarts them one after the other (generator, collectors, template services, setup wizard, the app last) and waits for each to be healthy. Any failure rolls everything back by itself |
 | `--rollback` | back to the previous release: links, the kept images (`rollback-<version>`), tooling, restarts; needs no internet. The data is restored from the pre-update backup only when that update was marked as migrating data (or with `--restore-data`) |
 | `--list`, `--versions`, `--history` | the releases the source offers, the installed release with each component's version, every release installed so far |
 | `--adopt` | records the components installed by hand (`install.sh --repos-dir /srv/repos`) as release `adopted` (copies, links, `install.env`); the first `--apply` does it itself. Nothing in the old folder is changed |
-| `--set-token` | optional GitHub token from stdin into the token file (see the `update:` block); only needed for private repositories or the anonymous rate limit |
+| `--set-token` | optional GitHub token from stdin into the token file (see the `update:` block); only needed for private repositories (the latest stable release is also found without the API, see `update.api`) |
 | `--resume` | finishes or rolls back an update that was interrupted (the boot unit runs it): before anything that runs was touched it is discarded, afterwards it is rolled back. It first stops a `docker compose build` that the killed update left running (it would move the `latest` image tag again), and puts the old images back **by image id**. Also what to run after exit 3: it repeats the rollback until it works |
 
 Exit codes: `0` ok / up to date, `10` update available (`--check`), `1` error before any change (no network, GitHub error or rate
@@ -403,8 +404,26 @@ Good to know:
   updater): that script is not run (it does not know `--state-dir` and expects the old folder names); the previous program files are
   copied back. That program has no `update` command, so run the new release's `install.sh` again to get it back.
 * **Anonymous by default.** No `Authorization` header is sent unless the token file exists; a token is only ever sent to the API host, never to the
-  download address GitHub redirects to. When GitHub's rate limit (60 requests per hour and address without a token) is hit, the
-  message names the time to try again and how to store a token.
+  download address GitHub redirects to.
+* **Without GitHub's API (`update.api`).** GitHub's REST API allows only 60 requests per hour and address without a token, and
+  every appliance behind one NAT (and every GitHub runner) shares that. The latest **stable** release is therefore found without
+  it: `https://github.com/<repo>/releases/latest` answers with a redirect to `.../releases/tag/<tag>`, which is read and **not
+  followed**, and the files (`components.json`, `components.json.sig`, `SHA256SUMS`, the tarballs) are the plain download
+  addresses `https://github.com/<repo>/releases/download/<tag>/<file>`; neither is an API call, so neither has that limit. The
+  redirect is only accepted when it points at `https://github.com/<same owner>/<same repo>/releases/tag/<vX.Y.Z>` (a plain SemVer
+  tag), so a hostile answer can not name other files; the downloads follow GitHub's redirect to the signed objects host without any
+  credentials, and everything that was checked before is checked the same (size limits, `SHA256SUMS`, the signature, the
+  checksums in `components.json`). `update.api` (or the environment variable `GINNUNGAGAP_UPDATE_API`, which wins) says who is asked:
+  * `auto` (default): the web for the latest stable release when no token is stored; the **API** for a stored token (it is the only
+    way into a private repository), for `--channel prerelease` and `--version` of a pre-release, for `--list` (which lists releases)
+    and for a `--version` that is not the latest. It also works the other way round as a fallback: when the web side fails with
+    anything but a clean 404 (a 404 means there is no stable release: "offers no release") the API is asked, and when the API
+    answers with its rate limit while the latest stable release is wanted, the web is used instead. Only where nothing else can
+    help (a listing, a pre-release) the message "GitHub's API rate limit is used up" names the time to try again and how to store a
+    token.
+  * `always`: the API only, as before (no fallback to the web).
+  * `never`: no API call at all, a stored token is not used either: only the latest stable release can be checked and installed;
+    a listing, a pre-release or an older `--version` is an error that says so.
 * **Only what changed** is rebuilt and restarted; `--component NAME` (repeatable; the key such as `operator`, a code name such as `igdrasyl` or `hugyn-and-munyn`, or a key of before the code names) limits an update further and warns that this is not the combination that
   was tested together. `--no-start` unpacks, verifies and builds without restarting anything (for an appliance image). `--dry-run`
   shows the plan after checking the manifest and the signature and changes nothing.
@@ -428,7 +447,7 @@ Good to know:
   removes the need for GitHub. A rollback needs no build while the rollback images are there.
 * **Files**: `/var/lib/ginnungagap/update/{installed.json,history/,available.json,transaction.json,web-status.json,audit.log,lock}`; every apply, rollback,
   resume and token change is one JSON line in `audit.log` (who, from, to, result) and in the journal (`journalctl -t ginnungagap-update`).
-* Tests: `tests/test_manifest.py`, `test_releases.py`, `test_update.py`, `test_update_failures.py` (the failure matrix) run against a
+* Tests: `tests/test_manifest.py`, `test_releases.py`, `test_release_web.py` (the web side: no API call, hostile redirects, the fallbacks), `test_update.py`, `test_update_failures.py` (the failure matrix) run against a
   fake appliance and a fake GitHub on localhost; `smoke/update-smoke.sh` does the real Docker part (build, recreate only what changed,
   automatic rollback, `--rollback`).
 ### Updating from the web
@@ -487,7 +506,10 @@ publishes or pushes on its own**.
 5. **Signing (once).** `ssh-keygen -t ed25519 -N '' -C ginnungagap-release -f release_key`, put the line described in
    `release/allowed_signers` into that file and commit it, and store the private key as the repository secret
    `RELEASE_SIGNING_KEY` (the workflow signs with it; without the secret the release is unsigned). `COMPONENTS_READ_TOKEN`
-   is an optional read-only token for fetching the other repositories' releases (anonymous access works while they are public).
+   is an optional read-only token for fetching the other repositories' releases (anonymous access works while they are public: without
+   the token `build_release.py --fetch` takes the tarballs and their `.sha256` from the plain download addresses
+   `https://github.com/<repo>/releases/download/<tag>/<file>`, which are no API calls, so the workflow does not use up the API quota;
+   with it the API is used, which also reads private repositories; `--api-mode always|never` or `GINNUNGAGAP_RELEASE_API` overrides).
    Locally: `--sign release_key`, and `--verify DIR --allowed-signers release/allowed_signers` to check.
 
 The appliance image is built either from checkouts, as before (`image/README.md`), or from a release with `ginnungagap update --apply

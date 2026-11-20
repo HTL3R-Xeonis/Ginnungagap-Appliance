@@ -6,6 +6,13 @@ path (redirects, ETag, status codes, headers) is what gets tested. It is written
 A download is a redirect to a second path (`/__download/...`) that answers 400 when it gets an `Authorization` header, the way
 the signed storage address GitHub redirects to does: a client that forwards its token there is caught.
 
+The WEB side of github.com is served too, on the same address (no `/repos/` in front, so nothing collides with the API):
+`/<owner>/<repo>/releases/latest` answers 302 to `.../releases/tag/<tag>` of the newest stable release (404 when there is none),
+`/<owner>/<repo>/releases/tag/<tag>` is a page, and `/<owner>/<repo>/releases/download/<tag>/<file>` redirects to the signed
+`/__download/...` address like the real one. None of it counts as an API call (`api_requests()`); it never looks at a token,
+and a private repository (`token` set) answers 404 there. `web_mode` simulates trouble on that side (`not_found`, `server_error`,
+`too_many`, `download_error` = only the downloads fail, `latest_ok` = `latest` answers 200 without a redirect), `latest_location` makes `releases/latest` redirect to that address instead (a hostile answer).
+
 `mode` simulates trouble: `rate_limit` (403 with X-RateLimit headers), `secondary_limit` (403 with Retry-After), `too_many`
 (429), `unauthorized` (401), `server_error` (503), `not_found` (404 for everything). `token` makes the repository private:
 a request without the right `Authorization: Bearer <token>` is a 404, a wrong token a 401 (like the real thing).
@@ -47,6 +54,8 @@ class FakeGitHub:
         self.repo = repo
         self.token = token
         self.mode: str | None = None
+        self.web_mode: str | None = None
+        self.latest_location: str | None = None
         self.requests: list[Seen] = []
         self.releases: list[Path] = list(releases or [])
         self.drafts: list[Path] = []
@@ -96,6 +105,17 @@ class FakeGitHub:
 
     def count(self, part: str) -> int:
         return sum(1 for seen in self.requests if part in seen.path)
+
+    def api_requests(self) -> list[Seen]:
+        """The requests that count against the rate limit: everything under /repos/ (the web side and the downloads do not)."""
+        return [seen for seen in self.requests if seen.path.startswith("/repos/")]
+
+    def web_requests(self) -> list[Seen]:
+        return [
+            seen
+            for seen in self.requests
+            if not seen.path.startswith(("/repos/", "/__download/"))
+        ]
 
     # -- what it serves --
     def _asset_id(self, path: Path) -> int:
@@ -163,6 +183,53 @@ class FakeGitHub:
             return send(
                 200, file.read_bytes(), {"Content-Type": "application/octet-stream"}
             )
+
+        web = f"/{self.repo}/releases/"
+        if path.startswith(web):
+            if self.web_mode == "not_found" or self.token is not None:
+                return send(404, b"Not Found")
+            if self.web_mode == "server_error":
+                return send(503, b"")
+            if self.web_mode == "too_many":
+                return send(429, b"", {"Retry-After": "60"})
+            visible = [r for r in self.releases if r not in self.drafts]
+            rest = path[len(web) :]
+            if rest == "latest" and self.web_mode == "latest_ok":
+                return send(200, b"<html>no redirect</html>")
+            if rest == "latest":
+                stable = [
+                    r for r in visible if "-" not in self._release_json(r)["tag_name"]
+                ]
+                if not stable:
+                    return send(404, b"Not Found")
+                tag = self._release_json(stable[-1])["tag_name"]
+                where = (
+                    self.latest_location
+                    if self.latest_location is not None
+                    else f"{self.url}/{self.repo}/releases/tag/{tag}"
+                )
+                return send(302, b"", {"Location": where})
+            if rest.startswith("tag/"):
+                return send(
+                    200, b"<html>a release page</html>", {"Content-Type": "text/html"}
+                )
+            if rest.startswith("download/"):
+                if self.web_mode == "download_error":
+                    return send(503, b"")
+                tag, _, name = rest[len("download/") :].partition("/")
+                for release in visible:
+                    if self._release_json(release)["tag_name"] == tag:
+                        file = release / name
+                        if file.is_file():
+                            identifier = self._asset_id(file)
+                            return send(
+                                302,
+                                b"",
+                                {
+                                    "Location": f"{self.url}/__download/{identifier}/{name}"
+                                },
+                            )
+            return send(404, b"Not Found")
 
         if self.mode == "not_found":
             return send_json(404, {"message": "Not Found"})

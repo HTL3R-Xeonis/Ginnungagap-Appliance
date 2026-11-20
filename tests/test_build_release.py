@@ -699,9 +699,23 @@ class FakeGitHub:
                             + b"\n",
                         )
                     return self._send(200, data)
+                parts = self.path.split("/")
+                if (
+                    len(parts) == 7
+                    and parts[3] == "releases"
+                    and parts[4] == "download"
+                ):
+                    # github.com/<owner>/<repo>/releases/download/<tag>/<file>: no API, no token, a private repository says 404
+                    name = parts[6]
+                    if (
+                        token is not None
+                        or not (sources / name.removesuffix(".sha256")).is_file()
+                        or (drop_sums and name.endswith(".sha256"))
+                    ):
+                        return self._send(404, b"not found")
+                    return self._send(302, headers={"Location": f"/signed/{name}"})
                 if token is not None and auth != f"Bearer {token}":
                     return self._send(401, b"bad credentials")
-                parts = self.path.split("/")
                 if (
                     len(parts) == 7
                     and parts[1] == "repos"
@@ -767,6 +781,7 @@ def _fetch(work, server, token=None, **kwargs):
         fetch=True,
         api=server.url,
         token=token,
+        api_mode="always",
         **kwargs,
     )
 
@@ -850,3 +865,99 @@ def test_a_release_for_another_tag_than_the_pinned_one_is_refused(work, capsys):
         build_release.main([*argv, "--tag", "v9.9.9"]) == 1
         and "v9.9.9" in capsys.readouterr().err
     )
+
+
+# ---- --fetch without the API: the predictable download addresses (no rate limit) ----------------------------------------
+
+
+def _fetch_web(work, server, token=None, **kwargs):
+    return build_release.build(
+        work["pins"],
+        work["out"],
+        sources=_fetch_work(work),
+        fetch=True,
+        api=server.url,
+        web=server.url,
+        token=token,
+        **kwargs,
+    )
+
+
+def test_fetch_without_a_token_uses_the_download_addresses_and_not_one_api_call(
+    work, fake_github
+):
+    server = fake_github(token=None)
+    document = _fetch_web(work, server)
+    assert document["components"]["operator"]["commit"] == COMMIT
+    paths = [path for path, _ in server.seen]
+    assert not [
+        p for p in paths if p.startswith("/repos/")
+    ]  # the API was not asked at all
+    assert any(
+        p == "/HTL3R-Xeonis/Igdrasyl/releases/download/v1.3.0/Igdrasyl-1.3.0.tar.gz"
+        for p in paths
+    )
+    assert any(p.endswith("Igdrasyl-1.3.0.tar.gz.sha256") for p in paths)
+    assert any(
+        p.startswith("/signed/") for p in paths
+    )  # followed to the signed address
+    assert all(auth is None for _, auth in server.seen)
+    assert build_release.verify(work["out"]).version == "1.3.0"
+
+
+def test_fetch_with_a_token_keeps_the_api_path(work, fake_github):
+    server = fake_github(token="secret-token")
+    _fetch_web(work, server, "secret-token")
+    paths = [path for path, _ in server.seen]
+    assert any(p.startswith("/repos/") for p in paths)
+    assert not any("/releases/download/" in p for p in paths)
+
+
+def test_fetch_api_mode_never_and_always(work, fake_github):
+    server = fake_github(token=None)
+    _fetch_web(work, server, api_mode="always")
+    assert any(p.startswith("/repos/") for p, _ in server.seen)
+    server = fake_github(token=None)
+    shutil.rmtree(work["out"], ignore_errors=True)
+    _fetch_web(work, server, api_mode="never")
+    assert not any(p.startswith("/repos/") for p, _ in server.seen)
+    shutil.rmtree(work["out"], ignore_errors=True)
+    with pytest.raises(build_release.ReleaseError, match="--api-mode"):
+        _fetch_web(work, server, api_mode="sometimes")
+
+
+def test_fetch_falls_back_to_the_api_when_the_download_address_fails_but_not_on_404(
+    work, fake_github
+):
+    server = fake_github(token=None)
+    # nothing listens on the web address: not a 404, so the API is asked
+    document = build_release.build(
+        work["pins"],
+        work["out"],
+        sources=_fetch_work(work),
+        fetch=True,
+        api=server.url,
+        web="http://127.0.0.1:9",
+        token=None,
+    )
+    assert document["appliance"]["version"] == "1.3.0"
+    assert any(p.startswith("/repos/") for p, _ in server.seen)
+    # a private repository answers 404 on the web side: said so, not retried through the API
+    shutil.rmtree(work["out"], ignore_errors=True)
+    private = fake_github(token="right")
+    with pytest.raises(build_release.ReleaseError, match="HTTP 404.*token"):
+        _fetch_web(work, private)
+    assert not any(p.startswith("/repos/") for p, _ in private.seen)
+
+
+def test_fetch_by_download_address_still_refuses_a_wrong_checksum_and_a_missing_one(
+    work, fake_github
+):
+    with pytest.raises(
+        build_release.ReleaseError, match=r"does not match the release's own"
+    ):
+        _fetch_web(work, fake_github(bad_sum=True))
+    assert not work["out"].exists()
+    with pytest.raises(build_release.ReleaseError, match=r"no usable .*sha256"):
+        _fetch_web(work, fake_github(drop_sums=True))
+    assert not work["out"].exists()

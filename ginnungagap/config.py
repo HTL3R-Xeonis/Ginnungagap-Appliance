@@ -81,6 +81,7 @@ DEFAULTS: dict[str, Any] = {
         "directory": "",
         "channel": "stable",
         "token_file": "/etc/ginnungagap/update-token",
+        "api": "auto",
         "check": "off",
         "require_signature": "auto",
         "keep_releases": 2,
@@ -112,6 +113,7 @@ _REPO = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*/[A-Za-z0-9._-]+$")
 UPDATE_SOURCES = ("github", "directory")
 UPDATE_CHANNELS = ("stable", "prerelease")
 UPDATE_CHECKS = ("off", "daily")
+UPDATE_API = ("auto", "always", "never")
 
 
 class ConfigError(ValueError):
@@ -287,6 +289,10 @@ def _check_update(update: dict[str, Any]) -> list[str]:
     ):
         problems.append(
             "update.token_file: must be an absolute path (or empty for no token file); it is only read when it exists"
+        )
+    if update["api"] not in UPDATE_API:
+        problems.append(
+            "update.api: must be auto, always or never (whether the GitHub API is used; auto also works without it)"
         )
     if update["check"] not in UPDATE_CHECKS:
         problems.append("update.check: must be off or daily")

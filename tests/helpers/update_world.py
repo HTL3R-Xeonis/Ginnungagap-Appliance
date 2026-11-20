@@ -185,7 +185,12 @@ class World:
             **example["templates"],
             "store": {"type": "local", "local": {"path": str(tmp_path / "store")}},
         }
-        example["update"] = {"token_file": str(self.config_dir / "update-token")}
+        # the REST API unless a test says otherwise (GINNUNGAGAP_UPDATE_API=auto): most tests are about the API's release list
+        example["update"] = {
+            "token_file": str(self.config_dir / "update-token"),
+            "api": "always",
+        }
+        monkeypatch.delenv("GINNUNGAGAP_UPDATE_API", raising=False)
         self.config_file.write_text(yaml.safe_dump(example))
         self.token_file = self.config_dir / "update-token"
         (self.config_dir / "install.env").write_text(
@@ -219,6 +224,7 @@ class World:
             journal=self.journal.append,
             docker_root=None,
             stop_builds=self.stop_builds,
+            web_base="http://127.0.0.1:9",  # nothing listens there: a test that wants github.com's web side points it at the fake
         )
         self._ticks = 0.0
 

@@ -15,7 +15,9 @@ the version file inside it, and writes into DIR
 
 Where a tarball comes from, in this order: --sources DIR (a folder that already has it), for the appliance itself `git archive`
 of --appliance-dir at --ref, --checkouts DIR (a folder with a checkout per repository: `git archive` at the tag), --fetch (the
-GitHub release of that repository, with the token in the environment variable COMPONENTS_READ_TOKEN when it is set).
+GitHub release of that repository: without a token through the predictable download addresses
+github.com/<repo>/releases/download/<tag>/<file>, which are no API calls and so have no rate limit; with the token in the
+environment variable COMPONENTS_READ_TOKEN through the REST API, which also reads private repositories).
 Nothing is published and nothing is pushed: the script only writes files into DIR. Standard library plus PyYAML (the pin file).
 
     python3 release/build_release.py --verify DIR [--allowed-signers FILE]     checks an existing asset folder
@@ -50,6 +52,8 @@ from ginnungagap import manifest as manifest_module
 SIGNATURE_NAMESPACE = "ginnungagap-release"
 SIGNER_IDENTITY = "ginnungagap-release"
 DEFAULT_API = "https://api.github.com"
+DEFAULT_WEB = "https://github.com"
+API_MODES = ("auto", "always", "never")
 TOKEN_VARIABLE = "COMPONENTS_READ_TOKEN"
 MAX_TARBALL_BYTES = (
     500 * 1024 * 1024
@@ -69,6 +73,10 @@ _COMMIT = re.compile(r"^[0-9a-f]{40}$")
 
 class ReleaseError(Exception):
     """The release can't be built; the message says what to fix. Nothing half-built is left in the output folder."""
+
+    def __init__(self, message: str, status: int | None = None) -> None:
+        super().__init__(message)
+        self.status = status  # the HTTP status of a failed download, else None
 
 
 # ---- reading a tarball ----------------------------------------------------------------------------------------------
@@ -194,7 +202,7 @@ def _http(url: str, token: str | None, accept: str) -> bytes:
             if exc.code in (401, 403, 404)
             else ""
         )
-        raise ReleaseError(f"{url}: HTTP {exc.code}{hint}") from None
+        raise ReleaseError(f"{url}: HTTP {exc.code}{hint}", exc.code) from None
     except (urllib.error.URLError, OSError) as exc:
         raise ReleaseError(f"{url}: {exc}") from None
     if len(data) > MAX_TARBALL_BYTES:
@@ -205,9 +213,38 @@ def _http(url: str, token: str | None, accept: str) -> bytes:
 
 
 def fetch_release_asset(
+    repo: str,
+    tag: str,
+    name: str,
+    api: str,
+    token: str | None,
+    web: str = DEFAULT_WEB,
+    api_mode: str = "auto",
+) -> bytes:
+    """
+    One asset of the GitHub release `tag` of `owner/repo`. `auto`: with a token through the API (a private repository needs
+    it), without one through the download address (no API call, no rate limit), and through the API when that fails with
+    anything but a 404; `always`: the API; `never`: the download address.
+    """
+    if api_mode not in API_MODES:
+        raise ReleaseError(f"--api-mode: must be one of {', '.join(API_MODES)}")
+    use_web = api_mode == "never" or (api_mode == "auto" and not token)
+    if use_web:
+        try:
+            return _http(
+                f"{web}/{repo}/releases/download/{tag}/{name}",
+                None,
+                "application/octet-stream",
+            )
+        except ReleaseError as exc:
+            if api_mode == "never" or exc.status == 404:
+                raise
+    return _fetch_via_api(repo, tag, name, api, token)
+
+
+def _fetch_via_api(
     repo: str, tag: str, name: str, api: str, token: str | None
 ) -> bytes:
-    """One asset of the GitHub release `tag` of `owner/repo`."""
     release = json.loads(
         _http(
             f"{api}/repos/{repo}/releases/tags/{tag}",
@@ -292,6 +329,8 @@ def _obtain(
     fetch: bool,
     api: str,
     token: str | None,
+    web: str = DEFAULT_WEB,
+    api_mode: str = "auto",
 ) -> str | None:
     """Puts the component's tarball at `dest`; returns the commit when git told it. :raises ReleaseError:"""
     repo_name = manifest_module.REPO_NAMES[name]
@@ -306,11 +345,19 @@ def _obtain(
     if checkouts is not None and (checkouts / repo_name).is_dir():
         return git_archive(checkouts / repo_name, entry["tag"], prefix, dest)
     if fetch:
-        data = fetch_release_asset(entry["repo"], entry["tag"], asset, api, token)
+        data = fetch_release_asset(
+            entry["repo"], entry["tag"], asset, api, token, web, api_mode
+        )
         try:
             checksum = (
                 fetch_release_asset(
-                    entry["repo"], entry["tag"], asset + ".sha256", api, token
+                    entry["repo"],
+                    entry["tag"],
+                    asset + ".sha256",
+                    api,
+                    token,
+                    web,
+                    api_mode,
                 )
                 .decode()
                 .split()[0]
@@ -341,6 +388,8 @@ def build(
     fetch: bool = False,
     api: str = DEFAULT_API,
     token: str | None = None,
+    web: str = DEFAULT_WEB,
+    api_mode: str = "auto",
     sign_key: Path | None = None,
     expect_tag: str | None = None,
     released: str | None = None,
@@ -372,7 +421,7 @@ def build(
             dest = work / f"{repo_name}-{version}.tar.gz"
             commit = _obtain(
                 name, entry, dest, sources=sources, checkouts=checkouts, appliance_dir=appliance_dir, ref=ref,
-                fetch=fetch, api=api, token=token,
+                fetch=fetch, api=api, token=token, web=web, api_mode=api_mode,
             )  # fmt: skip
             declared, recorded = inspect_tarball(dest, name, repo_name, version)
             if declared != version:
@@ -603,7 +652,14 @@ def _parser() -> argparse.ArgumentParser:
         action="store_true",
         help=f"download missing tarballs from the GitHub releases ({TOKEN_VARIABLE} may hold a token)",
     )
+    parser.add_argument(
+        "--api-mode",
+        choices=API_MODES,
+        default=os.environ.get("GINNUNGAGAP_RELEASE_API", "auto"),
+        help="with --fetch: auto = download addresses without a token (no API quota), the API with one; always = API; never = download addresses",
+    )
     parser.add_argument("--api-url", default=DEFAULT_API, help=argparse.SUPPRESS)
+    parser.add_argument("--web-url", default=DEFAULT_WEB, help=argparse.SUPPRESS)
     parser.add_argument(
         "--appliance-dir",
         type=Path,
@@ -665,7 +721,7 @@ def main(argv: list[str] | None = None) -> int:
             raise ReleaseError(f"--sign: {args.sign} is not a file")
         document = build(
             args.pins, args.out, sources=args.sources, checkouts=args.checkouts, appliance_dir=args.appliance_dir,
-            ref=args.ref, fetch=args.fetch, api=args.api_url.rstrip("/"), token=os.environ.get(TOKEN_VARIABLE) or None,
+            ref=args.ref, fetch=args.fetch, api=args.api_url.rstrip("/"), token=os.environ.get(TOKEN_VARIABLE) or None, web=args.web_url.rstrip("/"), api_mode=args.api_mode,
             sign_key=args.sign, expect_tag=args.tag, released=args.released, previous=args.previous, notes_file=args.notes_file, force=args.force,
         )  # fmt: skip
     except ReleaseError as exc:

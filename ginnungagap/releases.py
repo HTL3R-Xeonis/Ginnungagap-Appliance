@@ -6,6 +6,12 @@ elsewhere (`ginnungagap.update`). Standard library only (`urllib`). The GitHub s
 the repositories are public. A token is only sent when the token file exists (private repositories, or the 60 requests per
 hour that GitHub allows per address without one) and only ever to the API host: the redirect to the signed download address
 must not carry it, so the header is attached as an "unredirected" one and a redirect handler drops it as well.
+
+The REST API is limited to 60 requests per hour and address without a token, shared by everything behind one NAT. So the
+latest STABLE release is also found without the API ("web mode"): `github.com/<repo>/releases/latest` answers with a redirect to
+`.../releases/tag/<tag>` (read, never followed) and the files are the predictable
+`github.com/<repo>/releases/download/<tag>/<file>` addresses, neither of which is an API call. `api: auto|always|never`
+(update.api, or the environment variable GINNUNGAGAP_UPDATE_API) says which one is used, see `GitHubSource.candidates`.
 """
 
 from __future__ import annotations
@@ -23,11 +29,14 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Protocol
-from urllib.parse import urlparse
+from urllib.parse import urljoin, urlparse
 
 from ginnungagap import manifest as manifest_module
 
 API_BASE = "https://api.github.com"
+WEB_BASE = "https://github.com"
+API_MODES = ("auto", "always", "never")
+API_ENV = "GINNUNGAGAP_UPDATE_API"
 USER_AGENT = "ginnungagap-update"
 MAX_JSON_BYTES = 8 * 1024 * 1024
 ANONYMOUS_LIMIT = 60
@@ -36,6 +45,7 @@ _SAFE_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,200}$")
 _TAG = re.compile(r"^v(.+)$")
 _TOKEN_SHAPES = re.compile(r"(gh[pousr]_[A-Za-z0-9]{16,}|github_pat_[A-Za-z0-9_]{16,})")
 _TOKEN_CHARS = re.compile(r"^[A-Za-z0-9_.~+/=-]{8,255}$")
+_REDIRECTS = (301, 302, 303, 307, 308)
 
 
 class SourceError(Exception):
@@ -57,6 +67,57 @@ def redact(text: str, token: str | None = None) -> str:
     return _TOKEN_SHAPES.sub("***", text)
 
 
+def api_mode(configured: str | None = None) -> str:
+    """
+    `auto`, `always` or `never`: the environment variable GINNUNGAGAP_UPDATE_API (tests, CI) wins over the configured value.
+    :raises SourceError: the value is none of the three.
+    """
+    given = os.environ.get(API_ENV)
+    wanted = (given if given else (configured or "auto")).strip().lower()
+    if wanted not in API_MODES:
+        where = API_ENV if given else "update.api"
+        raise SourceError("config", f"{where}: must be auto, always or never")
+    return wanted
+
+
+def latest_tag_from_location(location: str | None, request_url: str, repo: str) -> str:
+    """
+    The tag a `releases/latest` redirect points at. Only `<same scheme and host>/<same owner>/<same repo>/releases/tag/<tag>` with
+    a plain SemVer tag (v1.3.0, v1.3.0-rc.1) is accepted: a redirect to anywhere else (another repository, another host, a
+    query, an escaped slash) is refused, so a hostile answer can neither pick the files nor the place they are downloaded from.
+    :raises SourceError: (kind data)
+    """
+
+    def refused(why: str) -> SourceError:
+        return SourceError(
+            "data",
+            f"GitHub's answer for the latest release of {repo} is not trusted ({why})",
+        )
+
+    if not location or len(location) > 2048 or any(c in location for c in "\r\n\\"):
+        raise refused("no usable address to redirect to")
+    base = urlparse(request_url)
+    target = urlparse(urljoin(request_url, location))
+    if (target.scheme, target.netloc.lower()) != (base.scheme, base.netloc.lower()):
+        raise refused("it redirects to another host")
+    if target.params or target.query or target.fragment:
+        raise refused("the address has extra parts")
+    prefix = base.path.rsplit("/releases/latest", 1)[
+        0
+    ]  # /owner/repo (with the path of a test server in front)
+    same_repo = (
+        target.path[: len(prefix)].lower() == prefix.lower()
+    )  # GitHub may answer in the repository's own spelling
+    parts = target.path[len(prefix) :].split("/") if same_repo else []
+    if len(parts) != 4 or parts[0] != "" or parts[1:3] != ["releases", "tag"]:
+        raise refused("it redirects to another repository or page")
+    tag = parts[3]
+    match = _TAG.match(tag)
+    if not match or not manifest_module.is_semver(match.group(1)):
+        raise refused(f"{tag[:40]!r} is not a version tag like v1.3.0")
+    return tag
+
+
 @dataclass(frozen=True)
 class ReleaseInfo:
     version: str
@@ -65,6 +126,9 @@ class ReleaseInfo:
     date: str
     assets: dict[str, str] = field(default_factory=dict, compare=False, repr=False)
     location: str = field(default="", compare=False, repr=False)
+    web: bool = field(
+        default=False, compare=False, repr=False
+    )  # found without the API: its files are download addresses
 
 
 class ReleaseSource(Protocol):
@@ -174,6 +238,9 @@ class _SafeRedirect(urllib.request.HTTPRedirectHandler):
     """Follows a redirect without any credentials and never from https to plain http."""
 
     def redirect_request(self, req, fp, code, msg, headers, newurl):  # type: ignore[override]
+        if getattr(req, "no_follow", False):
+            # the caller wants to read the Location itself (`releases/latest`): the redirect comes out as an HTTPError
+            raise urllib.error.HTTPError(req.full_url, code, msg, headers, fp)
         if (
             urlparse(req.full_url).scheme == "https"
             and urlparse(newurl).scheme != "https"
@@ -206,6 +273,7 @@ class GitHubSource:
     The releases of one GitHub repository. Anonymous unless `token_file` exists. `opener` is anything with
     `.open(request, timeout=...)` (tests pass one pointed at a fake server); `api_base` is the API's address.
     The ETag of the release list is kept in `cache_path`, so asking again costs nothing against the rate limit.
+    `web_base` is the address of github.com (the latest release and the downloads without the API), `api` is auto | always | never.
     """
 
     def __init__(
@@ -217,8 +285,14 @@ class GitHubSource:
         cache_path: str | Path | None = None,
         timeout: float = 30.0,
         now: Callable[[], datetime] = lambda: datetime.now(UTC),
+        web_base: str = WEB_BASE,
+        api: str = "auto",
     ) -> None:
+        if api not in API_MODES:
+            raise SourceError("config", "update.api: must be auto, always or never")
         self.repo = repo
+        self.web_base = web_base.rstrip("/")
+        self.api = api
         self.token_file = token_file
         self.opener = opener or default_opener()
         self.api_base = api_base.rstrip("/")
@@ -378,6 +452,11 @@ class GitHubSource:
 
     # -- the interface --
     def list_releases(self, channel: str) -> list[ReleaseInfo]:
+        if self.api == "never":
+            raise SourceError(
+                "config",
+                "update.api is never: listing releases needs the GitHub API (only the latest stable release can be fetched without it)",
+            )
         data = self._list_json_cached()
         found = []
         for item in data:
@@ -453,6 +532,131 @@ class GitHubSource:
             raise SourceError("data", "GitHub's release list has an unexpected shape")
         return data
 
+    # -- web mode: the latest stable release and its files without the API --
+    def _web_error(self, exc: urllib.error.HTTPError) -> SourceError:
+        code = exc.code
+        if code == 404:
+            return SourceError(
+                "not_found",
+                f"{self.web_base}/{self.repo} has no such release or file (HTTP 404)",
+            )
+        if code in (403, 429):
+            return SourceError(
+                "rate_limit",
+                f"GitHub is limiting requests from this address (HTTP {code}); try again later",
+            )
+        if code >= 500:
+            return SourceError(
+                "server",
+                f"GitHub answered with an error (HTTP {code}); try again later",
+            )
+        return SourceError("server", f"GitHub answered HTTP {code} {exc.reason}")
+
+    def _web_open(self, request: urllib.request.Request, passthrough: tuple = ()):
+        """Opens a github.com address: never with the token, errors in plain words. `passthrough` status codes come out as they are."""
+        try:
+            return self.opener.open(request, timeout=self.timeout)
+        except urllib.error.HTTPError as exc:
+            if exc.code in passthrough:
+                raise
+            raise self._web_error(exc) from None
+        except (urllib.error.URLError, TimeoutError, OSError) as exc:
+            reason = getattr(exc, "reason", exc)
+            host = urlparse(request.full_url).hostname or "the server"
+            raise SourceError(
+                "network",
+                f"could not reach {host} ({reason}); check the network connection, or use --offline-dir with a folder of release files",
+            ) from None
+
+    def latest_stable(self) -> ReleaseInfo:
+        """
+        The newest stable release, found without the API: `<web_base>/<repo>/releases/latest` redirects to
+        `.../releases/tag/<tag>`; the redirect is read, never followed, and only a tag of this very repository is accepted.
+        :raises SourceError: not_found when the repository has no stable release (HTTP 404), network, server, rate_limit, data.
+        """
+        url = f"{self.web_base}/{self.repo}/releases/latest"
+        request = urllib.request.Request(
+            url, headers={"User-Agent": USER_AGENT, "Accept": "text/html"}
+        )
+        request.no_follow = True  # type: ignore[attr-defined]
+        try:
+            response = self._web_open(request, passthrough=_REDIRECTS)
+        except urllib.error.HTTPError as exc:
+            tag = latest_tag_from_location(exc.headers.get("Location"), url, self.repo)
+        else:
+            with response:
+                raise SourceError(
+                    "data",
+                    f"GitHub did not answer {url} with a redirect to the latest release",
+                )
+        version = tag[1:]
+        if manifest_module.is_prerelease(version):
+            raise SourceError(
+                "data",
+                f"GitHub's latest release of {self.repo} is a pre-release ({tag})",
+            )
+        return ReleaseInfo(
+            version=version, tag=tag, prerelease=False, date="", web=True
+        )
+
+    def candidates(self, channel: str, wanted: str | None = None) -> list[ReleaseInfo]:
+        """
+        The releases to choose from for `update --check/--apply` (`wanted` is --version): newest first, or just the latest stable
+        release when it is found without the API. The mode decides:
+        auto    the latest stable release (no token, not a pre-release asked for) through the web, the API for anything else, and
+                the other way round when one of them fails: the API when the web fails with anything but a clean 404, the web
+                when the API says rate limit and the latest stable release is what is wanted
+        always  the API only (nothing is asked of the web)
+        never   the web only (the latest stable release; anything else is an error that says so)
+        :raises SourceError:
+        """
+        web_fits = channel == "stable" and not (
+            wanted and manifest_module.is_prerelease(wanted)
+        )
+        if self.api == "never" and not web_fits:
+            raise SourceError(
+                "config",
+                "update.api is never: a pre-release or the pre-release channel needs the GitHub API (only the latest stable release can be fetched without it)",
+            )
+        tried_web = False
+        if self.api == "never" or (self.api == "auto" and web_fits and not self.token):
+            tried_web = True
+            try:
+                latest = self.latest_stable()
+            except SourceError as exc:
+                if exc.kind == "not_found":
+                    return []  # a clean 404: the repository has no stable release
+                if self.api == "never":
+                    raise
+            else:
+                if wanted is None or wanted == latest.version:
+                    return [latest]
+                if self.api == "never":
+                    raise SourceError(
+                        "config",
+                        f"update.api is never: only the latest stable release ({latest.version}) can be fetched without the GitHub API, not {wanted}",
+                    )
+        try:
+            return self.list_releases(channel)
+        except SourceError as exc:
+            if (
+                exc.kind != "rate_limit"
+                or self.api != "auto"
+                or tried_web
+                or not web_fits
+            ):
+                raise
+            try:
+                latest = self.latest_stable()
+            except SourceError:
+                raise exc from None
+            if wanted is None or wanted == latest.version:
+                return [latest]
+            raise
+
+    def _download_url(self, release: ReleaseInfo, name: str) -> str:
+        return f"{self.web_base}/{self.repo}/releases/download/{release.tag}/{name}"
+
     def fetch(
         self,
         release: ReleaseInfo,
@@ -461,13 +665,49 @@ class GitHubSource:
         max_bytes: int | None = None,
     ) -> Path:
         _check_name(name)
+        if release.web:
+            request = urllib.request.Request(
+                self._download_url(release, name),
+                headers={
+                    "User-Agent": USER_AGENT,
+                    "Accept": "application/octet-stream",
+                },
+            )
+            try:
+                return self._download(self._web_open, request, name, dest, max_bytes)
+            except SourceError as exc:
+                if exc.kind in ("not_found", "data") or self.api == "never":
+                    raise
+                api_release = self._api_release(release.tag)
+                if api_release is None:
+                    raise
+                release = api_release  # the web failed, the API still knows the file
         url = release.assets.get(name)
         if url is None:
             raise SourceError(
                 "not_found", f"the release {release.tag} has no file {name}"
             )
         request = self._request(url, "application/octet-stream")
-        response = self._open(request)
+        return self._download(self._open, request, name, dest, max_bytes)
+
+    def _api_release(self, tag: str) -> ReleaseInfo | None:
+        try:
+            for item in self.list_releases("prerelease"):
+                if item.tag == tag:
+                    return item
+        except SourceError:
+            pass
+        return None
+
+    def _download(
+        self,
+        opener: Callable[..., Any],
+        request: urllib.request.Request,
+        name: str,
+        dest: Path,
+        max_bytes: int | None,
+    ) -> Path:
+        response = opener(request)
         dest = Path(dest)
         dest.mkdir(parents=True, exist_ok=True)
         target = dest / name

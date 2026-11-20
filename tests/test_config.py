@@ -378,6 +378,9 @@ def test_the_update_section_has_public_defaults_and_needs_no_token():
     assert update["require_signature"] == "auto"
     assert update["keep_releases"] == 2 and update["step_timeout_seconds"] == 90
     assert update["token_file"] == "/etc/ginnungagap/update-token"
+    assert (
+        update["api"] == "auto"
+    )  # the latest stable release without GitHub's rate-limited API
     assert not any(
         "token" in problem for problem in problems({"update": {"source": "x"}})
     )
@@ -437,6 +440,8 @@ def test_every_signature_mode_is_accepted(value):
         ({"source": "directory", "directory": "relative/dir"}, "update.directory"),
         ({"channel": "nightly"}, "update.channel"),
         ({"check": "hourly"}, "update.check"),
+        ({"api": "sometimes"}, "update.api"),
+        ({"api": True}, "update.api"),
         ({"check": True}, "update.check"),
         ({"require_signature": "maybe"}, "update.require_signature"),
         ({"keep_releases": 1}, "update.keep_releases"),
