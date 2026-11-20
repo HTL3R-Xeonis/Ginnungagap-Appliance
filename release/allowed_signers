@@ -6,3 +6,4 @@
 #   ssh-keygen -t ed25519 -N '' -C ginnungagap-release -f release_key
 # then add ONE line here in this format, with the content of release_key.pub:
 #   ginnungagap-release namespaces="ginnungagap-release" ssh-ed25519 AAAA...
+ginnungagap-release namespaces="ginnungagap-release" ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIN8wGbqI39WvmFY9xznVjRF4rCzg0W/wXaux61zqM+PL
