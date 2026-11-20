@@ -46,7 +46,7 @@ jobs:
       RELEASE_SIGNING_KEY: ${{ secrets.RELEASE_SIGNING_KEY }}
 
     steps:
-      - uses: actions/checkout@v5.0.1
+      - uses: actions/checkout@v7.0.1
         with:
           fetch-depth: 0 # git archive needs the tag and its commit
 
@@ -110,7 +110,7 @@ jobs:
 
       - name: Keep the files of a dry run
         if: env.DRY_RUN == 'true'
-        uses: actions/upload-artifact@v4.6.2
+        uses: actions/upload-artifact@v7.0.2
         with:
           name: release-${{ env.TAG }}
           path: |
