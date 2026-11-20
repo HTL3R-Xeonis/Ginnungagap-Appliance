@@ -100,19 +100,35 @@ except Exception:
 PY
 )
   case "$token_file" in /*) rm -f -- "$token_file" ;; esac
-  rm -rf -- "$dir/history" "$dir/downloads"
-  rm -f -- "$dir/transaction.json" "$dir/audit.log" "$dir/available.json" "$dir/web-status.json" "$dir/lock"
+  rm -rf -- "$dir/downloads"
+  rm -f -- "$dir/transaction.json" "$dir/audit.log" "$dir/available.json" "$dir/available-offline.json" "$dir/web-status.json" "$dir/lock"
   rm -f -- "$base/update-requests"/* 2>/dev/null || true  # a request the web panel left (it names who asked)
   rm -rf -- "$base/backups"/* 2>/dev/null || true  # pre-update backups: the configuration (API keys) and the data of this machine
-  # the installed release stays but has nothing to go back to: a copy starts with no "previous" release
+  # the installed release stays but has nothing to go back to: a copy starts with no "previous" release. Of the history only
+  # the record installed.json itself names (`entry`: the file of the installed state) is kept - the first update records the
+  # installed state as the one to go back to by that name, and every other record is of this machine's own past.
   if [ -f "$dir/installed.json" ]; then
-    python3 - "$dir/installed.json" <<'PY'
-import json, os, sys
-path = sys.argv[1]
+    python3 - "$dir/installed.json" "$dir/history" <<'PY'
+import json, os, shutil, sys
+path, history = sys.argv[1], sys.argv[2]
 with open(path, encoding="utf-8") as handle:
     state = json.load(handle)
 state["previous"] = None
+state["previous_entry"] = None
 state["backup"] = None
+entry = state.get("entry")
+keep = {entry} if isinstance(entry, str) and entry == os.path.basename(entry) else set()
+if os.path.isdir(history) and not os.path.islink(history):
+    for name in os.listdir(history):
+        if name in keep:
+            continue
+        target = os.path.join(history, name)
+        if os.path.isdir(target) and not os.path.islink(target):
+            shutil.rmtree(target, ignore_errors=True)
+        else:
+            os.unlink(target)
+    if not os.listdir(history):
+        os.rmdir(history)
 tmp = path + ".new"
 with open(tmp, "w", encoding="utf-8") as handle:
     json.dump(state, handle, indent=2)
@@ -120,6 +136,8 @@ with open(tmp, "w", encoding="utf-8") as handle:
 os.chmod(tmp, 0o600)
 os.replace(tmp, path)
 PY
+  else
+    rm -rf -- "$dir/history"
   fi
   # unpacked releases that no link of components/ points to (older versions kept for a rollback)
   if [ -d "$base/releases" ]; then

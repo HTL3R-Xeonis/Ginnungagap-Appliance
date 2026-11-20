@@ -190,9 +190,16 @@ install -d -m 0700 "$UPDATE_REQUEST_DIR"
 install -d -m 0755 "$STATE_DIR/releases" "$COMPONENTS_DIR"
 # the public key the release manifest is signed with. A file that still has no key in it (only comments) is not installed:
 # `update.require_signature: auto` enforces the signature as soon as this file exists, and with no key every update would fail.
+# An existing trust file that holds a key is the operator's (an added or replaced key, e.g. for their own test releases) and is
+# never overwritten - not by a later install.sh run either, which includes the tooling step of every update. It is created when
+# it is missing, and replaced when it has no key in it (only comments or blanks: nothing to lose).
 install -d -m 0755 "$TRUST_DIR"
 if [ -f "$HERE/release/allowed_signers" ] && grep -Eqv '^[[:space:]]*(#|$)' "$HERE/release/allowed_signers"; then
-  install -m 0644 "$HERE/release/allowed_signers" "$TRUST_DIR/allowed_signers"
+  if [ ! -s "$TRUST_DIR/allowed_signers" ] || ! grep -Eqv '^[[:space:]]*(#|$)' "$TRUST_DIR/allowed_signers"; then
+    install -m 0644 "$HERE/release/allowed_signers" "$TRUST_DIR/allowed_signers"
+  elif ! cmp -s "$HERE/release/allowed_signers" "$TRUST_DIR/allowed_signers"; then
+    echo "Kept $TRUST_DIR/allowed_signers (it differs from the key list this release ships, release/allowed_signers): delete it and run install.sh again to get the shipped one."
+  fi
 fi
 
 cat >"$CONFIG_DIR/install.env" <<ENV

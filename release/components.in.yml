@@ -14,7 +14,7 @@ appliance:
 components:
   appliance:
     repo: HTL3R-Xeonis/Ginnungagap-Appliance
-    tag: v1.3.0
+    tag: v1.3.1
   operator:
     repo: HTL3R-Xeonis/Igdrasyl
     tag: v1.3.0

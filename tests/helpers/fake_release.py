@@ -106,12 +106,14 @@ def fake_commit(name: str, version: str) -> str:
     return hashlib.sha1(f"{name} {version}".encode()).hexdigest()
 
 
-def _files(name: str, version: str, broken: set[str]) -> dict[str, str]:
-    """The files of a component's tarball, relative to its top folder."""
+def _files(name: str, version: str, broken: set[str], code: str = "") -> dict[str, str]:
+    """The files of a component's tarball, relative to its top folder (`code`: other code under the same version)."""
     files = {
         "README.md": f"{REPOS[name]} {version}\n",
         "LICENSE": "test licence\n",
     }
+    if code:
+        files["CODE.txt"] = f"{code}\n"
     if name == "appliance":
         files["ginnungagap/version.py"] = f'__version__ = "{version}"\n'
         # the program of a release is installed by its install.sh: the fake one only records that it was called
@@ -224,6 +226,7 @@ def make_release(
     owner: str = OWNER,
     legacy: bool = False,
     repo_names: dict[str, str] | None = None,
+    code: dict[str, str] | None = None,
 ) -> Path:
     """
     Writes one release into the folder `dest` (made if needed) and returns it.
@@ -235,6 +238,7 @@ def make_release(
     data_migration  True: the operator component says it migrates data; or a set of component names
     legacy          True: a release as it was built before the code names (old keys, old repository and asset names)
     repo_names      other repository names for some components (a later rename), by component key
+    code            other code under the same version, per component name: the tarball (so its checksum) and the commit differ
     """
     dest = Path(dest)
     dest.mkdir(parents=True, exist_ok=True)
@@ -247,12 +251,13 @@ def make_release(
         version = versions[name]
         asset = f"{repo}-{version}.tar.gz"
         path = dest / asset
-        write_tarball(path, f"{repo}-{version}", _files(name, version, broken))
+        variant = (code or {}).get(name, "")
+        write_tarball(path, f"{repo}-{version}", _files(name, version, broken, variant))
         entries[OLD_KEYS.get(name, name) if legacy else name] = {
             "repo": f"{owner}/{repo}",
             "version": version,
             "tag": f"v{version}",
-            "commit": fake_commit(name, version),
+            "commit": fake_commit(name, version + variant),
             "asset": asset,
             "sha256": sha256_of(path),
             "size": path.stat().st_size,

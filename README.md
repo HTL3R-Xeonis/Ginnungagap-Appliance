@@ -343,9 +343,14 @@ fields for it and keeps a changed `update:` block when the form is submitted aga
 * **Signature.** `require_signature: auto` enforces the signature of `components.json` as soon as
   `/etc/ginnungagap/update-trust/allowed_signers` exists, which `install.sh` only creates when `release/allowed_signers`
   holds a key (until the first signing key exists, updates are checked by checksum only and the output says so). `true` always
-  demands a valid signature, `false` never does.
+  demands a valid signature, `false` never does. An existing trust file that holds a key is the operator's and is **never
+  overwritten** - by no later `install.sh` run either, which includes the tooling step of every update, so an added key (for test
+  releases of your own) stays. `install.sh` creates the file when it is missing or has no key in it (only comments); when the kept
+  file differs from the shipped one it says so (delete the file and run `install.sh` again to get the shipped key list, e.g. after a key
+  rotation).
 * **Daily check.** `check: daily` makes `ginnungagap-update-check.timer` (always armed, once a day) run
-  `ginnungagap update --check`, which only writes `/var/lib/ginnungagap/update/available.json`. With `check: off` the service is
+  `ginnungagap update --check`, which only writes `/var/lib/ginnungagap/update/available.json` (a check with `--offline-dir` writes
+  `available-offline.json` instead, so a look at a folder never hides the result for GitHub). With `check: off` the service is
   skipped, so the setting needs no `systemctl`. A look for updates that finds one is not an error (exit code 10).
 * **State.** `install.sh` creates, outside the program folder and outside the checkouts (so reinstalling never touches them and
   `--uninstall` keeps them), under `--state-dir` (default `/var/lib/ginnungagap`): `update/` (what is installed, history,
@@ -364,7 +369,7 @@ fields for it and keeps a changed `update:` block when the form is submitted aga
   (`install.sh --repos-dir`) is recorded as the release it is first (`ginnungagap update --adopt`, which reads each component's version
   from the file its release workflow checks: Operator `app/version.py`, Builder `pyproject.toml`, Mimyr and Hugyn-and-Munyn `VERSION`, Appliance
   `ginnungagap/version.py`; an unreadable one stays `unknown` with the reason printed). It deletes everything that
-  belongs to the build machine: the token, history, downloads, the journal, the audit log, pre-update backups (they hold the
+  belongs to the build machine: the token, history (but the record `installed.json` names), downloads, the journal, the audit log, pre-update backups (they hold the
   configuration with its API keys), rollback image tags and the unpacked versions that are not installed.
 <!-- END update configuration -->
 
@@ -381,11 +386,11 @@ ginnungagap versions                      # the same as update --versions
 
 | action | what it does |
 |---|---|
-| `--check` (default) | asks the source (GitHub Releases, no login needed, normally without the API; or `--offline-dir`), compares with what is installed, prints the table and writes `update/available.json`. Exit `10` = an update is available |
-| `--apply` | downloads only the components whose version changed, verifies checksums (and the signature when a key is trusted), backs up the configuration and the app's data, unpacks, rebuilds only the services that use the changed components, restarts them one after the other (generator, collectors, template services, setup wizard, the app last) and waits for each to be healthy. Any failure rolls everything back by itself |
+| `--check` (default) | asks the source (GitHub Releases, no login needed, normally without the API; or `--offline-dir`), compares with what is installed, prints the table and writes `update/available.json` (`update/available-offline.json` for `--offline-dir`). Exit `10` = an update is available |
+| `--apply` | downloads only the components whose version or code changed (see "Same version, other code"), verifies checksums (and the signature when a key is trusted), backs up the configuration and the app's data, unpacks, rebuilds only the services that use the changed components, restarts them one after the other (generator, collectors, template services, setup wizard, the app last) and waits for each to be healthy. Any failure rolls everything back by itself |
 | `--rollback` | back to the previous release: links, the kept images (`rollback-<version>`), tooling, restarts; needs no internet. The data is restored from the pre-update backup only when that update was marked as migrating data (or with `--restore-data`) |
 | `--list`, `--versions`, `--history` | the releases the source offers, the installed release with each component's version, every release installed so far |
-| `--adopt` | records the components installed by hand (`install.sh --repos-dir /srv/repos`) as release `adopted` (copies, links, `install.env`); the first `--apply` does it itself. Nothing in the old folder is changed |
+| `--adopt` | records the components installed by hand (`install.sh --repos-dir /srv/repos`) as release `adopted` (copies, links, `install.env`; the version of each component and, when its checkout has a readable `.git`, its commit); the first `--apply` does it itself. Nothing in the old folder is changed |
 | `--set-token` | optional GitHub token from stdin into the token file (see the `update:` block); only needed for private repositories (the latest stable release is also found without the API, see `update.api`) |
 | `--resume` | finishes or rolls back an update that was interrupted (the boot unit runs it): before anything that runs was touched it is discarded, afterwards it is rolled back. It first stops a `docker compose build` that the killed update left running (it would move the `latest` image tag again), and puts the old images back **by image id**. Also what to run after exit 3: it repeats the rollback until it works |
 
@@ -400,6 +405,19 @@ Good to know:
 * **"Healthy" means healthy.** A restarted service with a health check must report `healthy` (checked every 10 s), one without must stay up
   for 6 s, and a container that restarts by itself fails the step at once, not only the final 120 s check. After a rollback the
   Operator's reported version must be the old one again; if it is not the rollback is reported as failed (exit 3), not as done.
+* **Same version, other code.** A version number says what the maintainer meant, not what the code is. Per component, the commit and
+  the checksum of the source tarball that `installed.json` records are compared with the release's `components.json`: equal versions
+  with a different commit or checksum are a `replace`, shown by `--check` as `replace (same version, different code)` and applied by
+  `--apply` (only the services of that component are rebuilt and restarted). A record with neither (an adopted checkout whose commit
+  can't be read, e.g. no `.git`) is also replaced, shown as `replace (same version, code not recorded)`; an adopted checkout whose commit
+  is the release's counts as the same (uncommitted changes in a checkout can not be seen). The new sources get their own folder
+  (`releases/<Repo>/<version>.r2` when `<version>` is what runs now), so the running sources and the way back are never overwritten; after
+  the update `installed.json` carries the release's real commit and checksum, and `--rollback` goes back to the old folder and the old images.
+* **The record of the earlier release.** `--rollback` reads `history/<time>-<release>.json`. Every update writes the record of the state it
+  replaces if its file is missing (an image whose history folder was cleaned out), and `image/prepare-image.sh` keeps exactly the record
+  `installed.json` names. A machine whose record is gone anyway is repaired by the rollback when the earlier state was the adopted
+  checkouts (still under `releases/`); otherwise it says so, changes nothing, and `--apply --version ... --allow-downgrade` installs an older
+  release.
 * **Rolling back the first update of a machine that was adopted** (the checkout in `/srv/repos` has an `install.sh` from before the
   updater): that script is not run (it does not know `--state-dir` and expects the old folder names); the previous program files are
   copied back. That program has no `update` command, so run the new release's `install.sh` again to get it back.
@@ -445,9 +463,9 @@ Good to know:
   admin only, never automatic.
 * **Building needs the internet** (pip, Docker Hub), as `apply` without `--no-build` always did; a folder source (`--offline-dir`) only
   removes the need for GitHub. A rollback needs no build while the rollback images are there.
-* **Files**: `/var/lib/ginnungagap/update/{installed.json,history/,available.json,transaction.json,web-status.json,audit.log,lock}`; every apply, rollback,
-  resume and token change is one JSON line in `audit.log` (who, from, to, result) and in the journal (`journalctl -t ginnungagap-update`).
-* Tests: `tests/test_manifest.py`, `test_releases.py`, `test_release_web.py` (the web side: no API call, hostile redirects, the fallbacks), `test_update.py`, `test_update_failures.py` (the failure matrix) run against a
+* **Files**: `/var/lib/ginnungagap/update/{installed.json,history/,available.json,available-offline.json,transaction.json,web-status.json,audit.log,lock}`; every apply, rollback,
+  resume and token change is one JSON line in `audit.log` (who, from, to, result; a refused apply is one line, `refused`) and in the journal (`journalctl -t ginnungagap-update`).
+* Tests: `tests/test_manifest.py`, `test_releases.py`, `test_release_web.py` (the web side: no API call, hostile redirects, the fallbacks), `test_update.py`, `test_update_failures.py` (the failure matrix), `test_update_same_code.py` (same version with other code, the record of the earlier release) run against a
   fake appliance and a fake GitHub on localhost; `smoke/update-smoke.sh` does the real Docker part (build, recreate only what changed,
   automatic rollback, `--rollback`).
 ### Updating from the web

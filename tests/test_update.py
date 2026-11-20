@@ -32,7 +32,7 @@ def test_check_reports_an_available_update_with_exit_10(world):
     assert "source: directory" in text
     assert "operator" in text and "ginnungagap (about 10-20 s of downtime)" in text
     assert "signature: NOT verified" in text and "data migration: no" in text
-    record = json.loads(world.layout.available.read_text())
+    record = json.loads(world.layout.available_offline.read_text())
     assert (
         record["update_available"] is True and record["available"]["version"] == "1.3.0"
     )
@@ -46,7 +46,10 @@ def test_check_with_nothing_new_is_exit_0(world):
     world.out.clear()
     assert world.update("check", offline=a) == 0
     assert "Nothing to update" in world.text()
-    assert json.loads(world.layout.available.read_text())["update_available"] is False
+    assert (
+        json.loads(world.layout.available_offline.read_text())["update_available"]
+        is False
+    )
 
 
 def test_check_json_is_machine_readable(world, capsys):
@@ -91,12 +94,13 @@ def test_the_first_apply_adopts_the_old_checkouts_and_updates_everything(world):
     )
     assert installed["backup"] and world.backups
     assert installed["components"]["operator"]["version"] == "1.2.1"
-    # every component but the operator (1.2.1 = 1.2.1) was 'unknown' and is replaced
+    # every component is replaced: four were 'unknown', and the operator's 1.2.1 is the release's number but nothing proves it
+    # is the release's code (the old checkout has no commit that equals the release's)
     link = world.layout.components
     # (the old checkouts carry the names of before the code names: they are recorded under the current ones)
     assert os.readlink(link / "TopologyBuilder") == "../releases/TopologyBuilder/1.0.0"
     assert os.readlink(link / "Mimyr") == "../releases/Mimyr/1.0.0"
-    assert os.readlink(link / "Igdrasyl") == "../releases/Igdrasyl/adopted-1"
+    assert os.readlink(link / "Igdrasyl") == "../releases/Igdrasyl/1.2.1"
     assert (link / "TopologyBuilder" / "pyproject.toml").is_file()
     assert not (link / "Mjonyr").exists() and not (link / "topology-generator").exists()
     # the old checkout was copied (without .git), never touched

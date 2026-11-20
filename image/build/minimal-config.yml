@@ -1,0 +1,30 @@
+# The configuration every throw-away VM of the image build gets through guestinfo (build VM, acceptance VMs b and c).
+# It holds NO secret and names NO real host: the template store is the empty local folder, the one language-model server
+# is a reserved documentation address that never answers, the appliance listens on its own ports and has no login.
+# It must stay valid for `ginnungagap validate`; tests/test_build_acceptance.py checks that.
+#
+# MARKER: the llm server's name below is the unique string of this file. The offline inspection of the image (inspect_image.py)
+# searches the whole raw disk for it: found there, a configuration of a build VM got into the image.
+version: 1
+
+appliance:
+  public_url: http://localhost
+  timezone: UTC
+  tls: { mode: "off" }
+  auth: { mode: none }
+
+services:
+  template_esxi: true
+  template_gns3: true
+  generator: true
+  ova_store: true
+
+templates:
+  store:
+    type: local
+    local: { path: /srv/templates }
+  ova_port: 8088
+
+generator:
+  llm_servers:
+    - { name: imgbuild-marker-3c9e1f7a, url: "http://192.0.2.1:11434", model: acceptance-only }

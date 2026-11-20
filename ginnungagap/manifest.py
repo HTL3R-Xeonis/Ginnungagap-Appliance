@@ -550,6 +550,8 @@ class Change:
         str  # patch | minor | major | pre | new | replace | downgrade | same | skipped
     )
     services: tuple[str, ...]
+    # why a `replace` is one when the version numbers are equal ("same version, different code"); empty otherwise
+    reason: str = ""
 
     @property
     def changed(self) -> bool:
@@ -690,6 +692,29 @@ def state_from_manifest(
     )
 
 
+SAME_VERSION_DIFFERENT_CODE = "same version, different code"
+SAME_VERSION_CODE_NOT_RECORDED = "same version, code not recorded"
+
+
+def code_difference(entry: dict[str, Any] | None, component: Component) -> str:
+    """
+    Whether the installed component `entry` (what installed.json records for it) is the code of the release's `component`:
+    "" when the recorded checksum of the source tarball and/or the commit match, else why it counts as different. A version
+    number says what the maintainer meant, not what the code is: the same number can stand for other code (an image that was
+    built before the release, a checkout that was changed afterwards). An entry with neither a checksum nor a commit (an
+    adopted checkout whose commit could not be read) is not proof of anything, so it is treated as different too.
+    """
+    entry = entry or {}
+    sha256, commit = entry.get("sha256"), entry.get("commit")
+    if not sha256 and not commit:
+        return SAME_VERSION_CODE_NOT_RECORDED
+    if sha256 and sha256 != component.sha256:
+        return SAME_VERSION_DIFFERENT_CODE
+    if commit and commit != component.commit:
+        return SAME_VERSION_DIFFERENT_CODE
+    return ""
+
+
 def diff(
     installed: InstalledState | None,
     target: Manifest,
@@ -697,17 +722,25 @@ def diff(
 ) -> list[Change]:
     """
     One `Change` per component, in the fixed order, from what is installed to `target`. A component outside `only` (a partial
-    update) is `skipped`; one whose version is the same is `same`; with nothing installed every component is `new`.
+    update) is `skipped`; one whose version is the same is `same` - but only if the code is the same too (commit / checksum of
+    the source tarball, see `code_difference`), otherwise it is a `replace`; with nothing installed every component is `new`.
     """
     changes = []
     for name in COMPONENT_NAMES:
         component = target.components[name]
         old = installed.version_of(name) if installed else None
+        reason = ""
         if only is not None and name not in only:
             kind = "skipped"
         else:
             kind = version_kind(old, component.version)
-        changes.append(Change(name, old, component.version, kind, component.services))
+            if kind == "same" and installed is not None:
+                reason = code_difference(installed.components.get(name), component)
+                if reason:
+                    kind = "replace"
+        changes.append(
+            Change(name, old, component.version, kind, component.services, reason)
+        )
     return changes
 
 
@@ -792,6 +825,29 @@ class HistoryEntry:
 
 
 _HISTORY_NAME = re.compile(r"^(\d{8}T\d{6}Z)-(.+?)(?:~\d+)?\.json$")
+
+
+def is_history_name(name: Any) -> bool:
+    """A plain file name of the shape `add_history` makes (never a path: the name comes out of a state file)."""
+    return (
+        isinstance(name, str)
+        and name == Path(name).name
+        and _HISTORY_NAME.match(name) is not None
+    )
+
+
+def restore_history(folder: str | Path, state: InstalledState, name: str) -> Path:
+    """
+    Writes `state` into the history under the file name `name` (an installed.json that names a history record whose file is
+    gone, e.g. an appliance image that was cleaned up) and makes `state.entry` that name.
+    :raises ValueError: `name` is not a history file name.
+    """
+    if not is_history_name(name):
+        raise ValueError(f"{name!r} is not the name of a history record")
+    state.entry = name
+    target = Path(folder) / name
+    write_json_atomic(target, state.to_dict())
+    return target
 
 
 def add_history(folder: str | Path, state: InstalledState, moment: datetime) -> Path:

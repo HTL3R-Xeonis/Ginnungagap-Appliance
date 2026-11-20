@@ -628,6 +628,37 @@ def test_a_signers_file_with_a_key_is_installed_and_one_without_is_not(place, ch
     )  # a file without a key never removes the installed one
 
 
+def test_a_trust_file_with_a_key_is_never_overwritten_and_one_without_is_replaced(
+    place, checkout
+):
+    """The operator's added or replaced key must survive every install.sh run, also the tooling step of an update."""
+    (checkout / "release").mkdir()
+    shipped = '# the key\nginnungagap-release namespaces="ginnungagap-release" ssh-ed25519 AAAAC3Shipped\n'
+    (checkout / "release" / "allowed_signers").write_text(shipped)
+    trust = place["config"] / "update-trust" / "allowed_signers"
+
+    assert install(place, script=checkout / "install.sh").returncode == 0
+    assert trust.read_text() == shipped  # missing: created
+
+    mine = shipped + 'me namespaces="ginnungagap-release" ssh-ed25519 AAAAC3Mine\n'
+    trust.write_text(mine)
+    result = install(place, script=checkout / "install.sh")
+    assert result.returncode == 0
+    assert trust.read_text() == mine  # edited by the operator: kept
+    assert "Kept" in result.stdout and "allowed_signers" in result.stdout
+
+    trust.write_text("# only the old placeholder\n\n")
+    assert install(place, script=checkout / "install.sh").returncode == 0
+    assert trust.read_text() == shipped  # no key in it: nothing to lose
+
+    trust.write_text("")
+    assert install(place, script=checkout / "install.sh").returncode == 0
+    assert trust.read_text() == shipped
+
+    result = install(place, script=checkout / "install.sh")
+    assert "Kept" not in result.stdout  # the shipped file itself: nothing to say
+
+
 def test_the_web_panels_request_folder_is_private_and_named_in_install_env(place):
     assert install(place).returncode == 0
     folder = place["state"] / "update-requests"

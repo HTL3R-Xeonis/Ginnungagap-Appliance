@@ -32,7 +32,7 @@ import time
 import tomllib
 from collections.abc import Callable
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -96,6 +96,7 @@ class UpdateError(Exception):
     def __init__(self, message: str, code: int = EXIT_ERROR) -> None:
         self.message = message
         self.code = code
+        self.audited = False  # the audit log already has a line for this failure
         super().__init__(message)
 
 
@@ -131,6 +132,11 @@ class Layout:
 
     installed = property(lambda self: self.update_dir / "installed.json")
     available = property(lambda self: self.update_dir / "available.json")
+    # the result of a check against a folder given with --offline-dir: never in available.json, which is what the check timer
+    # and the web panel say about the real source
+    available_offline = property(
+        lambda self: self.update_dir / "available-offline.json"
+    )
     etag_cache = property(lambda self: self.update_dir / "etag-cache.json")
     history = property(lambda self: self.update_dir / "history")
     transaction = property(lambda self: self.update_dir / "transaction.json")
@@ -377,6 +383,57 @@ def read_component_version(name: str, root: Path) -> tuple[str | None, str]:
     if not _PLAUSIBLE_VERSION.match(version):
         return None, f"{relative} holds something that is no version"
     return version, ""
+
+
+_HEX_COMMIT = re.compile(r"^[0-9a-f]{40}$")
+
+
+def _read_text(path: Path, limit: int = 65536) -> str | None:
+    try:
+        with path.open("rb") as handle:
+            return handle.read(limit).decode("utf-8", errors="replace")
+    except OSError:
+        return None
+
+
+def read_git_commit(root: Path) -> str | None:
+    """
+    The commit a checkout is at (its HEAD), read from the `.git` folder without running git: a plain folder, or a file
+    `gitdir: ...` (worktree / submodule), a branch in refs/ or in packed-refs, or a detached HEAD. None when there is no
+    repository or it can't be read; never raises. It says nothing about uncommitted changes in the tree.
+    """
+    git = root / ".git"
+    try:
+        if git.is_file():
+            text = _read_text(git) or ""
+            if not text.startswith("gitdir:"):
+                return None
+            git = (root / text.split(":", 1)[1].strip()).resolve()
+        if not git.is_dir():
+            return None
+        head = (_read_text(git / "HEAD") or "").strip()
+        if _HEX_COMMIT.match(head):
+            return head
+        if not head.startswith("ref:"):
+            return None
+        ref = head.split(":", 1)[1].strip()
+        if ".." in ref or ref.startswith("/"):
+            return None
+        common = (_read_text(git / "commondir") or "").strip()
+        homes = [git] + ([(git / common).resolve()] if common else [])
+        for home in homes:
+            value = (_read_text(home / ref) or "").strip()
+            if _HEX_COMMIT.match(value):
+                return value
+            for line in (
+                _read_text(home / "packed-refs", 8 * 1024 * 1024) or ""
+            ).splitlines():
+                parts = line.split()
+                if len(parts) == 2 and parts[1] == ref and _HEX_COMMIT.match(parts[0]):
+                    return parts[0]
+    except (OSError, ValueError):
+        return None
+    return None
 
 
 def safe_extract(
@@ -996,7 +1053,9 @@ class Updater:
                     mf.display_name(change.component),
                     change.from_version or "-",
                     change.to_version,
-                    {"replace": "replace"}.get(change.kind, change.kind),
+                    f"{change.kind} ({change.reason})"
+                    if change.reason
+                    else change.kind,
                     restarts,
                 )
             )
@@ -1082,12 +1141,15 @@ class Updater:
         self._write_available(record)
 
     def _write_available(self, record: dict[str, Any]) -> None:
+        path = (
+            self.layout.available_offline
+            if self.opts.offline_dir
+            else self.layout.available
+        )
         try:
-            mf.write_json_atomic(self.layout.available, record)
+            mf.write_json_atomic(path, record)
         except OSError as exc:
-            self.say(
-                f"(could not record the result in {self.layout.available}: {exc.strerror})"
-            )
+            self.say(f"(could not record the result in {path}: {exc.strerror})")
 
     def record_check_failure(self, message: str) -> None:
         self._write_available(
@@ -1282,6 +1344,7 @@ class Updater:
                 return None
             sources[name] = candidate
         versions = {}
+        commits = {}
         for name in mf.COMPONENT_NAMES:
             found, why = read_component_version(name, sources[name])
             versions[name] = found or "unknown"
@@ -1289,10 +1352,17 @@ class Updater:
                 self.say(
                     f"(the version of {mf.display_name(name)} stays 'unknown': {why})"
                 )
+            # the commit of the checkout, when it has a repository: an update of the same version number replaces the
+            # component unless this commit is the release's. Without one nothing proves it is the release's code.
+            commits[name] = read_git_commit(sources[name])
         state = mf.InstalledState(
             appliance_version="adopted",
             components={
-                name: {"repo": mf.CHECKOUT_NAMES[name], "version": versions[name]}
+                name: {
+                    "repo": mf.CHECKOUT_NAMES[name],
+                    "version": versions[name],
+                    **({"commit": commits[name]} if commits[name] else {}),
+                }
                 for name in mf.COMPONENT_NAMES
             },
             installed_at=self.stamp(),
@@ -1470,10 +1540,29 @@ class Updater:
     ) -> None:
         state.installed_at = installed_at or state.installed_at or self.stamp()
         state.previous = previous.appliance_version if previous else None
-        state.previous_entry = previous.entry if previous else None
         self.layout.history.mkdir(parents=True, exist_ok=True)
+        state.previous_entry = self.keep_history_of(previous) if previous else None
         mf.add_history(self.layout.history, state, self.now())
         mf.save_installed(self.layout.installed, state)
+
+    def keep_history_of(self, previous: mf.InstalledState) -> str:
+        """
+        The history file of `previous` (the state a new state replaces), written now when it is not there: an installed.json can
+        name a record that no longer exists (an appliance image whose history folder was cleaned out), and a `--rollback` that
+        looks for it later must find it. The state in hand is the record, so nothing is lost by writing it again.
+        """
+        name = previous.entry
+        if name and mf.is_history_name(name):
+            if (self.layout.history / name).is_file():
+                return name
+            mf.restore_history(self.layout.history, previous, name)
+            return name
+        moment = self.now()
+        with contextlib.suppress(ValueError):
+            moment = datetime.strptime(
+                previous.installed_at, "%Y-%m-%dT%H:%M:%SZ"
+            ).replace(tzinfo=UTC)
+        return mf.add_history(self.layout.history, previous, moment).name
 
     def flip_link(self, component: str, folder: str) -> None:
         """Points components/<Repo> at releases/<Repo>/<folder>, atomically (a temporary link renamed over the old one)."""
@@ -1738,7 +1827,11 @@ class Updater:
                 self.save_transaction(tx)
             self.unpack(tx, manifest, changed)
         except UpdateError as exc:
-            self.abandon(tx, exc.message)
+            # one audit line: a refusal (exit 4) is logged as `refused` here, `dispatch` must not add a second one
+            self.abandon(
+                tx, exc.message, "refused" if exc.code == EXIT_REFUSED else "failed"
+            )
+            exc.audited = True
             raise
         except (Exception, KeyboardInterrupt) as exc:
             self.abandon(tx, f"{type(exc).__name__}: {exc}")
@@ -1783,13 +1876,11 @@ class Updater:
                     f"warning: {host} can't be reached from this machine; the images are built here, so the build may fail (a cached build can still work)"
                 )
 
-    def abandon(self, tx: dict[str, Any], reason: str) -> None:
+    def abandon(self, tx: dict[str, Any], reason: str, result: str = "failed") -> None:
         """An update that failed before it changed anything that runs: forget it, delete what it staged."""
         self.discard_staged(tx)
         self.clear_transaction()
-        self.audit(
-            "apply", "failed", to=tx["to"]["appliance"]["version"], detail=reason
-        )
+        self.audit("apply", result, to=tx["to"]["appliance"]["version"], detail=reason)
 
     def discard_staged(self, tx: dict[str, Any]) -> None:
         for name, folder in (tx.get("new_dirs") or {}).items():
@@ -1875,11 +1966,18 @@ class Updater:
                 f"{component.repo_name}-{component.version}",
                 MAX_TOTAL_BYTES,
             )
-            final = repo_dir / component.version
+            # the folder of a release is its version - unless that is the folder that runs now (the same version number with
+            # other code): then the new sources get another folder, the running ones and the way back stay untouched
+            running = ((tx.get("from") or {}).get("dirs") or {}).get(change.component)
+            folder, number = component.version, 1
+            while folder == running:
+                number += 1
+                folder = f"{component.version}.r{number}"
+            final = repo_dir / folder
             if final.exists():
                 shutil.rmtree(final)
             (repo_dir / f"{component.repo_name}-{component.version}").rename(final)
-            tx["new_dirs"][change.component] = component.version
+            tx["new_dirs"][change.component] = folder
         self.save_transaction(tx, "unpacked")
 
     def install_tooling(self, tx: dict[str, Any], manifest: mf.Manifest) -> None:
@@ -2451,7 +2549,7 @@ class Updater:
         return self.locked(self._rollback_locked)
 
     def _rollback_plan(self) -> int:
-        previous, installed = self.previous_state()
+        previous, installed = self.previous_state(repair=False)
         names = [
             n
             for n in mf.COMPONENT_NAMES
@@ -2463,23 +2561,88 @@ class Updater:
         self.say("Dry run: nothing was changed.")
         return EXIT_OK
 
-    def previous_state(self) -> tuple[mf.InstalledState, mf.InstalledState]:
+    def previous_state(
+        self, repair: bool = True
+    ) -> tuple[mf.InstalledState, mf.InstalledState]:
+        """
+        (the state to go back to, the installed one). A missing or damaged record of the earlier state is rebuilt when the
+        machine still has what it was made of (see `rebuild_previous`; `repair` False only looks and writes nothing).
+        :raises UpdateError: there is nothing to go back to, or the earlier state can't be restored. Nothing was changed then.
+        """
         installed = self.installed()
         if installed is None or not installed.previous_entry:
             raise UpdateError("there is no earlier release recorded to go back to")
         path = self.layout.history / installed.previous_entry
         try:
             previous = mf.InstalledState.from_dict(mf.read_json(path))
-        except mf.ManifestError as exc:
-            raise UpdateError(
-                f"the record of the earlier release ({path}) is missing or damaged"
-            ) from exc
+        except mf.ManifestError:
+            previous = self.rebuild_previous(installed, path, repair)
         for name in mf.COMPONENT_NAMES:
             if not self.layout.release_dir(name, previous.dirs.get(name, "?")).is_dir():
                 raise UpdateError(
                     f"the sources of the earlier release are gone ({name} {previous.dirs.get(name)}); download that release and install it with --version ... --allow-downgrade"
                 )
         return previous, installed
+
+    _ADOPTED_FOLDER = re.compile(r"^adopted-(\d+)$")
+
+    def rebuild_previous(
+        self, installed: mf.InstalledState, path: Path, repair: bool
+    ) -> mf.InstalledState:
+        """
+        The record of the earlier state is gone (`path`). If that state was the adopted checkouts - what every appliance image
+        starts with - they are still under releases/ (an update keeps the folders of the previous release): the record is made
+        again from them (versions read from their files) and, with `repair`, written back to the history. Anything else can't be
+        known any more, and the message says what is left to do.
+        """
+        gone = (
+            f"the record of the earlier release ({path}) is missing or damaged and can't be rebuilt from what is on this machine. "
+            f"Nothing was changed: this machine keeps running {installed.appliance_version}. To go to another release, "
+            "install it with `ginnungagap update --apply --version ... --allow-downgrade`"
+        )
+        if installed.previous != "adopted":
+            raise UpdateError(gone)
+        dirs: dict[str, str] = {}
+        components: dict[str, dict[str, Any]] = {}
+        for name in mf.COMPONENT_NAMES:
+            repo_dir = self.layout.releases / mf.CHECKOUT_NAMES[name]
+            own = installed.dirs.get(name, "")
+            found = [own] if self._ADOPTED_FOLDER.match(own) else []
+            if repo_dir.is_dir():
+                found += sorted(
+                    (
+                        folder.name
+                        for folder in repo_dir.iterdir()
+                        if folder.is_dir() and self._ADOPTED_FOLDER.match(folder.name)
+                    ),
+                    key=lambda folder: int(folder.split("-")[1]),
+                    reverse=True,
+                )
+            if not found:
+                raise UpdateError(gone)
+            dirs[name] = found[0]
+            version, _ = read_component_version(name, repo_dir / found[0])
+            components[name] = {
+                "repo": mf.CHECKOUT_NAMES[name],
+                "version": version or "unknown",
+            }
+        previous = mf.InstalledState(
+            appliance_version="adopted",
+            components=components,
+            dirs=dirs,
+            installed_at="",
+            adopted=True,
+        )
+        self.say(
+            f"The record of the earlier release ({path.name}) is missing; rebuilt it from the adopted checkouts in {self.layout.releases}."
+        )
+        if repair:
+            self.layout.history.mkdir(parents=True, exist_ok=True)
+            try:
+                mf.restore_history(self.layout.history, previous, path.name)
+            except (ValueError, OSError) as exc:
+                self.say(f"(could not write it back to the history: {exc})")
+        return previous
 
     def _rollback_locked(self) -> int:
         pending = self.load_transaction()
@@ -2647,7 +2810,11 @@ class Updater:
             self.env.err(exc.message)
             if self.opts.json:
                 self.emit({"ok": False, "error": exc.message, "exit_code": exc.code})
-            if exc.code == EXIT_REFUSED and action in ("apply", "rollback"):
+            if (
+                exc.code == EXIT_REFUSED
+                and action in ("apply", "rollback")
+                and not exc.audited
+            ):
                 self.audit(action, "refused", detail=exc.message)
             return exc.code
         except rl.SourceError as exc:
@@ -2667,6 +2834,7 @@ def _change_json(change: mf.Change) -> dict[str, Any]:
         "installed": change.from_version,
         "available": change.to_version,
         "change": change.kind,
+        "reason": change.reason,
         "services": list(change.services),
     }
 
