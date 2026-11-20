@@ -21,12 +21,18 @@ documentation and next to the plain role in the tables of `ginnungagap status`, 
 
 | Code name | Plain role | Repository | Component key | Services |
 |---|---|---|---|---|
-| **Igdrasyl** | the web app (operator): GUI, gateway, backends | `HTL3R-Xeonis/Igdrasyl` (formerly TopologyOperator) | `operator` | `ginnungagap` |
-| **Mjonyr** | the builder: deploy and orchestration library with its CLI | `HTL3R-Xeonis/TopologyBuilder` (the repository keeps its name) | `builder` | `ginnungagap` (it is the app's library) |
-| **Hugyn and Munyn** | the template services: **Hugyn** is the ESXi side, **Munyn** the GNS3 side | `HTL3R-Xeonis/Hugyn-and-Munyn` (formerly Docker-Server-Files) | `template-services` | Hugyn: `template-esxi`, `collector-esxi`; Munyn: `template-gns3`, `collector-gns3` |
-| **Mimyr** | the generator: LLM topology and configuration drafts | `HTL3R-Xeonis/Mimyr` (formerly TopologyGenerator, checkout folder topology-generator) | `generator` | `generator` |
-| **Idynoun** | the updater: `ginnungagap update` (check, apply, roll back) | this repository | `appliance` | - |
-| **Haymdal** | the watchman: the health view `ginnungagap status`, the `/health` endpoints and the app's "Connection lost" overlay | this repository and Igdrasyl | - | - |
+| **Igdrasyl** | the web app (operator): GUI, gateway, backends | [`HTL3R-Xeonis/Igdrasyl`](https://github.com/HTL3R-Xeonis/Igdrasyl) (formerly TopologyOperator) | `operator` | `ginnungagap` |
+| **Mjonyr** | the builder: deploy and orchestration library with its CLI | [`HTL3R-Xeonis/TopologyBuilder`](https://github.com/HTL3R-Xeonis/TopologyBuilder) (the repository keeps its name, the development branch is `Mjonyr`) | `builder` | `ginnungagap` (it is the app's library) |
+| **Hugyn and Munyn** | the template services: **Hugyn** is the ESXi side, **Munyn** the GNS3 side | [`HTL3R-Xeonis/Hugyn-and-Munyn`](https://github.com/HTL3R-Xeonis/Hugyn-and-Munyn) (formerly Docker-Server-Files) | `template-services` | Hugyn: `template-esxi`, `collector-esxi`; Munyn: `template-gns3`, `collector-gns3` |
+| **Mimyr** | the generator: LLM topology and configuration drafts | [`HTL3R-Xeonis/Mimyr`](https://github.com/HTL3R-Xeonis/Mimyr) (formerly TopologyGenerator, checkout folder `topology-generator`) | `generator` | `generator` |
+| **Ginnungagap appliance** | the appliance itself: compose project, installer, wizard, image tooling | [`HTL3R-Xeonis/Ginnungagap-Appliance`](https://github.com/HTL3R-Xeonis/Ginnungagap-Appliance) (this repository) | `appliance` | `setup`, `gateway`, `ova-store` and the others of the compose file |
+
+Two features of the appliance have code names of their own. They are not components, so they have no key and no repository of their own:
+
+| Code name | Plain role | Where it lives |
+|---|---|---|
+| **Idynoun** | the updater: `ginnungagap update` (check, apply, roll back) and the update page of the admin panel | [Ginnungagap-Appliance](https://github.com/HTL3R-Xeonis/Ginnungagap-Appliance) (the engine and the host units), [Igdrasyl](https://github.com/HTL3R-Xeonis/Igdrasyl) (the admin page) |
+| **Haymdal** | the watchman: the health view `ginnungagap status`, the `/health` endpoints and the app's "Connection lost" overlay | [Ginnungagap-Appliance](https://github.com/HTL3R-Xeonis/Ginnungagap-Appliance) (`status`), [Igdrasyl](https://github.com/HTL3R-Xeonis/Igdrasyl) (`/health`, overlay) |
 
 The keys of the manifest, the configuration and compose are **roles**, never a repository or a code name, so a later rename of a
 repository does not touch them. The identifiers inside (compose service and image names, systemd units, `TOPOLOGYOPERATOR_*` and
@@ -354,7 +360,9 @@ fields for it and keeps a changed `update:` block when the form is submitted aga
   the program comes from is kept as `/opt/ginnungagap/app/components.json`, the version as `app/VERSION`).
 * **Image.** `image/prepare-image.sh` keeps the installed release (`installed.json`, the unpacked releases and the links the images
   are built from), so a fresh appliance can check for and install updates at once; a machine that was installed by hand
-  (`install.sh --repos-dir`) is recorded as the release it is first (`ginnungagap update --adopt`). It deletes everything that
+  (`install.sh --repos-dir`) is recorded as the release it is first (`ginnungagap update --adopt`, which reads each component's version
+  from the file its release workflow checks: Operator `app/version.py`, Builder `pyproject.toml`, Mimyr and Hugyn-and-Munyn `VERSION`, Appliance
+  `ginnungagap/version.py`; an unreadable one stays `unknown` with the reason printed). It deletes everything that
   belongs to the build machine: the token, history, downloads, the journal, the audit log, pre-update backups (they hold the
   configuration with its API keys), rollback image tags and the unpacked versions that are not installed.
 <!-- END update configuration -->

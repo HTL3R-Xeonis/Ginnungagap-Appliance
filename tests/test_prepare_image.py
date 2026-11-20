@@ -238,3 +238,187 @@ def test_a_machine_that_was_not_built_by_an_update_is_adopted_and_one_that_was_i
 def test_the_script_never_touches_a_token_value_it_only_removes_files():
     script = SCRIPT.read_text()
     assert "update-token" in script and "--set-token" not in script
+
+
+# ---- build leftovers of the image builder, and the host name of the base VM ----
+
+
+def _functions(tmp_path, *names, home="", replace=None):
+    """The named functions of the script, run against throw-away /root, /etc/hostname, /etc/hosts and a fake getent."""
+    script = SCRIPT.read_text()
+    body = ""
+    for name in names:
+        start = script.index(f"{name}() {{")
+        body += script[start : script.index("\n}\n", start) + 3]
+    for real, fake in (replace or {}).items():
+        body = body.replace(real, str(fake))
+    fakebin = tmp_path / "fakebin"
+    fakebin.mkdir(exist_ok=True)
+    (fakebin / "getent").write_text(
+        f'#!/bin/sh\n[ -n "{home}" ] && echo "login:x:1000:1000::{home}:/bin/bash"\nexit 0\n'
+    )
+    (fakebin / "hostname").write_text("#!/bin/sh\nexit 0\n")
+    for tool in (fakebin / "getent", fakebin / "hostname"):
+        tool.chmod(0o755)
+    runner = tmp_path / "run.sh"
+    runner.write_text(
+        "set -euo pipefail\nDEFAULT_HOSTNAME=ginnungagap\n" + body + '\n"$@"\n'
+    )
+
+    def call(function):
+        return subprocess.run(
+            ["bash", str(runner), function],
+            capture_output=True,
+            text=True,
+            check=False,
+            env={**os.environ, "PATH": f"{fakebin}:{os.environ['PATH']}"},
+        )
+
+    return call
+
+
+def test_the_image_builders_leftovers_in_root_and_the_login_home_go_and_nothing_else(
+    tmp_path,
+):
+    root, home = tmp_path / "root", tmp_path / "home" / "junioradmin"
+    (home / "Desktop").mkdir(parents=True)
+    (root / ".ssh").mkdir(parents=True)
+    (root / ".docker").mkdir()
+    (home / ".docker").mkdir()
+    gone = [
+        root / ".docker" / "config.json",  # registry logins of the image builder
+        home / ".docker" / "config.json",
+        root / "prepare.log",
+        root / "build.log",
+        root / "old-repos-listing",
+        root / "install.sh.bak",
+        root / ".lesshst",
+        root / ".python_history",
+        home / "prepare.log",
+        home / "old-repos-listing",
+        home / ".lesshst",
+        home / ".sudo_as_admin_successful",
+    ]
+    kept = [
+        root
+        / ".docker"
+        / "daemon.json",  # only the login file, not the rest of the folder
+        root / ".bashrc",
+        root / "notes.txt",
+        root / ".ssh" / "old.bak",  # only the top level of /root is cleaned
+        home / "Desktop" / "debian-template.desktop",
+        home
+        / "Desktop"
+        / "prepare.log",  # below the home's top level: not a known place
+        home / ".bashrc",
+        home / "thesis.log",  # real files of the account stay, whatever their name
+        home / "important.bak",
+    ]
+    for path in (*gone, *kept):
+        path.write_text("x")
+    call = _functions(
+        tmp_path,
+        "remove_known_files",
+        "login_home",
+        "remove_image_builder_files",
+        home=home,
+        replace={"/root": root},
+    )
+    result = call("remove_image_builder_files")
+    assert result.returncode == 0, result.stderr
+    assert [p for p in gone if p.exists()] == []
+    assert [p for p in kept if not p.exists()] == []
+
+
+def test_a_login_home_that_is_missing_root_or_a_link_is_left_alone(tmp_path):
+    root = tmp_path / "root"
+    root.mkdir()
+    (root / "prepare.log").write_text("x")
+    real = tmp_path / "real"
+    real.mkdir()
+    (real / "prepare.log").write_text("x")
+    (tmp_path / "linked").symlink_to(real)
+    for home in (
+        "",
+        "/",
+        "relative/home",
+        tmp_path / "does-not-exist",
+        tmp_path / "linked",
+    ):
+        call = _functions(
+            tmp_path,
+            "remove_known_files",
+            "login_home",
+            "remove_image_builder_files",
+            home=home,
+            replace={"/root": root},
+        )
+        assert call("remove_image_builder_files").returncode == 0
+        assert (real / "prepare.log").exists(), home
+    assert not (root / "prepare.log").exists()
+
+
+def test_the_builders_leftovers_are_removed_last_before_the_zero_fill_and_listed_in_the_dry_run():
+    text = run("--dry-run", "--zero-free-space").stdout
+    order = [
+        text.index("clean logs, package caches"),
+        text.index("stop the journal and delete the logs"),
+        text.index("remove the image builder's leftovers"),
+        text.index("fill the free disk space with zeros"),
+    ]
+    assert order == sorted(order)
+    script = SCRIPT.read_text()
+    # the log of this run is written by the caller (tee /root/prepare.log): the cleanup is one step, the last before the zero-fill
+    assert script.count("remove_image_builder_files\n") == 1
+
+
+def test_the_host_name_of_the_base_vm_is_reset_to_a_neutral_default(tmp_path):
+    hostname, hosts, info = (
+        tmp_path / "hostname",
+        tmp_path / "hosts",
+        tmp_path / "machine-info",
+    )
+    hostname.write_text("ginn-img130-base\n")
+    hosts.write_text(
+        "127.0.0.1\tlocalhost\n127.0.1.1\tginn-img130-base\n::1\tlocalhost ip6-localhost\n"
+    )
+    info.write_text('PRETTY_HOSTNAME="Base VM"\nICON_NAME=computer-vm\n')
+    call = _functions(
+        tmp_path,
+        "reset_hostname",
+        replace={
+            "/etc/hostname": hostname,
+            "/etc/hosts": hosts,
+            "/etc/machine-info": info,
+        },
+    )
+    assert call("reset_hostname").returncode == 0
+    assert hostname.read_text() == "ginnungagap\n"
+    lines = hosts.read_text().splitlines()
+    assert "127.0.1.1\tginnungagap" in lines and "127.0.0.1\tlocalhost" in lines
+    assert "ginn-img130-base" not in hosts.read_text()
+    assert info.read_text() == "ICON_NAME=computer-vm\n"
+
+
+def test_the_host_name_reset_copes_with_missing_files_and_a_name_on_the_loopback_line(
+    tmp_path,
+):
+    hostname, hosts = tmp_path / "hostname", tmp_path / "hosts"
+    replace = {
+        "/etc/hostname": hostname,
+        "/etc/hosts": hosts,
+        "/etc/machine-info": tmp_path / "none",
+    }
+    call = _functions(tmp_path, "reset_hostname", replace=replace)
+    assert call("reset_hostname").returncode == 0  # nothing existed before
+    assert hostname.read_text() == "ginnungagap\n" and not hosts.exists()
+    hostname.write_text("base.vm\n")
+    hosts.write_text("127.0.0.1 localhost base.vm\n")
+    assert call("reset_hostname").returncode == 0
+    assert hosts.read_text() == "127.0.0.1 localhost ginnungagap\n"
+
+
+def test_the_host_name_is_reset_after_the_identity_and_the_dry_run_names_it():
+    text = run("--dry-run").stdout
+    assert "reset the host name of the base VM to 'ginnungagap'" in text
+    assert text.index("remove the SSH host keys") < text.index("reset the host name")

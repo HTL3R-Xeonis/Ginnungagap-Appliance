@@ -210,6 +210,22 @@ def test_host_name_key_and_password_hash_are_applied_when_given(machine):
     assert ["usermod", "-p", "$6$salt$hash", "junioradmin"] in m.commands
 
 
+def test_the_neutral_host_name_of_the_image_is_replaced_by_the_guestinfo_one_and_kept_without_it(
+    machine,
+):
+    given = machine({"config": b64(VALID), "hostname": "ginn-02"})
+    assert given.run() == 0
+    assert ["hostnamectl", "set-hostname", "ginn-02"] in given.commands
+    none = machine({"config": b64(VALID)})
+    assert none.run() == 0
+    assert not any(
+        c[0] == "hostnamectl" for c in none.commands
+    )  # image/prepare-image.sh set the neutral default
+    blank = machine({"config": b64(VALID), "hostname": ""})
+    assert blank.run() == 0
+    assert not any(c[0] == "hostnamectl" for c in blank.commands)
+
+
 def test_a_password_that_is_not_a_hash_is_ignored_and_never_passed_on(machine):
     m = machine({"config": b64(VALID), "admin_password_hash": "plain-password"})
     m.run()

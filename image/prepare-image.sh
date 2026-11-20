@@ -5,7 +5,10 @@
 # the image), and everything that belongs to one particular machine: the configuration, the services' data, the SSH host keys,
 # the machine id, every authorized SSH key, passwordless sudo rules, shell histories and logs, and the admin's generated
 # initial SSH password, the login account's password hash and the template's root password hash (root is locked), and the
-# journal of every build boot. The sshd drop-in stays for the next first boot.
+# journal of every build boot, the image builder's own leftovers (the log of this very run, other *.log, old-repos-listing and
+# *.bak in /root, the known leftovers in the home of the login account) and the host name of the base VM (reset to
+# `ginnungagap`; guestinfo.ginnungagap.hostname sets the real one at the first boot). The sshd drop-in stays for the next
+# first boot. Nothing else in a home folder is touched.
 #
 # The image keeps the RELEASE it was built from (`ginnungagap update`: installed.json, the unpacked releases and the links the
 # images are built from), so a fresh appliance can check for and install updates at once. A machine that was installed with
@@ -28,6 +31,7 @@ YES=0
 DRY=0
 ZERO=0
 PROJECT=ginnungagap
+DEFAULT_HOSTNAME=ginnungagap
 
 die() { echo "prepare-image.sh: $*" >&2; exit 1; }
 
@@ -37,7 +41,7 @@ while [ $# -gt 0 ]; do
     --dry-run) DRY=1; shift ;;
     --zero-free-space) ZERO=1; shift ;;
     --project) PROJECT=${2:?}; shift 2 ;;
-    -h|--help) sed -n '2,22p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    -h|--help) sed -n '2,/^# --project/p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
     *) die "unknown option $1 (see --help)" ;;
   esac
 done
@@ -183,6 +187,53 @@ remove_access() {
   rm -f /root/.bash_history /home/*/.bash_history /root/.viminfo /home/*/.viminfo
 }
 
+reset_hostname() {
+  # the image carries the name of the base VM until the first boot sets one from guestinfo (firstboot.py)
+  local old
+  old=$(tr -d '[:space:]' </etc/hostname 2>/dev/null || true)
+  printf '%s\n' "$DEFAULT_HOSTNAME" >/etc/hostname
+  if [ -f /etc/hosts ]; then
+    if grep -q '^127\.0\.1\.1[[:space:]]' /etc/hosts; then
+      sed -i "s/^127\.0\.1\.1[[:space:]].*/127.0.1.1\t$DEFAULT_HOSTNAME/" /etc/hosts
+    elif [ -n "$old" ] && [ "$old" != "$DEFAULT_HOSTNAME" ]; then
+      sed -i "s/\b${old//./\\.}\b/$DEFAULT_HOSTNAME/g" /etc/hosts 2>/dev/null || true
+    fi
+  fi
+  # a pretty name that hostnamectl may have stored names the base VM as well
+  [ -f /etc/machine-info ] && sed -i '/^PRETTY_HOSTNAME=/d' /etc/machine-info
+  hostname "$DEFAULT_HOSTNAME" 2>/dev/null || true
+}
+
+remove_known_files() {  # DIR NAME... : files of that name directly in DIR (never folders, never links)
+  local dir=$1 name
+  shift
+  [ -d "$dir" ] && [ ! -L "$dir" ] || return 0
+  for name in "$@"; do
+    find "$dir" -maxdepth 1 -type f -name "$name" -delete 2>/dev/null || true
+  done
+}
+
+login_home() {  # the home folder of the login account (UID 1000, as firstboot), empty when there is none
+  local home
+  home=$(getent passwd 1000 2>/dev/null | cut -d: -f6) || true
+  case "$home" in /|""|/root) ;; /*) printf '%s\n' "$home" ;; esac
+}
+
+remove_image_builder_files() {
+  local home
+  # root's home: the logs and listings of whoever built the image (this run's own log too, if it was tee'd to /root)
+  remove_known_files /root '*.log' '*.bak' old-repos-listing .zsh_history .lesshst .python_history .wget-hsts
+  # registry logins of whoever built the image (docker login writes them here); a copy of the image must carry none
+  remove_known_files /root/.docker config.json
+  # the login account: only the known build artifacts; its Desktop and every other file stay
+  home=$(login_home)
+  if [ -n "$home" ]; then
+    remove_known_files "$home" prepare.log old-repos-listing .zsh_history .lesshst .python_history .wget-hsts \
+      .sudo_as_admin_successful .xsession-errors .xsession-errors.old
+    remove_known_files "$home/.docker" config.json
+  fi
+}
+
 clean_logs() {
   journalctl --rotate >/dev/null 2>&1 || true
   journalctl --vacuum-time=1s >/dev/null 2>&1 || true
@@ -218,9 +269,12 @@ act "remove the build cache and untagged image layers" remove_build_leftovers
 act "remove the configuration, the rendered files, the first-boot marker and the generated SSH password" remove_configuration
 act "remove staged and rejected setup files" remove_staged_configuration
 act "remove the SSH host keys, the machine id and DHCP leases" remove_identity
+act "reset the host name of the base VM to '$DEFAULT_HOSTNAME' (guestinfo sets the real one at the first boot)" reset_hostname
 act "remove the login password hash, shadow backups, authorized SSH keys, passwordless sudo rules and shell histories" remove_access
 act "clean logs, package caches and temporary files" clean_logs
 act "stop the journal and delete the logs of every build boot (/var/log/journal)" clean_journal
+# last before the zero-fill: the log of this very run (/root/prepare.log when it was tee'd there) must not stay in the image either
+act "remove the image builder's leftovers (*.log, *.bak, old-repos-listing in /root, known build files in the login account's home)" remove_image_builder_files
 [ "$ZERO" = 1 ] && act "fill the free disk space with zeros" zero_free_space
 if [ "$DRY" = 0 ]; then
   sync

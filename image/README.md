@@ -59,7 +59,8 @@ What was done (and verified on the lab ESXi) to get the OVA, in order:
    (`ginnungagap build-images --remove-other-images`: a service of an older bundle, such as the dropped `ova-deploy`, must not
    stay in the image). It removes the configuration, staged and rejected Wizard submissions, containers,
    volumes, SSH keys, the generated admin SSH password, the login account's password hash and shadow backups (root's password is locked too), the journal of the build boots, machine ID,
-   DHCP leases, passwordless sudo rules, histories and logs. The login account stays in the image so each clone can set up
+   DHCP leases, passwordless sudo rules, histories and logs, the image builder's own leftovers (`*.log`, `*.bak` and `old-repos-listing` in `/root`,
+   the same known files in the login account's home; its other files stay) and the base VM's host name (reset to `ginnungagap`; guestinfo sets the real one at the first boot). The login account stays in the image so each clone can set up
    its own SSH access at first boot. Shut the VM down with
    `systemctl poweroff` and keep it off until export to avoid creating new keys and a machine ID inside the image.
    `--dry-run` lists the steps.

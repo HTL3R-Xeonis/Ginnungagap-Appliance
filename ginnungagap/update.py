@@ -29,6 +29,7 @@ import sys
 import tarfile
 import tempfile
 import time
+import tomllib
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -324,13 +325,54 @@ def _check_component_names(names: list[str]) -> list[str]:
     return list(dict.fromkeys(mf.resolve_component(n) for n in names))
 
 
-def read_version_py(path: Path) -> str | None:
+# where each component keeps the version that its release tag has to equal (release/build_release.py checks the same files)
+VERSION_SOURCES = {
+    "appliance": "ginnungagap/version.py",
+    "operator": "app/version.py",
+    "builder": "pyproject.toml",
+    "template-services": "VERSION",
+    "generator": "VERSION",
+}
+_VERSION_PY = re.compile(r"""^__version__\s*=\s*["']([^"']+)["']""", re.MULTILINE)
+_PLAUSIBLE_VERSION = re.compile(r"^[0-9A-Za-z][0-9A-Za-z.+_-]{0,63}$")
+_MAX_VERSION_FILE = 256 * 1024
+
+
+def read_component_version(name: str, root: Path) -> tuple[str | None, str]:
+    """
+    The version of the checkout `root` of component `name`, read from the file the release workflow checks (VERSION_SOURCES).
+    Returns (version, "") or (None, why it could not be read). Never raises: a missing, unreadable or odd file is a reason.
+    """
+    relative = VERSION_SOURCES[name]
+    path = root / relative
     try:
-        text = path.read_text(encoding="utf-8")
-    except OSError:
-        return None
-    found = re.search(r'^__version__\s*=\s*"([^"]+)"', text, re.MULTILINE)
-    return found.group(1) if found else None
+        if not path.is_file():
+            return None, f"{relative} is missing"
+        with path.open("rb") as handle:
+            raw = handle.read(_MAX_VERSION_FILE + 1)
+        if len(raw) > _MAX_VERSION_FILE:
+            return None, f"{relative} is too large"
+        text = raw.decode("utf-8")
+    except (OSError, ValueError) as exc:
+        return None, f"{relative} can't be read ({type(exc).__name__})"
+    version: object
+    if name == "builder":
+        try:
+            project = tomllib.loads(text).get("project", {})
+        except (tomllib.TOMLDecodeError, ValueError):
+            return None, f"{relative} is not valid TOML"
+        version = project.get("version") if isinstance(project, dict) else None
+    elif name in ("template-services", "generator"):
+        lines = text.strip().splitlines()
+        version = lines[0].strip() if len(lines) == 1 else None
+    else:
+        found = _VERSION_PY.search(text)
+        version = found.group(1) if found else None
+    if not isinstance(version, str) or not version:
+        return None, f"{relative} declares no version"
+    if not _PLAUSIBLE_VERSION.match(version):
+        return None, f"{relative} holds something that is no version"
+    return version, ""
 
 
 def safe_extract(
@@ -1226,15 +1268,14 @@ class Updater:
             if not candidate.is_dir():
                 return None
             sources[name] = candidate
-        versions = {name: "unknown" for name in mf.COMPONENT_NAMES}
-        operator_version = read_version_py(sources["operator"] / "app" / "version.py")
-        if operator_version:
-            versions["operator"] = operator_version
-        appliance_version = read_version_py(
-            sources["appliance"] / "ginnungagap" / "version.py"
-        )
-        if appliance_version:
-            versions["appliance"] = appliance_version
+        versions = {}
+        for name in mf.COMPONENT_NAMES:
+            found, why = read_component_version(name, sources[name])
+            versions[name] = found or "unknown"
+            if not found:
+                self.say(
+                    f"(the version of {mf.display_name(name)} stays 'unknown': {why})"
+                )
         state = mf.InstalledState(
             appliance_version="adopted",
             components={
