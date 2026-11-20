@@ -5,7 +5,7 @@
 # builds the same files and keeps them as a workflow artifact, and creates NO release and NO tag.
 #
 # Secrets (both optional, the repositories are public):
-#   COMPONENTS_READ_TOKEN  a token that may read the other repositories' releases (anonymous access has a lower rate limit)
+#   COMPONENTS_READ_TOKEN  optional: a token that may read the other repositories' releases (default: the workflow's own token, enough while they are public)
 #   RELEASE_SIGNING_KEY    the private SSH key (no passphrase) that signs components.json; without it the release is unsigned
 name: Release
 
@@ -42,7 +42,9 @@ jobs:
       TAG: ${{ github.event_name == 'push' && github.ref_name || inputs.tag }}
       DRY_RUN: ${{ github.event_name == 'workflow_dispatch' && inputs.dry_run || 'false' }}
       GH_TOKEN: ${{ github.token }}
-      COMPONENTS_READ_TOKEN: ${{ secrets.COMPONENTS_READ_TOKEN }}
+      # the workflow's own token reads the PUBLIC component repositories' releases with the authenticated rate limit; an anonymous
+      # request from a shared runner address is over the 60 requests per hour limit almost always (seen on the first tag run)
+      COMPONENTS_READ_TOKEN: ${{ secrets.COMPONENTS_READ_TOKEN || github.token }}
       RELEASE_SIGNING_KEY: ${{ secrets.RELEASE_SIGNING_KEY }}
 
     steps:
@@ -80,8 +82,8 @@ jobs:
 
       - name: Say what is missing
         run: |
-          if [ -z "$COMPONENTS_READ_TOKEN" ]; then
-            echo "::notice::secret COMPONENTS_READ_TOKEN is not set: the other repositories' releases are read anonymously (fine while they are public)"
+          if [ "$COMPONENTS_READ_TOKEN" = "$GH_TOKEN" ]; then
+            echo "::notice::secret COMPONENTS_READ_TOKEN is not set: the other repositories' releases are read with this workflow's own token (fine while they are public)"
           fi
           if [ -z "$RELEASE_SIGNING_KEY" ]; then
             echo "::warning::secret RELEASE_SIGNING_KEY is not set: components.json will NOT be signed"

@@ -91,7 +91,11 @@ def test_secrets_reach_the_job_only_through_environment_variables_and_are_never_
     text = (WORKFLOWS / "release.yml").read_text(encoding="utf-8")
     assert text.count("secrets.") == 2
     env = load("release.yml")["jobs"]["release"]["env"]
-    assert env["COMPONENTS_READ_TOKEN"] == "${{ secrets.COMPONENTS_READ_TOKEN }}"
+    # the workflow's own token is the fallback: an anonymous call from a shared runner address hits the 60 per hour limit
+    assert (
+        env["COMPONENTS_READ_TOKEN"]
+        == "${{ secrets.COMPONENTS_READ_TOKEN || github.token }}"
+    )
     assert env["RELEASE_SIGNING_KEY"] == "${{ secrets.RELEASE_SIGNING_KEY }}"
     for step in steps(load("release.yml"), "release"):
         run = step.get("run", "")
