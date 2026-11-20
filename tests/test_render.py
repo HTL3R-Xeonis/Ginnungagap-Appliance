@@ -592,7 +592,16 @@ def test_users_session_secret_and_every_other_state_file_of_the_operator_are_on_
 
 def test_every_file_or_folder_the_operator_may_write_is_rendered_if_the_operator_repository_is_next_to_this_one():
     """Drift guard: a new TOPOLOGYOPERATOR_*_FILE/_DIR in the app must be put on the volume here, or it is lost on a recreate."""
-    app = rd.Path(__file__).resolve().parents[2] / "TopologyOperator" / "app"
+    # the sibling folder is called Igdrasyl (the old folder name TopologyOperator is still found)
+    parent = rd.Path(__file__).resolve().parents[2]
+    app = next(
+        (
+            parent / name / "app"
+            for name in ("Igdrasyl", "TopologyOperator")
+            if (parent / name / "app").is_dir()
+        ),
+        parent / "Igdrasyl" / "app",
+    )
     if not app.is_dir():
         pytest.skip("the Operator repository is not next to this one")
     used = set()

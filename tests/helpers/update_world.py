@@ -195,7 +195,7 @@ class World:
         self.token_file = self.config_dir / "update-token"
         (self.config_dir / "install.env").write_text(
             f"PYTHONPATH={self.bundle}\nREPOS_DIR={self.repos}\n"
-            f"GINNUNGAGAP_GENERATOR_CONFIG={self.repos}/topology-generator/config\nGINNUNGAGAP_CONFIG_DIR={self.config_dir}\n"
+            f"GINNUNGAGAP_GENERATOR_CONFIG={self.repos}/Mimyr/config\nGINNUNGAGAP_CONFIG_DIR={self.config_dir}\n"
         )
         (self.bundle / "rendered").mkdir(parents=True)
         (self.bundle / "rendered" / "compose.env").write_text(
