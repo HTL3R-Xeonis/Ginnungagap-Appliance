@@ -199,7 +199,7 @@ def test_the_console_names_the_ova_server_address_and_the_port_the_esxi_hosts_ne
     (etc / "ginnungagap.yml").write_text(yaml.safe_dump(VALID_CONFIG), encoding="utf-8")
     lines, _ = refresh(tmp_path)
     assert (
-        "OVA server for the ESXi hosts: http://ginn.lab:8088 (no login: allow TCP 8088 from the ESXi hosts only)"
+        "OVA server for the ESXi hosts: http://ginn.lab (no login: allow TCP 80 from the ESXi hosts only)"
         in lines
     )
 

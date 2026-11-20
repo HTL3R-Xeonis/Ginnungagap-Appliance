@@ -280,10 +280,10 @@ def _esc(value: str) -> str:
 OVA_INFO = (
     "The ESXi hosts download the OVA files themselves, over plain HTTP, from the template store's folders "
     "(<address>/<folder>/<file>.ova). The server shows only .ova files, read-only, with no directory listing. An ESXi host "
-    "cannot send a login, so there is none: open this port only to the ESXi hosts of your lab network, and allow it "
-    "between them and this appliance (TCP, the port given here). Leave the address empty to use this appliance's own "
-    "address from the public URL with that port; fill it in when the hosts reach the appliance under another address, or "
-    "when the files are served elsewhere."
+    "cannot send a login, so there is none: open TCP port 80 of this appliance only to the ESXi hosts of your lab network "
+    "(an ESXi host can pull from port 80 or 443 only; the gateway hands the .ova files on to this server there). The port "
+    "given here is for other clients. Leave the address empty to use this appliance's own address from the public URL; "
+    "fill it in when the hosts reach the appliance under another address, or when the files are served elsewhere."
 )
 
 

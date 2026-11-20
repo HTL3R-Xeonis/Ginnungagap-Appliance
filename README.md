@@ -63,12 +63,17 @@ The compose file builds the services from the sibling checkouts `../Igdrasyl`, `
 Mjonyr (the builder) does not upload an OVA any more: it reads the OVF descriptor over HTTP and the **ESXi host pulls the disks
 itself**. So the hosts need an HTTP address that serves the OVAs of the template store as `<address>/<folder>/<file>.ova`
 (`<folder>` and `<file>` are the template's `_source_dir` and `file` in the ESXi template API, which is the layout of the
-store itself). The `ova-store` container does that: `services.ova_store: true` (the default), published on
-**`templates.ova_port` (default 8088/TCP)**.
+store itself). The `ova-store` container does that: `services.ova_store: true` (the default). The ESXi hosts reach it through the
+**gateway on plain HTTP port 80** (the gateway hands every `GET`/`HEAD` of a `*.ova` file on to `ova-store`, before any login and
+before the redirect to HTTPS); the container is also published on `templates.ova_port` (default 8088/TCP) for other clients.
+**An ESXi host cannot pull from 8088:** its `httpClient` firewall rule lets TCP 80 and 443 out and nothing else (measured on
+10.20.20.205: not one packet reached port 8088 and the host reported a misleading "HTTP 404"; over port 80 the same OVA came in
+3 s).
 
 * **Setting.** The address the ESXi hosts use goes to the app as `OVA_BASE_URL` (written into `operator.env`; the app's
   profile `api:` section value `ova_base_url`). It is `templates.ova_base_url` when set, otherwise this appliance's own host
-  name or address from `appliance.public_url` with `ova_port`, e.g. `http://10.20.20.181:8088`. Set it yourself when the hosts
+  name or address from `appliance.public_url` on port 80, e.g. `http://10.20.20.181` (with the gateway on another `http_port` than 80 it
+  falls back to `ova_port`, which an ESXi host cannot reach). Set it yourself when the hosts
   reach the appliance under another address; with `services.ova_store: false` (the files are served by something else that
   keeps the same `<folder>/<file>` layout) it is required. The old `services.ova_deploy` and the `ova_deploy` section were
   removed; a configuration that still has them is refused with a message telling you to delete them.
@@ -76,11 +81,12 @@ store itself). The `ova-store` container does that: `services.ova_store: true` (
   descriptors and every other file answer 404, so do names or folders that start with a dot), no directory listing, and `Range`
   requests work (they are what the pull needs). Caddy runs it with the rendered `ova-store/Caddyfile`.
 * **No login, LAN only.** An ESXi host cannot send credentials, so the OVAs can be read without a login by everything that
-  can reach that port. Open it to the ESXi hosts of the lab network only, never to the internet or the user network, and do
-  not put it behind the gateway's `appliance.auth`.
-* **Which port the ESXi hosts need.** TCP `templates.ova_port` (8088 unless changed) from each ESXi host to this appliance,
-  nothing else (the ESXi host opens the connection, so the host's own firewall must allow outgoing HTTP: its `httpClient`
-  ruleset). A firewall between the hosts and the appliance must allow that one port; the
+  can reach port 80 (and the OVA port) of this appliance. Open them to the ESXi hosts of the lab network only, never to the
+  internet or the user network; the gateway's `appliance.auth` does not apply to `*.ova` paths, and with `tls.mode: self-signed`
+  the plain-HTTP port 80 still serves them (every other path there redirects to HTTPS).
+* **Which port the ESXi hosts need.** TCP 80 from each ESXi host to this appliance, nothing else (the ESXi host opens the
+  connection, so the host's own firewall must allow outgoing HTTP: its `httpClient` ruleset, which allows TCP 80 and 443 only).
+  A firewall between the hosts and the appliance must allow that one port; the
   console login text and `ginnungagap status` (row `ova-store`) show the address and the port. The setup wizard says the same
   behind the information icon of "OVA server for the ESXi hosts".
 

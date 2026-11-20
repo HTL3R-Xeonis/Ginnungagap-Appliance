@@ -152,7 +152,7 @@ def test_the_app_gets_the_service_urls_and_its_data_paths(
     assert env["ESXI_TEMPLATE_SERVER_URL"] == "http://template-esxi:8000"
     assert env["GNS3_TEMPLATE_SERVER_URL"] == "http://template-gns3:8000"
     assert env["TOPOLOGY_GENERATOR_URL"] == "http://generator:8000"
-    assert env["OVA_BASE_URL"] == "http://localhost:8088"
+    assert env["OVA_BASE_URL"] == "http://localhost"
     assert "OVA_DEPLOY_URL" not in env
     assert all(
         v.startswith("/data")
@@ -389,13 +389,12 @@ def test_an_invalid_project_name_is_refused(
         render(make_config(), out, generator_sources)
 
 
-def test_the_gateway_has_no_route_to_the_ova_server(
+def test_the_rendered_gateway_file_carries_the_route_to_the_ova_server(
     make_config, out, generator_sources
 ):
-    # the gateway may ask for a login or redirect to https, which an ESXi host cannot handle: the OVA server has its own port
+    # the ESXi hosts reach TCP 80 only: the OVAs are handed on by the gateway, without login and redirect (see below)
     render(make_config(), out, generator_sources)
-    assert "/ova" not in read(out, "Caddyfile")
-    assert "ova-store" not in read(out, "Caddyfile")
+    assert "reverse_proxy ova-store:80" in read(out, "Caddyfile")
 
 
 def test_the_ova_server_gets_a_profile_its_own_caddyfile_and_a_published_port(
@@ -407,7 +406,7 @@ def test_the_ova_server_gets_a_profile_its_own_caddyfile_and_a_published_port(
     compose = env_of(read(out, "compose.env"))
     assert "ova-store" in compose["COMPOSE_PROFILES"].split(",")
     assert compose["OVA_PORT"] == "8090"
-    assert read(out, "operator.env").count("OVA_BASE_URL=http://localhost:8090\n") == 1
+    assert read(out, "operator.env").count("OVA_BASE_URL=http://localhost\n") == 1
 
 
 def test_a_switched_off_ova_server_has_no_profile_and_no_file(
@@ -424,12 +423,12 @@ def test_a_switched_off_ova_server_has_no_profile_and_no_file(
 @pytest.mark.parametrize(
     "public_url, expected",
     [
-        ("http://10.20.20.181", "http://10.20.20.181:8088"),
-        ("https://ginn.lab:8443/", "http://ginn.lab:8088"),
-        ("http://[fd00::5]", "http://[fd00::5]:8088"),
+        ("http://10.20.20.181", "http://10.20.20.181"),
+        ("https://ginn.lab:8443/", "http://ginn.lab"),
+        ("http://[fd00::5]", "http://[fd00::5]"),
     ],
 )
-def test_the_default_ova_address_is_the_appliance_host_on_the_ova_port(
+def test_the_default_ova_address_is_the_appliance_host_on_port_80_where_the_gateway_hands_ovas_on(
     make_config, public_url, expected
 ):
     tls = "self-signed" if public_url.startswith("https") else "off"
@@ -643,3 +642,59 @@ def test_the_legacy_state_names_are_where_the_operator_keeps_them_without_the_va
         "config_snippets",
         "logs",
     }
+
+
+def test_the_default_ova_address_uses_the_ova_port_when_the_gateway_is_not_on_port_80(
+    make_config,
+):
+    """An ESXi host only reaches TCP 80 and 443: with the gateway on another port there is no route on 80 to offer."""
+    config = make_config(appliance={"http_port": 8080})
+    assert rd.ova_base_url(config) == "http://localhost:8088"
+
+
+OVA_HANDLE = "handle @ova {\n\t\treverse_proxy ova-store:80\n\t}"
+
+
+def test_the_gateway_hands_ovas_on_plain_http_to_the_ova_server(make_config):
+    """
+    An ESXi host's firewall rule for pulls lets TCP 80 and 443 out and nothing else, so the OVA server's own port (8088) is
+    never reached: the gateway on port 80 answers GET and HEAD of `*.ova` itself by asking the OVA server (measured on the
+    lab: the host got an HTTP 404 and not one packet reached the OVA server).
+    """
+    text = rd.caddyfile(make_config())
+    assert OVA_HANDLE in text
+    assert "method GET HEAD" in text
+    assert text.index(OVA_HANDLE) < text.index(
+        "handle {\n\t\treverse_proxy ginnungagap"
+    )
+
+
+def test_without_an_ova_server_the_gateway_offers_no_ova_route(make_config):
+    config = make_config(
+        services={"ova_store": False}, templates={"ova_base_url": "http://x"}
+    )
+    assert "@ova" not in rd.caddyfile(config)
+
+
+def test_the_login_of_the_gateway_does_not_apply_to_the_ovas(make_config):
+    config = make_config(
+        appliance={"auth": {"mode": "basic", "user": "u", "password_hash": "$2a$14$x"}}
+    )
+    text = rd.caddyfile(config)
+    assert "@private not path_regexp" in text
+    assert "basic_auth @private {" in text
+    assert text.index("@private not path_regexp") < text.index("basic_auth @private")
+
+
+def test_the_plain_http_site_of_a_tls_appliance_serves_ovas_and_redirects_the_rest(
+    make_config,
+):
+    config = make_config(
+        appliance={"public_url": "https://ginn.lab", "tls": {"mode": "self-signed"}}
+    )
+    text = rd.caddyfile(config)
+    http_site = text[text.index("http:// {") : text.index("ginn.lab, localhost")]
+    assert OVA_HANDLE in http_site
+    assert "redir https://{host}{uri} 308" in http_site
+    https_site = text[text.index("ginn.lab, localhost") :]
+    assert "@ova" not in https_site  # an ESXi host would not trust the certificate

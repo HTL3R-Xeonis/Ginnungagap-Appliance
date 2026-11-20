@@ -18,6 +18,7 @@ import socket
 import subprocess
 from collections.abc import Callable
 from pathlib import Path
+from urllib.parse import urlparse
 
 from ginnungagap import config as config_module
 from ginnungagap import manifest as manifest_module
@@ -182,9 +183,10 @@ def web_lines(config_dir: Path, state_dir: Path, address: str | None) -> list[st
             ]
         lines = [f"Web interface: {url}"]
         if config["services"]["ova_store"]:
-            port = config["templates"]["ova_port"]
+            base = render_module.ova_base_url(config)
+            port = urlparse(base).port or 80
             lines.append(
-                f"OVA server for the ESXi hosts: {render_module.ova_base_url(config)} (no login: allow TCP {port} from the ESXi hosts only)"
+                f"OVA server for the ESXi hosts: {base} (no login: allow TCP {port} from the ESXi hosts only)"
             )
         return [
             *lines,

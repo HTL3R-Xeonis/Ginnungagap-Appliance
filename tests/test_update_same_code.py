@@ -656,3 +656,77 @@ def test_without_an_offline_folder_the_check_writes_available_json(world):
     assert updater.check() == up.EXIT_AVAILABLE
     assert world.layout.available.is_file()
     assert not world.layout.available_offline.exists()
+
+
+# ---- an image built FROM a release carries the release's manifest ----
+
+
+def write_version_files(root: Path, versions: dict[str, str]) -> None:
+    """The version file of the given components in the checkouts (under whichever folder name the fake installation has)."""
+    for name, version in versions.items():
+        folder = next(
+            root / candidate
+            for candidate in (mf.CHECKOUT_NAMES[name], *mf.LEGACY_NAMES[name])
+            if (root / candidate).is_dir()
+        )
+        target = folder / up.VERSION_SOURCES[name]
+        target.parent.mkdir(parents=True, exist_ok=True)
+        if name == "builder":
+            target.write_text(f'[project]\nversion = "{version}"\n')
+        elif name in ("template-services", "generator"):
+            target.write_text(version + "\n")
+        else:
+            target.write_text(f'__version__ = "{version}"\n')
+
+
+def test_an_image_from_a_release_is_recorded_as_that_release(world):
+    release = world.release("a", appliance="1.3.0")
+    manifest = manifest_of(release)
+    write_version_files(
+        world.repos, {n: c.version for n, c in manifest.components.items()}
+    )
+    shutil.copy(release / "components.json", world.repos / "components.json")
+
+    assert world.update("adopt") == 0
+
+    state = world.installed()
+    assert state["appliance"]["version"] == manifest.version
+    assert state["appliance"].get("adopted") is not True
+    for name, component in manifest.components.items():
+        assert state["components"][name]["sha256"] == component.sha256
+        assert state["components"][name]["commit"] == component.commit
+    # the same release offers nothing to replace
+    world.update("check", offline=release)
+    assert "replace" not in world.text()
+
+
+def test_only_the_components_of_the_manifests_version_take_its_checksums(world):
+    release = world.release("a", appliance="1.3.0")
+    manifest = manifest_of(release)
+    write_version_files(
+        world.repos,
+        {
+            "operator": manifest.components["operator"].version,
+            "builder": "0.0.1",  # another version than the release's
+        },
+    )
+    shutil.copy(release / "components.json", world.repos / "components.json")
+
+    assert world.update("adopt") == 0
+
+    state = world.installed()
+    assert state["appliance"]["version"] == "adopted"
+    assert (
+        state["components"]["operator"]["sha256"]
+        == manifest.components["operator"].sha256
+    )
+    assert "sha256" not in state["components"]["builder"]
+
+
+def test_a_broken_manifest_changes_nothing(world):
+    (world.repos / "components.json").write_text("{not json")
+
+    assert world.update("adopt") == 0
+
+    assert world.installed()["appliance"]["version"] == "adopted"
+    assert "not a valid release manifest" in world.text()

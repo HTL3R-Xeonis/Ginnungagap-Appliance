@@ -54,6 +54,11 @@ What was done (and verified on the lab ESXi) to get the OVA, in order:
 1. A Debian 13 VM, installed with `sudo ./install.sh --repos-dir /srv/repos --install-packages --image --no-start`
    (Docker, compose, buildx, `python3-yaml`, `open-vm-tools`, `nfs-common`; the first-boot unit is enabled, SSH password
    login is switched on by a drop-in, there is no configuration).
+   **An image built from a release** (the five tarballs of the release unpacked into `/srv/repos/<Repo>`, not `git archive`): put the
+   release's `components.json` into `/srv/repos` too, after checking its signature and the checksums of the tarballs. `--adopt`
+   (in step 2) then records the machine as that release, with the commits and checksums of the manifest, so `update --check` does
+   not offer to replace code that already is the release's. On a base made from an older image first remove
+   `/var/lib/ginnungagap/update` and `/var/lib/ginnungagap/components`, or the old state is kept (it did once: the image said 1.3.0).
 2. `sudo image/prepare-image.sh --yes --zero-free-space` stops the setup watcher, removes the containers and volumes, then
    builds and pulls the images of every service for offline startup and removes every other tagged Docker image
    (`ginnungagap build-images --remove-other-images`: a service of an older bundle, such as the dropped `ova-deploy`, must not

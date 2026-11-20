@@ -80,6 +80,10 @@ def ova_base_url(config: dict[str, Any]) -> str:
     host = urlparse(config["appliance"]["public_url"]).hostname or "localhost"
     if ":" in host:
         host = f"[{host}]"  # an IPv6 address
+    if config["services"]["ova_store"] and config["appliance"]["http_port"] == 80:
+        # the gateway hands `*.ova` on plain HTTP port 80 to the OVA server (see `caddyfile`): an ESXi host's firewall rule
+        # for pulls (`httpClient`) only lets TCP 80 and 443 out, so the OVA server's own port would never be reached
+        return f"http://{host}"
     return f"http://{host}:{config['templates']['ova_port']}"
 
 
@@ -226,6 +230,10 @@ def operator_env(config: dict[str, Any]) -> str:
     )
 
 
+# the paths of the OVA server: any folders below the root, a name ending in .ova, nothing that starts with a dot
+OVA_PATH = r"`(?i)^/+([^/.][^/]*/+)*[^/.][^/]*\.ova$`"
+
+
 def caddyfile(config: dict[str, Any]) -> str:
     appliance, services = config["appliance"], config["services"]
     routes = []
@@ -239,6 +247,21 @@ def caddyfile(config: dict[str, Any]) -> str:
     if auth["mode"] == "basic":
         routes.append(("/setup/*", "setup:8000"))
 
+    # `*.ova` (GET and HEAD) goes to the OVA server on plain HTTP port 80, whatever the TLS mode and the login: an ESXi host
+    # pulling an OVA can send no login, follows no redirect to HTTPS, and its firewall only lets TCP 80 and 443 out
+    ova_routes: list[str] = (
+        [
+            "\t@ova {",
+            "\t\tmethod GET HEAD",
+            f"\t\tpath_regexp {OVA_PATH}",
+            "\t}",
+            "\thandle @ova {",
+            "\t\treverse_proxy ova-store:80",
+            "\t}",
+        ]
+        if services["ova_store"]
+        else []
+    )
     lines = [HEADER.rstrip("\n"), ""]
     if appliance["tls"]["mode"] == "self-signed":
         name, tls = urlparse(appliance["public_url"]).hostname, ["tls internal"]
@@ -257,7 +280,10 @@ def caddyfile(config: dict[str, Any]) -> str:
             "}",
             "",
             "http:// {",
-            f"\tredir {target} 308",
+            *ova_routes,
+            "\thandle {",
+            f"\t\tredir {target} 308",
+            "\t}",
             "}",
             "",
         ]
@@ -267,9 +293,17 @@ def caddyfile(config: dict[str, Any]) -> str:
     lines.append(f"{site} {{")
     lines += [f"\t{line}" for line in tls]
     lines += ["\tencode zstd gzip"]
+    # the HTTPS site does not offer the OVAs (the plain-HTTP site does); on the plain-HTTP site they come before any login
+    ova_here = [] if tls else ova_routes
+    lines += ova_here
     if auth["mode"] == "basic":
+        # every path asks for the login, except the OVAs (an ESXi host has no login to send)
+        matcher = ""
+        if ova_here:
+            lines.append(f"\t@private not path_regexp {OVA_PATH}")
+            matcher = "@private "
         lines += [
-            "\tbasic_auth {",
+            f"\tbasic_auth {matcher}{{",
             f"\t\t{auth['user']} {auth['password_hash']}",
             "\t}",
         ]
@@ -304,7 +338,7 @@ def ova_store_caddyfile() -> str:
         "\n"
         "\t@ova {\n"
         "\t\tmethod GET HEAD\n"
-        "\t\tpath_regexp `(?i)^/+([^/.][^/]*/+)*[^/.][^/]*\\.ova$`\n"
+        f"\t\tpath_regexp {OVA_PATH}\n"
         "\t}\n"
         "\thandle @ova {\n"
         "\t\tfile_server {\n"

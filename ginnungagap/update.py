@@ -16,6 +16,7 @@ tests without Docker. Standard library only (plus the PyYAML the rest of the pro
 from __future__ import annotations
 
 import contextlib
+import copy
 import json
 import os
 import posixpath
@@ -1368,7 +1369,39 @@ class Updater:
             installed_at=self.stamp(),
             adopted=True,
         )
-        return state, sources
+        return self.with_release_evidence(state, repos, versions), sources
+
+    def with_release_evidence(
+        self, state: mf.InstalledState, repos: Path, versions: dict[str, str]
+    ) -> mf.InstalledState:
+        """
+        An image that was built FROM a release carries that release's `components.json` in the checkouts folder (the image
+        build puts it there after it has checked the signature and the checksums of the tarballs it unpacked). The checkouts
+        then are that release's code, which the manifest says with its commits and checksums: a component whose version is the
+        manifest's takes the manifest's entry over, and when all five match the machine is recorded as that release itself
+        (not as `adopted`), so `--check` does not offer to replace code that is already the release's. A missing, unreadable or
+        different manifest changes nothing: the plain adoption stands.
+        """
+        path = repos / "components.json"
+        if not path.is_file():
+            return state
+        try:
+            release = mf.load(path)
+        except (OSError, mf.ManifestError, ValueError):
+            self.say(
+                f"(ignoring {path}: it is not a valid release manifest; the components are adopted as they are)"
+            )
+            return state
+        matching = [
+            name
+            for name in mf.COMPONENT_NAMES
+            if release.components[name].version == versions[name]
+        ]
+        if len(matching) == len(mf.COMPONENT_NAMES):
+            return mf.state_from_manifest(release, {}, state.installed_at, None)
+        for name in matching:
+            state.components[name] = copy.deepcopy(release.raw["components"][name])
+        return state
 
     def adopt(self) -> int:
         self.require_root("adopting the installed components")

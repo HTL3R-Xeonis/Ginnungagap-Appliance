@@ -31,8 +31,8 @@ templates:                              # where the OVAs and their *.yml descrip
     # nfs: { server: 10.20.20.180, export: /mnt/pool/templates }
   esxi_refresh_minutes: 15
   gns3_refresh_minutes: 5
-  ova_port: 8088                        # plain HTTP, no login: only the ESXi hosts of the lab network may reach it
-  # ova_base_url: http://10.20.20.181:8088  # the address the ESXi hosts pull <folder>/<file>.ova from; default: the public_url's host on ova_port
+  ova_port: 8088                        # plain HTTP, no login, for other clients; the ESXi hosts pull through the gateway on port 80 (their firewall lets only 80/443 out)
+  # ova_base_url: http://10.20.20.181  # the address the ESXi hosts pull <folder>/<file>.ova from (TCP 80 or 443 only); default: the public_url's host on port 80
   # esxi_url: http://10.20.20.171:8000  # only needed when services.template_esxi is false
   # gns3_url: http://10.20.20.171:8001  # only needed when services.template_gns3 is false
 
