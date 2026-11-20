@@ -241,6 +241,8 @@ remove_image_builder_files() {
   local home
   # root's home: the logs and listings of whoever built the image (this run's own log too, if it was tee'd to /root)
   remove_known_files /root '*.log' '*.bak' old-repos-listing .zsh_history .lesshst .python_history .wget-hsts
+  # the folder of the same name that the base of an older image carries (only that one folder, never a link)
+  [ -d /root/old-repos-listing ] && [ ! -L /root/old-repos-listing ] && rm -rf -- /root/old-repos-listing
   # registry logins of whoever built the image (docker login writes them here); a copy of the image must carry none
   remove_known_files /root/.docker config.json
   # the login account: only the known build artifacts; its Desktop and every other file stay
