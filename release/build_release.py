@@ -36,6 +36,7 @@ import subprocess
 import sys
 import tarfile
 import tempfile
+import time
 import tomllib
 import urllib.error
 import urllib.request
@@ -55,6 +56,10 @@ DEFAULT_API = "https://api.github.com"
 DEFAULT_WEB = "https://github.com"
 API_MODES = ("auto", "always", "never")
 TOKEN_VARIABLE = "COMPONENTS_READ_TOKEN"
+# A tag of the appliance is often pushed while the release of a component is still being built; the release then does not
+# exist yet (HTTP 404). The build waits for it this long, asking again every RELEASE_POLL_SECONDS, before it gives up.
+RELEASE_WAIT_SECONDS = 300
+RELEASE_POLL_SECONDS = 15
 MAX_TARBALL_BYTES = (
     500 * 1024 * 1024
 )  # the appliance refuses larger ones too (update plan, 7.3)
@@ -242,6 +247,34 @@ def fetch_release_asset(
     return _fetch_via_api(repo, tag, name, api, token)
 
 
+def wait_for_release_asset(
+    repo: str,
+    tag: str,
+    name: str,
+    api: str,
+    token: str | None,
+    web: str = DEFAULT_WEB,
+    api_mode: str = "auto",
+    wait: float | None = None,
+) -> bytes:
+    """
+    `fetch_release_asset`, but a 404 (the release is not published yet) is asked again every RELEASE_POLL_SECONDS for up
+    to `wait` seconds. Every other failure, and a 404 after the wait, is raised at once.
+    """
+    deadline = time.monotonic() + (RELEASE_WAIT_SECONDS if wait is None else wait)
+    while True:
+        try:
+            return fetch_release_asset(repo, tag, name, api, token, web, api_mode)
+        except ReleaseError as exc:
+            if exc.status != 404 or time.monotonic() + RELEASE_POLL_SECONDS > deadline:
+                raise
+            print(
+                f"{repo} {tag}: not published yet, asking again in {RELEASE_POLL_SECONDS} s",
+                file=sys.stderr,
+            )
+            time.sleep(RELEASE_POLL_SECONDS)
+
+
 def _fetch_via_api(
     repo: str, tag: str, name: str, api: str, token: str | None
 ) -> bytes:
@@ -345,7 +378,7 @@ def _obtain(
     if checkouts is not None and (checkouts / repo_name).is_dir():
         return git_archive(checkouts / repo_name, entry["tag"], prefix, dest)
     if fetch:
-        data = fetch_release_asset(
+        data = wait_for_release_asset(
             entry["repo"], entry["tag"], asset, api, token, web, api_mode
         )
         try:

@@ -751,6 +751,12 @@ class FakeGitHub:
         self.server.server_close()
 
 
+@pytest.fixture(autouse=True)
+def no_waiting_for_releases(monkeypatch):
+    """The tests that expect a 404 must not wait the five minutes the real build waits for a release that is not there yet."""
+    monkeypatch.setattr(build_release, "RELEASE_WAIT_SECONDS", 0)
+
+
 @pytest.fixture
 def fake_github(work):
     servers = []
@@ -961,3 +967,78 @@ def test_fetch_by_download_address_still_refuses_a_wrong_checksum_and_a_missing_
     with pytest.raises(build_release.ReleaseError, match=r"no usable .*sha256"):
         _fetch_web(work, fake_github(drop_sums=True))
     assert not work["out"].exists()
+
+
+# ---- a component release that is not published yet is waited for --------------------------------------------------------
+
+
+class _Clock:
+    """Time that only moves when the build sleeps."""
+
+    def __init__(self):
+        self.now = 0.0
+        self.sleeps: list[float] = []
+
+    def monotonic(self):
+        return self.now
+
+    def sleep(self, seconds):
+        self.sleeps.append(seconds)
+        self.now += seconds
+
+
+@pytest.fixture
+def clock(monkeypatch):
+    clock = _Clock()
+    monkeypatch.setattr(build_release.time, "monotonic", clock.monotonic)
+    monkeypatch.setattr(build_release.time, "sleep", clock.sleep)
+    return clock
+
+
+def _scripted(monkeypatch, answers):
+    calls = []
+
+    def fake(*args, **kwargs):
+        calls.append(args)
+        answer = answers[min(len(calls), len(answers)) - 1]
+        if isinstance(answer, Exception):
+            raise answer
+        return answer
+
+    monkeypatch.setattr(build_release, "fetch_release_asset", fake)
+    return calls
+
+
+def _wait(wait=300):
+    return build_release.wait_for_release_asset(
+        "o/r", "v1.0.0", "x.tar.gz", "http://api", None, wait=wait
+    )
+
+
+def test_a_release_that_appears_while_the_build_waits_is_taken(monkeypatch, clock):
+    missing = build_release.ReleaseError("HTTP 404", 404)
+    calls = _scripted(monkeypatch, [missing, missing, b"data"])
+    assert _wait() == b"data"
+    assert len(calls) == 3 and clock.sleeps == [build_release.RELEASE_POLL_SECONDS] * 2
+
+
+def test_a_release_that_never_appears_fails_after_the_wait_with_the_404(
+    monkeypatch, clock
+):
+    calls = _scripted(monkeypatch, [build_release.ReleaseError("HTTP 404", 404)])
+    with pytest.raises(build_release.ReleaseError, match="HTTP 404"):
+        _wait(wait=300)
+    assert 300 - build_release.RELEASE_POLL_SECONDS <= clock.now <= 300
+    assert len(calls) == 300 // build_release.RELEASE_POLL_SECONDS + 1
+
+
+def test_only_a_404_is_waited_for(monkeypatch, clock):
+    calls = _scripted(monkeypatch, [build_release.ReleaseError("HTTP 500", 500)])
+    with pytest.raises(build_release.ReleaseError, match="HTTP 500"):
+        _wait()
+    assert len(calls) == 1 and clock.sleeps == []
+
+
+def test_the_default_wait_is_five_minutes():
+    source = (ROOT / "release" / "build_release.py").read_text()
+    assert "RELEASE_WAIT_SECONDS = 300" in source

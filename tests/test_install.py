@@ -483,6 +483,12 @@ def test_the_check_timer_the_check_service_and_the_resume_unit_are_written(place
     assert f"ConditionPathExists={place['state']}/update/transaction.json" in resume
     assert f"ExecStart={place['bin']}/ginnungagap update --resume" in resume
     assert "Before=ginnungagap.service" in resume
+    # never ordered before a .path unit: paths.target -> basic.target -> docker.service -> this unit is a cycle
+    before = next(
+        line for line in resume.splitlines() if line.startswith("Before=")
+    ).split()
+    assert not [unit for unit in before if unit.endswith(".path")]
+    assert "ginnungagap-setup-apply.service" in before
 
 
 def test_the_check_condition_runs_for_real_and_follows_the_configuration(place):

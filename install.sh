@@ -402,7 +402,10 @@ UPDATETIMER
 Description=Ginnungagap: finish or roll back an update that was interrupted
 Requires=docker.service
 After=docker.service
-Before=ginnungagap.service ginnungagap-setup-apply.path
+# before the SERVICE the wizard's path unit starts, never before that path unit: a path unit is pulled in by paths.target,
+# which basic.target waits for, and docker.service starts after basic.target - ordering this unit between them is a cycle,
+# and systemd then drops one of its jobs at random (once docker.service itself: no containers after that boot)
+Before=ginnungagap.service ginnungagap-setup-apply.service
 ConditionPathExists=$UPDATE_DIR/transaction.json
 
 [Service]
