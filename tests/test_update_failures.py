@@ -298,10 +298,13 @@ def test_a_container_that_does_not_become_healthy_rolls_everything_back(
 def test_the_final_health_gate_failing_rolls_back(world, installed):
     before = world.installed()
     b = b_release(world)
-    world.apply.codes = [1, 0]  # unhealthy after the update, fine after the rollback
+    world.apply.codes = [1]  # unhealthy after the update ...
+    world.apply_installed.codes = [
+        0
+    ]  # ... fine after the rollback (done by the restored program)
     assert world.update("apply", offline=b) == up.EXIT_ROLLED_BACK
     assert "not healthy after the update" in world.text()
-    assert len(world.apply.calls) == 2
+    assert len(world.apply.calls) == 1 and len(world.apply_installed.calls) == 1
     nothing_changed(world, before)
 
 
@@ -460,7 +463,10 @@ def test_rollback_goes_back_one_release_without_the_network(world, installed):
     assert not any(
         c.startswith("build") for c in world.docker.compose()
     )  # no build: no network
-    assert len(world.apply.calls) == 1 and world.restores == []
+    # the tooling went back: the configuration is rendered and started by the RESTORED program (a new process), not by the
+    # newer code that runs this rollback
+    assert world.apply.calls == [] and len(world.apply_installed.calls) == 1
+    assert world.apply_installed.calls[0]["build"] is False and world.restores == []
     assert [a["action"] for a in world.audit()][-2:] == ["rollback", "rollback"]
     assert world.audit()[-1]["result"] == "ok"
 

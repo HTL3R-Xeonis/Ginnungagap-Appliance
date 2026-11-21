@@ -91,8 +91,9 @@ def test_a_crash_looping_operator_is_caught_at_the_service_step_not_at_the_final
     world.docker.on_run = [stop_looping_after_rollback]
     assert world.update("apply", offline=b) == up.EXIT_ROLLED_BACK
     assert "ginnungagap is not healthy: it keeps restarting" in world.text()
-    # the 120 s final gate (operate.apply) only ran once: for the rollback. Before the fix it ran for the update first.
-    assert len(world.apply.calls) == 1
+    # the 120 s final gate (operate.apply) never ran for the update (the service step caught it); the rollback's apply was
+    # done by the restored program
+    assert world.apply.calls == [] and len(world.apply_installed.calls) == 1
     assert world.audit()[-1]["result"] == "rolled_back"
 
 
@@ -477,3 +478,42 @@ def test_a_closed_pipe_ends_the_command_quietly(monkeypatch, capfd):
     monkeypatch.setattr(cli, "main", broken)
     assert cli._run() == 141
     assert "Traceback" not in capfd.readouterr().err
+
+
+def test_the_rollback_applies_through_the_restored_program_in_a_new_process(
+    tmp_path, monkeypatch
+):
+    """`apply` after a tooling rollback is the installed command run as a new process, in the bundle folder, no build."""
+    seen = {}
+
+    def fake_run(command, check, cwd):
+        seen.update(command=command, check=check, cwd=cwd)
+        return subprocess.CompletedProcess(command, 7)
+
+    wrapper = tmp_path / "ginnungagap"
+    wrapper.write_text("#!/bin/sh\n")
+    monkeypatch.setenv("GINNUNGAGAP_WRAPPER", str(wrapper))
+    monkeypatch.setattr(up.subprocess, "run", fake_run)
+    bundle = tmp_path / "app"
+    bundle.mkdir()
+
+    code = up._default_apply_with_installed_program(
+        "/etc/ginnungagap/ginnungagap.yml", bundle, "/gen", wait_seconds=60, build=False
+    )
+
+    assert code == 7
+    assert seen["command"] == [
+        str(wrapper),
+        "apply",
+        "/etc/ginnungagap/ginnungagap.yml",
+        "--no-build",
+        "--generator-config",
+        "/gen",
+    ]
+    assert seen["cwd"] == bundle and seen["check"] is False
+
+    # without the wrapper the module is run with the same interpreter
+    monkeypatch.setenv("GINNUNGAGAP_WRAPPER", str(tmp_path / "missing"))
+    up._default_apply_with_installed_program("/c.yml", bundle, None)
+    assert seen["command"][1:4] == ["-m", "ginnungagap", "apply"]
+    assert "--generator-config" not in seen["command"]

@@ -157,6 +157,7 @@ class World:
         self.layout = up.Layout.under(self.root, self.config_dir)
         self.docker = Docker()
         self.apply = FakeApply()
+        self.apply_installed = FakeApply()  # `apply` by the restored program (a new process), used after a tooling rollback
         self.out: list[str] = []
         self.err: list[str] = []
         self.journal: list[str] = []
@@ -217,6 +218,7 @@ class World:
             free_bytes=lambda path: self.free,
             confirm=lambda question: self.confirm,
             apply=self.apply,
+            apply_installed=self.apply_installed,
             backup=self.fake_backup,
             restore=self.fake_restore,
             reexec=self.reexec,

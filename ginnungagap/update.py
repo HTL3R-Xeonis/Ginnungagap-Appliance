@@ -283,6 +283,31 @@ def _default_reexec(transaction_id: str, config_file: str | None) -> int:
     ).returncode
 
 
+def _default_apply_with_installed_program(
+    config_file: str | Path,
+    bundle: Path,
+    generator_config: str | Path | None,
+    wait_seconds: float = 90.0,
+    **_: Any,
+) -> int:
+    """
+    `apply` through the program that is installed NOW, in a new process: after a rollback of the tooling the program files
+    on disk are the old ones, but this process (the engine) still runs the newer code, and an in-process `apply` would
+    render the configuration (gateway Caddyfile, compose environment) with the newer code. `--no-build`: the images are the
+    restored ones. Only options every version of the command knows are passed.
+    """
+    wrapper = os.environ.get("GINNUNGAGAP_WRAPPER", "/usr/local/bin/ginnungagap")
+    command = (
+        [wrapper] if Path(wrapper).exists() else [sys.executable, "-m", "ginnungagap"]
+    )
+    arguments = ["apply", str(config_file), "--no-build"]
+    if generator_config:
+        arguments += ["--generator-config", str(generator_config)]
+    return subprocess.run(
+        [*command, *arguments], check=False, cwd=bundle if bundle.is_dir() else None
+    ).returncode
+
+
 @dataclass
 class Env:
     """Everything an update needs from the outside. The defaults are the real thing; tests replace what they fake."""
@@ -302,6 +327,8 @@ class Env:
         verify_with_ssh_keygen
     )
     apply: Callable[..., int] = operate.apply
+    # `apply` by the program that is installed now (a new process): used after the tooling was put back by a rollback
+    apply_installed: Callable[..., int] = _default_apply_with_installed_program
     backup: Callable[..., Path | None] = operate.backup
     restore: Callable[..., int] = operate.restore
     reexec: Callable[[str, str | None], int] = _default_reexec
@@ -2522,7 +2549,11 @@ class Updater:
         if restarted and has_env and self.config is not None:
             _, restart = self.restart_targets(affected)
             self.restart_groups(restart)
-            code = self.env.apply(
+            # with the tooling put back, the code in this process is NEWER than the program on disk: let the restored
+            # program render and start (a new process), or the rendered files (gateway Caddyfile, compose environment)
+            # would stay at the newer version until somebody runs `apply`
+            apply = self.env.apply_installed if tooling else self.env.apply
+            code = apply(
                 self.config_file,
                 self.bundle,
                 os.environ.get("GINNUNGAGAP_GENERATOR_CONFIG"),
