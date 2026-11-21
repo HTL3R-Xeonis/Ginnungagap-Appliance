@@ -14,13 +14,13 @@ appliance:
 components:
   appliance:
     repo: HTL3R-Xeonis/Ginnungagap-Appliance
-    tag: v1.3.2
+    tag: v1.3.3
   operator:
     repo: HTL3R-Xeonis/Igdrasyl
-    tag: v1.3.1
+    tag: v1.3.2
   builder:
     repo: HTL3R-Xeonis/TopologyBuilder
-    tag: v1.0.1
+    tag: v1.0.2
   template-services:
     repo: HTL3R-Xeonis/Hugyn-and-Munyn
     tag: v1.0.1
