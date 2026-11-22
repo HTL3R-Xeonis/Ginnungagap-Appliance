@@ -535,10 +535,10 @@ publishes or pushes on its own**.
    tarballs, **builds the service images from them and pushes them to `ghcr.io/htl3r-xeonis/ginnungagap-<service>:<version>`**
    (`release/build_images.py`; the digests are read back and written to `images.json`), builds the final release files with the
    images listed in `components.json` (`build_release.py --images`), signs them and creates the release (marked as pre-release when
-   the tag contains a `-`). The packages are created private by GitHub; set each of the seven (`ginnungagap-ginnungagap`,
-   `-template-esxi`, `-collector-esxi`, `-template-gns3`, `-collector-gns3`, `-generator`, `-setup`) to **public** once (organisation
-   > Packages > the package > Package settings > Change visibility), otherwise an appliance can't pull them and builds them
-   itself. A dry run builds the images, pushes nothing and lists none. The workflow can also be started by hand with `dry_run` (the
+   the tag contains a `-`). The seven packages (`ginnungagap-ginnungagap`, `-template-esxi`, `-collector-esxi`, `-template-gns3`,
+   `-collector-gns3`, `-generator`, `-setup`) are linked to this repository by the source label of the images and were public from the
+   first push (as the repository is); if one is private (organisation > Packages > the package > Package settings > Change
+   visibility), an appliance can't pull it and builds that service itself. A dry run builds the images, pushes nothing and lists none. The workflow can also be started by hand with `dry_run` (the
    default), which keeps the files as a workflow artifact and creates nothing. `.github/workflows/ci.yml` runs the tests and
    ruff on every push.
 5. **Signing (once).** `ssh-keygen -t ed25519 -N '' -C ginnungagap-release -f release_key`, put the line described in
