@@ -18,6 +18,7 @@ import time
 from collections.abc import Callable
 from datetime import datetime
 from pathlib import Path
+from typing import Any
 
 from ginnungagap import config as config_module
 from ginnungagap import render as render_module
@@ -624,6 +625,37 @@ def retag_images(
         else:
             missing.append(service)
     return done, missing
+
+
+def pull_images(
+    project: str,
+    images: dict[str, Any],
+    services: list[str],
+    run: Runner,
+    out: Callable[[str], None] = print,
+) -> tuple[list[str], list[str]]:
+    """
+    The prebuilt image of each service from the release (`images` of components.json, by digest): pulled and tagged the way
+    compose builds it (`<project>-<service>:latest`), so nothing else in the update changes. Returns (the services that are
+    there now, the services that still have to be BUILT: no entry in the release, or the pull failed).
+    """
+    pulled: list[str] = []
+    build: list[str] = []
+    for service in services:
+        entry = images.get(service)
+        ref = entry.get("ref") if isinstance(entry, dict) else None
+        if not isinstance(ref, str) or not ref:
+            build.append(service)
+            continue
+        out(f"pulling the image of {service} ({ref.split('@', 1)[0]})")
+        if run(["docker", "pull", ref]) != 0 or (
+            run(["docker", "tag", ref, image_reference(project, service)]) != 0
+        ):
+            out(f"could not get the image of {service}; it is built here instead")
+            build.append(service)
+            continue
+        pulled.append(service)
+    return pulled, build
 
 
 def build_services(

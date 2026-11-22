@@ -1042,3 +1042,72 @@ def test_only_a_404_is_waited_for(monkeypatch, clock):
 def test_the_default_wait_is_five_minutes():
     source = (ROOT / "release" / "build_release.py").read_text()
     assert "RELEASE_WAIT_SECONDS = 300" in source
+
+
+# ---- the prebuilt images of a release (stage 2) ----
+
+
+IMAGE_DIGEST = "ab" * 32
+
+
+def _images(*services):
+    return {
+        s: {
+            "ref": f"ghcr.io/htl3r-xeonis/ginnungagap-{s}@sha256:{IMAGE_DIGEST}",
+            "tag": f"ghcr.io/htl3r-xeonis/ginnungagap-{s}:1.3.0",
+        }
+        for s in services
+    }
+
+
+def test_the_images_of_a_release_end_up_in_the_signed_manifest(work):
+    document = build(work, images=_images("ginnungagap", "setup"))
+    assert set(document["images"]) == {"ginnungagap", "setup"}
+    on_disk = json.loads((work["out"] / "components.json").read_text())
+    assert on_disk["images"]["setup"]["ref"].endswith("@sha256:" + IMAGE_DIGEST)
+    assert set(manifest_module.load(work["out"] / "components.json").images) == {
+        "ginnungagap",
+        "setup",
+    }
+
+
+def test_a_release_without_images_has_an_empty_list(work):
+    assert build(work)["images"] == {}
+
+
+def test_an_image_that_is_not_by_digest_in_the_registry_is_refused(work):
+    bad = {"generator": {"ref": "ghcr.io/htl3r-xeonis/ginnungagap-generator:1.3.0"}}
+    with pytest.raises(build_release.ReleaseError, match="images.generator.ref"):
+        build(work, images=bad)
+    assert not work["out"].exists() or not any(work["out"].iterdir())
+
+
+def test_the_command_line_takes_an_images_file(work, tmp_path, capsys):
+    images = tmp_path / "images.json"
+    images.write_text(json.dumps(_images("template-esxi")))
+    code = build_release.main(
+        [
+            "--pins", str(work["pins"]), "--out", str(work["out"]),
+            "--sources", str(work["sources"]), "--images", str(images),
+        ]
+    )  # fmt: skip
+    assert code == 0
+    assert (
+        "template-esxi"
+        in json.loads((work["out"] / "components.json").read_text())["images"]
+    )
+    broken = tmp_path / "broken.json"
+    broken.write_text("[1]")
+    shutil.rmtree(work["out"])
+    argv = [
+        "--pins",
+        str(work["pins"]),
+        "--out",
+        str(work["out"]),
+        "--sources",
+        str(work["sources"]),
+        "--images",
+        str(broken),
+    ]
+    assert build_release.main(argv) == 1
+    assert "not a JSON object" in capsys.readouterr().err

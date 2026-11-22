@@ -385,7 +385,7 @@ fields for it and keeps a changed `update:` block when the form is submitted aga
 ```
 ginnungagap update [--check | --apply | --rollback | --list | --versions | --history | --adopt | --set-token | --resume]
                    [--offline-dir DIR] [--version X.Y.Z] [--channel stable|prerelease] [--component NAME]...
-                   [--yes] [--dry-run] [--no-backup] [--force] [--allow-downgrade] [--no-start]
+                   [--yes] [--dry-run] [--no-backup] [--force] [--allow-downgrade] [--no-start] [--build-local]
                    [--wait SECONDS] [--restore-data] [--config FILE] [--json]
 ginnungagap versions                      # the same as update --versions
 ```
@@ -467,8 +467,16 @@ Good to know:
   covers that gap and the page reloads by itself once the new version answers.
 * **From the browser** (Igdrasyl's admin panel, section Updates; see "Updating from the web" below): the same check and the same apply,
   admin only, never automatic.
-* **Building needs the internet** (pip, Docker Hub), as `apply` without `--no-build` always did; a folder source (`--offline-dir`) only
-  removes the need for GitHub. A rollback needs no build while the rollback images are there.
+* **Prebuilt images (stage 2).** A release made by the workflow carries the service images in `components.json` (`images`, each one
+  `ghcr.io/htl3r-xeonis/ginnungagap-<service>@sha256:<digest>`, covered by the signature). `--apply` then PULLS the image of every
+  changed service by that digest and tags it the way compose builds it (`ginnungagap-<service>:latest`): a pull of seconds to a few
+  minutes instead of the build of about two minutes, no pip or Docker Hub on the appliance, the same image for every appliance. A
+  service whose image is not in the release (or can't be pulled: no access to `ghcr.io`, the package is private) is built here instead,
+  as before, so an update never fails only because of the registry. `--build-local` forces the build here. The images need `ghcr.io`
+  (reachable without a login only when the package is public), a folder source (`--offline-dir`) still needs it for the pull.
+* **A release without images** (older releases, or one built by hand) is built on the appliance: that needs the internet (pip, Docker
+  Hub), as `apply` without `--no-build` always did; a folder source (`--offline-dir`) only removes the need for GitHub. A rollback
+  needs no build and no pull while the rollback images are there.
 * **Files**: `/var/lib/ginnungagap/update/{installed.json,history/,available.json,available-offline.json,transaction.json,web-status.json,audit.log,lock}`; every apply, rollback,
   resume and token change is one JSON line in `audit.log` (who, from, to, result; a refused apply is one line, `refused`) and in the journal (`journalctl -t ginnungagap-update`).
 * Tests: `tests/test_manifest.py`, `test_releases.py`, `test_release_web.py` (the web side: no API call, hostile redirects, the fallbacks), `test_update.py`, `test_update_failures.py` (the failure matrix), `test_update_same_code.py` (same version with other code, the record of the earlier release) run against a
@@ -523,8 +531,14 @@ publishes or pushes on its own**.
 
    The script refuses a tag that differs from the version file, a tarball with another top folder or a path leaving it, a
    missing component, and a non-empty `--out`. The same output is reproducible byte for byte (`--released` fixes the time).
-4. Tag and push `vX.Y.Z` of this repository: `.github/workflows/release.yml` runs the tests and ruff, builds the files and creates the
-   release (marked as pre-release when the tag contains a `-`). The workflow can also be started by hand with `dry_run` (the
+4. Tag and push `vX.Y.Z` of this repository: `.github/workflows/release.yml` runs the tests and ruff, fetches the component
+   tarballs, **builds the service images from them and pushes them to `ghcr.io/htl3r-xeonis/ginnungagap-<service>:<version>`**
+   (`release/build_images.py`; the digests are read back and written to `images.json`), builds the final release files with the
+   images listed in `components.json` (`build_release.py --images`), signs them and creates the release (marked as pre-release when
+   the tag contains a `-`). The packages are created private by GitHub; set each of the seven (`ginnungagap-ginnungagap`,
+   `-template-esxi`, `-collector-esxi`, `-template-gns3`, `-collector-gns3`, `-generator`, `-setup`) to **public** once (organisation
+   > Packages > the package > Package settings > Change visibility), otherwise an appliance can't pull them and builds them
+   itself. A dry run builds the images, pushes nothing and lists none. The workflow can also be started by hand with `dry_run` (the
    default), which keeps the files as a workflow artifact and creates nothing. `.github/workflows/ci.yml` runs the tests and
    ruff on every push.
 5. **Signing (once).** `ssh-keygen -t ed25519 -N '' -C ginnungagap-release -f release_key`, put the line described in

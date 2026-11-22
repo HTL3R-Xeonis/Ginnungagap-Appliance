@@ -1,6 +1,10 @@
 # Builds the release of the whole appliance: components.json, SHA256SUMS, the tarballs of the five components (and, when the
 # signing key is set, components.json.sig) - and publishes them as a GitHub release of THIS repository.
 #
+# It also builds the service images of the release and pushes them to the GitHub container registry
+# (ghcr.io/htl3r-xeonis/ginnungagap-<service>:<version>); components.json lists them BY DIGEST (`images`), so an appliance that
+# updates pulls them instead of building them (update stage 2). A dry run builds the images but pushes nothing.
+#
 # It runs on a pushed tag v* (nothing runs before somebody pushes one) or by hand with "dry_run" (the default): a dry run
 # builds the same files and keeps them as a workflow artifact, and creates NO release and NO tag.
 #
@@ -37,6 +41,7 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write # a release is created only when the run is not a dry run
+      packages: write # the service images are pushed to ghcr.io only when the run is not a dry run
     env:
       PYTHON_VERSION: "3.12"
       TAG: ${{ github.event_name == 'push' && github.ref_name || inputs.tag }}
@@ -89,12 +94,48 @@ jobs:
             echo "::warning::secret RELEASE_SIGNING_KEY is not set: components.json will NOT be signed"
           fi
 
+      # Pass 1: the five tarballs (the components' own releases, the appliance's git archive). The images are built from them, so
+      # what a release contains is what its images were built from.
+      - name: Fetch the component tarballs
+        run: |
+          set -eu
+          args=(--pins release/components.in.yml --out dist/pass1 --fetch --tag "$TAG")
+          if [ "$DRY_RUN" = "true" ]; then args+=(--ref HEAD); else args+=(--ref "refs/tags/$TAG"); fi
+          python release/build_release.py "${args[@]}"
+
+      - name: Unpack the components for the image build
+        run: |
+          set -eu
+          mkdir -p repos
+          for archive in dist/pass1/*.tar.gz; do
+            name="$(basename "$archive")"
+            case "$name" in
+              Ginnungagap-Appliance-*) continue ;; # the appliance itself is this checkout
+            esac
+            folder="${name%-[0-9]*.tar.gz}"
+            mkdir -p "repos/$folder"
+            tar -xzf "$archive" -C "repos/$folder" --strip-components=1
+          done
+          ls repos
+
+      - name: Log in to the container registry
+        if: env.DRY_RUN != 'true'
+        run: echo "$GH_TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
+
+      - name: Build the service images (and push them, unless it is a dry run)
+        run: |
+          set -eu
+          push=()
+          if [ "$DRY_RUN" != "true" ]; then push+=(--push); fi
+          python release/build_images.py --repos-dir repos --version "${TAG#v}" "${push[@]}" --out dist/images.json
+          cat dist/images.json
+
+      # Pass 2: the release files with the images in components.json, signed
       - name: Build the release files
         run: |
           set -eu
           trap 'rm -f "$RUNNER_TEMP/release_key"' EXIT
-          args=(--pins release/components.in.yml --out dist/release --fetch --tag "$TAG" --notes-file dist/notes.md)
-          if [ "$DRY_RUN" = "true" ]; then args+=(--ref HEAD); else args+=(--ref "refs/tags/$TAG"); fi
+          args=(--pins release/components.in.yml --out dist/release --sources dist/pass1 --images dist/images.json --tag "$TAG" --notes-file dist/notes.md)
           if [ -n "$RELEASE_SIGNING_KEY" ]; then
             umask 077
             printf '%s\n' "$RELEASE_SIGNING_KEY" > "$RUNNER_TEMP/release_key"

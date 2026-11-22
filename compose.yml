@@ -8,6 +8,11 @@ name: ginnungagap
 
 # 10 s, not 30 s: an update waits for the first healthy answer of every restarted service, and a check only runs once per interval
 # (three failed checks in a row still take 30 s to mark a service unhealthy, so a short hiccup is not reported)
+# the images carry the repository they come from: GitHub links a package of the registry to it by this label (access and visibility
+# are then those of the repository) - see release/build_images.py
+x-image-labels: &image-labels
+  org.opencontainers.image.source: https://github.com/HTL3R-Xeonis/Ginnungagap-Appliance
+
 x-healthcheck-python: &probe
   interval: 10s
   timeout: 5s
@@ -30,6 +35,7 @@ services:
     profiles: [ginnungagap]
     build:
       context: .
+      labels: *image-labels
       dockerfile: docker/operator.Dockerfile
       additional_contexts:
         operator: ${REPOS_DIR:-..}/Igdrasyl
@@ -50,7 +56,9 @@ services:
 
   template-esxi:
     profiles: [template-esxi]
-    build: ${REPOS_DIR:-..}/Hugyn-and-Munyn/yaml-api
+    build:
+      context: ${REPOS_DIR:-..}/Hugyn-and-Munyn/yaml-api
+      labels: *image-labels
     restart: unless-stopped
     environment:
       TZ: ${TZ:-UTC}
@@ -67,6 +75,7 @@ services:
     profiles: [collector-esxi]
     build:
       context: .
+      labels: *image-labels
       dockerfile: docker/collector-esxi.Dockerfile
       additional_contexts:
         services: ${REPOS_DIR:-..}/Hugyn-and-Munyn
@@ -86,6 +95,7 @@ services:
     profiles: [template-gns3]
     build:
       context: ${REPOS_DIR:-..}/Hugyn-and-Munyn/gns3-template-api
+      labels: *image-labels
       dockerfile: gns3_api.Dockerfile
     restart: unless-stopped
     environment:
@@ -101,6 +111,7 @@ services:
     profiles: [collector-gns3]
     build:
       context: .
+      labels: *image-labels
       dockerfile: docker/collector-gns3.Dockerfile
       additional_contexts:
         services: ${REPOS_DIR:-..}/Hugyn-and-Munyn
@@ -117,6 +128,7 @@ services:
     profiles: [generator]
     build:
       context: ${REPOS_DIR:-..}/Mimyr
+      labels: *image-labels
       dockerfile: topology.Dockerfile
     restart: unless-stopped
     env_file:
@@ -151,6 +163,7 @@ services:
     profiles: [setup]
     build:
       context: .
+      labels: *image-labels
       dockerfile: docker/setup.Dockerfile
       additional_contexts:
         caddy: "docker-image://caddy:2"  # only for its `caddy hash-password`, see docker/setup.Dockerfile

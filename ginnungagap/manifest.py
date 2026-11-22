@@ -24,6 +24,22 @@ from typing import Any
 
 SCHEMA = 1
 
+# The services whose image the release pipeline builds and pushes to the registry (`images` of components.json); `gateway` and
+# `ova-store` run the upstream caddy image and are not built. tests/test_compose.py keeps this list equal to the services with a
+# `build:` section in compose.yml.
+IMAGE_SERVICES = (
+    "ginnungagap",
+    "template-esxi",
+    "collector-esxi",
+    "template-gns3",
+    "collector-gns3",
+    "generator",
+    "setup",
+)
+# What `images.<service>.ref` may look like: the one registry, an image of this appliance by DIGEST (a tag could move). It goes to
+# `docker pull` as one argument; the pattern keeps anything else (an option, another registry) out even of a signed manifest.
+IMAGE_REF = re.compile(r"^ghcr\.io/[a-z0-9][a-z0-9._/-]*@sha256:[0-9a-f]{64}$")
+
 # The five components of schema 1 (section 5 of the update plan) and what belongs to each of them. New components need a new
 # schema, so a client can refuse a manifest it does not understand. A key names the ROLE of a component, never a repository
 # or a code name: the repositories can be renamed without touching a key (PLAN_component_codenames.md, section 2).
@@ -438,6 +454,18 @@ def validate(data: Any) -> Manifest:
     if not isinstance(images, dict):
         problems.append("images: must be an object")
         images = {}
+    for service, entry in images.items():
+        where = f"images.{service}"
+        if service not in IMAGE_SERVICES:
+            problems.append(
+                f"{where}: not a service with a prebuilt image ({', '.join(IMAGE_SERVICES)})"
+            )
+        elif not isinstance(entry, dict) or not isinstance(entry.get("ref"), str):
+            problems.append(f"{where}.ref: missing or not text")
+        elif not IMAGE_REF.match(entry["ref"]):
+            problems.append(
+                f"{where}.ref: must be ghcr.io/<owner>/<image>@sha256:<64 hex digits>"
+            )
     if problems:
         raise ManifestError(problems)
     return Manifest(

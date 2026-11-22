@@ -429,6 +429,7 @@ def build(
     previous: Path | None = None,
     notes_file: Path | None = None,
     force: bool = False,
+    images: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Writes the asset set into `out` and returns the manifest. :raises ReleaseError: nothing is left in `out` then."""
     pins = load_pins(pins_path)
@@ -496,7 +497,9 @@ def build(
             "schema": manifest_module.SCHEMA,
             "appliance": appliance,
             "components": components,
-            "images": {},
+            # service -> {ref, tag}: the prebuilt images of this release in the registry (stage 2), by digest; none = the
+            # appliance builds them
+            "images": images or {},
         }
         try:
             manifest_module.validate(document)
@@ -728,6 +731,12 @@ def _parser() -> argparse.ArgumentParser:
         help="write the release notes (markdown) here; it is not a release asset",
     )
     parser.add_argument(
+        "--images",
+        type=Path,
+        metavar="FILE",
+        help="the images.json that release/build_images.py wrote: the prebuilt images of this release (service -> ref by digest)",
+    )
+    parser.add_argument(
         "--force", action="store_true", help="replace the files of a non-empty --out"
     )
     parser.add_argument(
@@ -752,10 +761,18 @@ def main(argv: list[str] | None = None) -> int:
             raise ReleaseError("--out is required")
         if args.sign is not None and not args.sign.is_file():
             raise ReleaseError(f"--sign: {args.sign} is not a file")
+        images = None
+        if args.images is not None:
+            try:
+                images = json.loads(args.images.read_text(encoding="utf-8"))
+            except (OSError, ValueError) as exc:
+                raise ReleaseError(f"--images: {args.images}: {exc}") from None
+            if not isinstance(images, dict):
+                raise ReleaseError(f"--images: {args.images} is not a JSON object")
         document = build(
             args.pins, args.out, sources=args.sources, checkouts=args.checkouts, appliance_dir=args.appliance_dir,
             ref=args.ref, fetch=args.fetch, api=args.api_url.rstrip("/"), token=os.environ.get(TOKEN_VARIABLE) or None, web=args.web_url.rstrip("/"), api_mode=args.api_mode,
-            sign_key=args.sign, expect_tag=args.tag, released=args.released, previous=args.previous, notes_file=args.notes_file, force=args.force,
+            sign_key=args.sign, expect_tag=args.tag, released=args.released, previous=args.previous, notes_file=args.notes_file, force=args.force, images=images,
         )  # fmt: skip
     except ReleaseError as exc:
         print(f"build_release: {exc}", file=sys.stderr)

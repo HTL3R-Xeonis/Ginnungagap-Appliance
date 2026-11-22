@@ -271,6 +271,11 @@ def _update_parser(commands) -> None:
         help="unpack, verify and build only; restart nothing (for an appliance image)",
     )
     update.add_argument(
+        "--build-local",
+        action="store_true",
+        help="build the images on this machine even when the release carries prebuilt ones (needs PyPI and Docker Hub)",
+    )
+    update.add_argument(
         "--wait",
         type=float,
         default=120.0,
@@ -312,6 +317,7 @@ def _run_update(args: argparse.Namespace) -> int:
             wait=args.wait,
             restore_data=args.restore_data,
             continue_id=args.continue_tx,
+            build_local=args.build_local,
         )
     return update_module.run_update(options, args.config, bundle=operate.bundle_dir())
 

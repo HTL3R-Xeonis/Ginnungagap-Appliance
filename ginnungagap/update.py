@@ -67,6 +67,9 @@ IMAGE_HEADROOM_BYTES = 2 * 1024 * 1024 * 1024
 MAX_MEMBERS = 200_000
 SIGNATURE_NAMESPACE = "ginnungagap-release"
 NETWORK_HOSTS = ("pypi.org", "registry-1.docker.io")
+IMAGE_HOSTS = (
+    "ghcr.io",
+)  # where a release with prebuilt images (stage 2) gets them from
 ACTIONS = (
     "check",
     "apply",
@@ -199,6 +202,9 @@ class Options:
     wait: float = 120.0
     restore_data: bool = False
     continue_id: str | None = None
+    build_local: bool = (
+        False  # build the images here although the release carries prebuilt ones
+    )
 
 
 # ---- the outside world ----------------------------------------------------------------------------------------------
@@ -1864,6 +1870,7 @@ class Updater:
                 "json": opts.json,
                 "channel": self.channel,
                 "offline_dir": opts.offline_dir,
+                "build_local": opts.build_local,
             },
         }
         self.save_transaction(tx)
@@ -1930,10 +1937,16 @@ class Updater:
                     f"not enough disk space on {label} ({place}): {free // (1024 * 1024)} MB free, about {need // (1024 * 1024)} MB needed",
                     EXIT_REFUSED,
                 )
-        for host in NETWORK_HOSTS:
+        prebuilt = bool(manifest.images) and not self.opts.build_local
+        for host in IMAGE_HOSTS if prebuilt else NETWORK_HOSTS:
             if not self.env.reachable(host):
                 self.say(
-                    f"warning: {host} can't be reached from this machine; the images are built here, so the build may fail (a cached build can still work)"
+                    f"warning: {host} can't be reached from this machine; "
+                    + (
+                        "the images are pulled from there (a service whose image can't be pulled is built here)"
+                        if prebuilt
+                        else "the images are built here, so the build may fail (a cached build can still work)"
+                    )
                 )
 
     def abandon(self, tx: dict[str, Any], reason: str, result: str = "failed") -> None:
@@ -2162,10 +2175,22 @@ class Updater:
             self.layout.components / mf.CHECKOUT_NAMES["generator"] / "config"
         )
         self.save_transaction(tx, "switched")
+        images = (
+            {} if tx["options"].get("build_local") else (tx["to"].get("images") or {})
+        )
         if not build:
             self.say("No service uses what changed; nothing to build.")
         elif has_env:
-            if operate.build_services(self.bundle, build, self.run, self.say) != 0:
+            if images:
+                # the release carries prebuilt images (stage 2): pull them; only a service without one, or one that can't be
+                # pulled, is built here
+                _, build = operate.pull_images(
+                    project, images, build, self.run, self.say
+                )
+            if (
+                build
+                and operate.build_services(self.bundle, build, self.run, self.say) != 0
+            ):
                 raise StepFailed("building the images failed")
         else:
             generator = (
@@ -2835,6 +2860,7 @@ class Updater:
             )
         self.tx_options_into_self(tx)
         self.opts.no_start = bool(tx["options"].get("no_start"))
+        self.opts.build_local = bool(tx["options"].get("build_local"))
         self.opts.json = bool(tx["options"].get("json"))
         if self.opts.json:
             self.out = lambda text: print(text, file=sys.stderr)

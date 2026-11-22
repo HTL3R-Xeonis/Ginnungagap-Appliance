@@ -70,7 +70,10 @@ def test_only_the_publish_step_makes_a_release_and_a_dry_run_never_reaches_it():
         if s.get("uses", "").startswith("actions/upload-artifact")
     ]
     assert len(kept) == 1 and kept[0]["if"] == "env.DRY_RUN == 'true'"
-    assert workflow["jobs"]["release"]["permissions"] == {"contents": "write"}
+    assert workflow["jobs"]["release"]["permissions"] == {
+        "contents": "write",
+        "packages": "write",
+    }
 
 
 def test_the_gate_runs_before_anything_is_built_and_the_files_are_verified_after():
@@ -85,6 +88,30 @@ def test_the_gate_runs_before_anything_is_built_and_the_files_are_verified_after
         )
     )
     assert gate < build < check < publish
+
+
+def test_the_images_are_built_before_the_final_release_files_and_pushed_only_outside_a_dry_run():
+    release_steps = steps(load("release.yml"), "release")
+    names = [s.get("name", "") for s in release_steps]
+    fetch = names.index("Fetch the component tarballs")
+    login = names.index("Log in to the container registry")
+    images = names.index(
+        "Build the service images (and push them, unless it is a dry run)"
+    )
+    final = names.index("Build the release files")
+    assert fetch < login < images < final
+    assert release_steps[login]["if"] == "env.DRY_RUN != 'true'"
+    run = release_steps[images]["run"]
+    assert 'if [ "$DRY_RUN" != "true" ]; then push+=(--push); fi' in run
+    assert "--push" not in run.replace("push+=(--push)", "")
+    # the final files carry the images and come from the same tarballs the images were built from
+    final_run = release_steps[final]["run"]
+    assert (
+        "--images dist/images.json" in final_run and "--sources dist/pass1" in final_run
+    )
+    assert "--fetch" not in final_run
+    # nothing but the release files is published
+    assert "dist/release/*" in release_steps[names.index("Publish the release")]["run"]
 
 
 def test_secrets_reach_the_job_only_through_environment_variables_and_are_never_printed():
