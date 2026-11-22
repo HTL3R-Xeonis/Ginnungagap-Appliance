@@ -6,7 +6,7 @@
 # the machine id, every authorized SSH key, passwordless sudo rules, shell histories and logs, and the admin's generated
 # initial SSH password, the login account's password hash and the template's root password hash (root is locked), and the
 # journal of every build boot, the image builder's own leftovers (the log of this very run, other *.log, old-repos-listing and
-# *.bak in /root, the known leftovers in the home of the login account) and the host name of the base VM (reset to
+# *.bak in /root, the known leftovers in the home of the login account: the template's Firefox profile, the caches, mail, online accounts and key ring) and the host name of the base VM (reset to
 # `ginnungagap`; guestinfo.ginnungagap.hostname sets the real one at the first boot). The sshd drop-in stays for the next
 # first boot. Nothing else in a home folder is touched.
 #
@@ -231,6 +231,19 @@ remove_known_files() {  # DIR NAME... : files of that name directly in DIR (neve
   done
 }
 
+remove_known_folders() {  # DIR RELATIVE-FOLDER... : those folders below DIR with everything in them (never a link, never through a link)
+  local dir=$1 rel path
+  shift
+  [ -d "$dir" ] && [ ! -L "$dir" ] || return 0
+  for rel in "$@"; do
+    path="$dir/$rel"
+    [ -d "$path" ] && [ ! -L "$path" ] || continue
+    # a link anywhere on the way would let the delete leave the home
+    [ "$(realpath -- "$path")" = "$(realpath -- "$dir")/$rel" ] || continue
+    rm -rf -- "$path"
+  done
+}
+
 login_home() {  # the home folder of the login account (UID 1000, as firstboot), empty when there is none
   local home
   home=$(getent passwd 1000 2>/dev/null | cut -d: -f6) || true
@@ -245,12 +258,15 @@ remove_image_builder_files() {
   [ -d /root/old-repos-listing ] && [ ! -L /root/old-repos-listing ] && rm -rf -- /root/old-repos-listing
   # registry logins of whoever built the image (docker login writes them here); a copy of the image must carry none
   remove_known_files /root/.docker config.json
-  # the login account: only the known build artifacts; its Desktop and every other file stay
+  # the login account: the known build artifacts and the personal data of whoever made the Debian template (its Firefox
+  # profile with history and crash reports, the caches, the mail, online-account and key ring folders of the desktop);
+  # the rest of the home - the Desktop, the settings, every other file - stays
   home=$(login_home)
   if [ -n "$home" ]; then
     remove_known_files "$home" prepare.log old-repos-listing .zsh_history .lesshst .python_history .wget-hsts \
       .sudo_as_admin_successful .xsession-errors .xsession-errors.old
     remove_known_files "$home/.docker" config.json
+    remove_known_folders "$home" .mozilla .cache .local/share/keyrings .local/share/evolution .config/evolution .config/goa-1.0
   fi
 }
 

@@ -319,6 +319,7 @@ def test_the_image_builders_leftovers_in_root_and_the_login_home_go_and_nothing_
     call = _functions(
         tmp_path,
         "remove_known_files",
+        "remove_known_folders",
         "login_home",
         "remove_image_builder_files",
         home=home,
@@ -328,6 +329,73 @@ def test_the_image_builders_leftovers_in_root_and_the_login_home_go_and_nothing_
     assert result.returncode == 0, result.stderr
     assert [p for p in gone if p.exists()] == []
     assert [p for p in kept if not p.exists()] == []
+
+
+def test_the_template_makers_personal_folders_go_from_the_login_home_and_the_rest_stays(
+    tmp_path,
+):
+    root, home = tmp_path / "root", tmp_path / "home" / "junioradmin"
+    root.mkdir()
+    gone = [
+        home / ".mozilla" / "firefox" / "profile" / "places.sqlite",
+        home / ".cache" / "mozilla" / "x",
+        home / ".local" / "share" / "keyrings" / "login.keyring",
+        home / ".local" / "share" / "evolution" / "mail",
+        home / ".config" / "evolution" / "sources",
+        home / ".config" / "goa-1.0" / "accounts.conf",
+    ]
+    kept = [
+        home / "Desktop" / "debian-template.desktop",
+        home / ".config" / "gtk-3.0" / "settings.ini",
+        home / ".local" / "share" / "applications" / "a.desktop",
+        home / ".ssh" / "authorized_keys",
+        home / ".bashrc",
+    ]
+    for path in (*gone, *kept):
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("x")
+    call = _functions(
+        tmp_path,
+        "remove_known_files",
+        "remove_known_folders",
+        "login_home",
+        "remove_image_builder_files",
+        home=home,
+        replace={"/root": root},
+    )
+    result = call("remove_image_builder_files")
+    assert result.returncode == 0, result.stderr
+    assert [p for p in gone if p.exists()] == []
+    assert [p for p in kept if not p.exists()] == []
+    assert not (home / ".mozilla").exists() and not (home / ".cache").exists()
+
+
+def test_a_link_in_the_way_stops_the_folder_removal(tmp_path):
+    root, home = tmp_path / "root", tmp_path / "home" / "junioradmin"
+    root.mkdir()
+    outside = tmp_path / "outside"
+    (outside / "keyrings").mkdir(parents=True)
+    (outside / "keyrings" / "precious").write_text("x")
+    (outside / "cache").mkdir()
+    (outside / "cache" / "precious").write_text("x")
+    (home / ".local").mkdir(parents=True)
+    (home / ".local" / "share").symlink_to(
+        outside
+    )  # .local/share/keyrings goes through a link
+    (home / ".cache").symlink_to(outside / "cache")  # the folder itself is a link
+    call = _functions(
+        tmp_path,
+        "remove_known_files",
+        "remove_known_folders",
+        "login_home",
+        "remove_image_builder_files",
+        home=home,
+        replace={"/root": root},
+    )
+    assert call("remove_image_builder_files").returncode == 0
+    assert (outside / "keyrings" / "precious").exists()
+    assert (outside / "cache" / "precious").exists()
+    assert (home / ".cache").is_symlink()
 
 
 def test_a_login_home_that_is_missing_root_or_a_link_is_left_alone(tmp_path):
@@ -348,6 +416,7 @@ def test_a_login_home_that_is_missing_root_or_a_link_is_left_alone(tmp_path):
         call = _functions(
             tmp_path,
             "remove_known_files",
+            "remove_known_folders",
             "login_home",
             "remove_image_builder_files",
             home=home,
