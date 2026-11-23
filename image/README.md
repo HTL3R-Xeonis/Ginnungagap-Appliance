@@ -32,7 +32,8 @@ export ESXI_PASSWORD
 * `set_guestinfo.py` - sets `guestinfo.ginnungagap.config` (the configuration file, base64, with
   `guestinfo.ginnungagap.config.encoding = base64`) and optionally `guestinfo.ginnungagap.ssh_authorized_key` and
   `guestinfo.ginnungagap.hostname` on a VM, and with `--power-on` starts it. Only the key names are printed, never a value
-  (the configuration may hold API keys).
+  (the configuration may hold API keys). `--clear` empties every `guestinfo.ginnungagap.*` value on a powered-off VM;
+  it needs no configuration file and does not start the VM. Use it after preparation and before exporting a reusable image.
 
 ## Example
 
@@ -47,9 +48,27 @@ unset ESXI_PASSWORD
 
 The tests (`tests/test_export_ova.py`) run without an ESXi: every step that does not need one is a plain function.
 
+## Automated builds
+
+`ginnungagap-image-build` runs the release-to-image workflow on a dedicated Debian build VM, using pinned tooling separate
+from the release being built. It imports a published appliance base on the allowed ESXi host, injects temporary SSH access
+before first boot, installs the verified release, prepares the VM, shuts it down, clears guestinfo, exports and inspects the
+disk offline, then tests unconfigured/configured boots and the upgrade path. The template YAML is published last so a failed
+acceptance does not expose a deployable catalog entry. Existing template-store entries are never overwritten.
+
+The [operator guide](build/README.md) covers installation, root-only systemd credentials, NFS, every CLI command, staged
+runs, logs, pause/resume, cleanup and failure recovery. The installer enables no units. Automatic polling accepts stable,
+signed releases only; manual RC/unsigned runs record the exception and do not establish an official release. Clean-Debian
+base creation and extra-host acceptance currently stop with an explicit error; unsupported offline-inspection layouts also
+fail rather than skip verification.
+
+As of 2026-11-20 the dedicated worker is `VM183-Debian-Ginn-Imagebuild`, `10.20.20.183`, on ESXi `10.20.20.83`.
+Temporary build/acceptance VMs target `10.20.20.205`, whose normal running-VM allowance is only `GNS3VM5`.
+The first complete real automated build, its acceptance results and deliberate crash drills are still pending.
+
 ## Building the image, end to end
 
-What was done (and verified on the lab ESXi) to get the OVA, in order:
+The earlier manual procedure (verified on the lab ESXi) was, in order:
 
 1. A Debian 13 VM, installed with `sudo ./install.sh --repos-dir /srv/repos --install-packages --image --no-start`
    (Docker, compose, buildx, `python3-yaml`, `open-vm-tools`, `nfs-common`; the first-boot unit is enabled, SSH password

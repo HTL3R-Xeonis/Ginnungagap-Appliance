@@ -1,0 +1,31 @@
+[Unit]
+Description=Build and accept a verified Ginnungagap appliance image
+Wants=network-online.target
+After=network-online.target systemd-tmpfiles-setup.service
+ConditionPathExists=/etc/ginnungagap-image-build/build-host.yml
+
+[Service]
+Type=oneshot
+User=imgbuild
+Group=imgbuild
+UMask=0077
+WorkingDirectory=/var/lib/ginnungagap-image-build
+ExecStart=/usr/local/bin/ginnungagap-image-build work
+LoadCredential=esxi205:/etc/ginnungagap-image-build/secrets/esxi-205.password
+Restart=no
+TimeoutStartSec=4h
+TimeoutStopSec=5min
+KillMode=mixed
+SuccessExitStatus=3
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ReadWritePaths=/var/lib/ginnungagap-image-build /mnt/esxi_templates /var/lib/ginnungagap-image-build-inspect
+# The root-owned inspection helper is the only permitted sudo command.
+# NoNewPrivileges would prevent that one required helper from working.
+RestrictSUIDSGID=true
+LockPersonality=true
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+
+[Install]
+WantedBy=multi-user.target

@@ -550,8 +550,16 @@ publishes or pushes on its own**.
    with it the API is used, which also reads private repositories; `--api-mode always|never` or `GINNUNGAGAP_RELEASE_API` overrides).
    Locally: `--sign release_key`, and `--verify DIR --allowed-signers release/allowed_signers` to check.
 
-The appliance image is built either from checkouts, as before (`image/README.md`), or from a release with `ginnungagap update --apply
---no-start`; the image name follows the appliance release version.
+6. **Build the appliance image on the dedicated build VM.** The installed `ginnungagap-image-build` service can poll for a
+   new stable, signed release, verify its manifest and component archives, build from a published base, inspect the exported
+   disk offline and test fresh boots and an upgrade. It writes the template YAML only after acceptance; the OVA stays on
+   the template share rather than becoming a GitHub release asset. Installation enables no timer or path unit: follow the
+   [image-build operator guide](image/build/README.md) for credentials, the share mount, dry runs and staged activation.
+   Prerelease and unsigned exceptions require an explicit manual run; they are not the official release path. Updating
+   the image-builder tooling itself is a separate, root-only signed `self-update`, never part of a build.
+
+The image name follows the appliance release version. The older manual [image procedure](image/README.md) is still available.
+The automated build VM is prepared, but a complete real automated build and its acceptance/failure drills remain to be verified.
 <!-- END releasing -->
 
 ## Not part of this solution

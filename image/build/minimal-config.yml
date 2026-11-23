@@ -3,8 +3,9 @@
 # is a reserved documentation address that never answers, the appliance listens on its own ports and has no login.
 # It must stay valid for `ginnungagap validate`; tests/test_build_acceptance.py checks that.
 #
-# MARKER: the llm server's name below is the unique string of this file. The offline inspection of the image (inspect_image.py)
-# searches the whole raw disk for it: found there, a configuration of a build VM got into the image.
+# MARKER: the llm server name below is a source placeholder. P5 replaces it
+# with a unique per-run marker, which the offline inspection searches on the
+# raw disk. Scanning this static placeholder would match shipped source files.
 version: 1
 
 appliance:

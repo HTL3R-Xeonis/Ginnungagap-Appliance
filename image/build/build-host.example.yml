@@ -1,0 +1,41 @@
+github:
+  repo: HTL3R-Xeonis/Ginnungagap-Appliance
+  channel: stable
+  token_file: null
+poll_minutes: 15
+esxi:
+  host: 10.20.20.205
+  user: root
+  password_file: /etc/ginnungagap-image-build/secrets/esxi-205.password
+  allowed_hosts: [10.20.20.205]
+  allowed_running_vms: [GNS3VM5]
+  datastore: null  # required: choose the datastore on the build host
+  network: null    # required: management port group for temporary VMs
+template_api: http://10.20.20.171:8000
+ova_base_url: http://10.20.20.181:80
+share:
+  mode: nfs
+  path: /mnt/esxi_templates
+image:
+  cpu: 4
+  memory_gb: 4
+  disk_gb: 20
+  install_method: update
+  ssh_user: null  # otherwise use the base template's declared account
+  # Optional reserved addresses for temporary guests; the exported image returns to DHCP.
+  # management_network:
+  #   build_address: 10.20.20.184
+  #   acceptance_address: 10.20.20.185
+  #   prefix: 24
+  #   gateway: 10.20.20.254
+  #   dns: [1.1.1.1, 8.8.8.8]
+acceptance:
+  upgrade_test: true
+  extra_hosts: []
+keep_failed: false
+status_http: false
+notify:
+  command: ""
+paths:
+  state_dir: /var/lib/ginnungagap-image-build
+  allowed_signers: /etc/ginnungagap-image-build/allowed_signers

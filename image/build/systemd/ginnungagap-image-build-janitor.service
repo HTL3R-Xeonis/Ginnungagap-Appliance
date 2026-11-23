@@ -1,0 +1,21 @@
+[Unit]
+Description=Clean stale image-builder resources after a build-host reboot
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+User=imgbuild
+Group=imgbuild
+UMask=0077
+ExecStart=/usr/local/bin/ginnungagap-image-build janitor
+LoadCredential=esxi205:/etc/ginnungagap-image-build/secrets/esxi-205.password
+Restart=no
+TimeoutStartSec=10min
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ReadWritePaths=/var/lib/ginnungagap-image-build /mnt/esxi_templates
+
+[Install]
+WantedBy=multi-user.target

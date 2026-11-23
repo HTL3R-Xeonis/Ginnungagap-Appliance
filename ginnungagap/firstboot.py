@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import base64
 import binascii
+import json
 import os
 import pwd
 import re
@@ -176,6 +177,7 @@ def run(
     set_password: PasswordSetter | None = None,
     new_password: Callable[[], str] | None = None,
     password_changed: Callable[[str], bool] | None = None,
+    network_apply: Callable[[dict], object] | None = None,
 ) -> int:
     """
     The whole first boot. Returns 0 when the machine is ready to have its configuration applied (or when there is nothing
@@ -188,14 +190,36 @@ def run(
         out("first boot was done before - nothing to do")
         return 0
 
+    def info(name: str) -> str | None:
+        return guestinfo(PREFIX + name)
+
+    network = info("network")
+    if network is not None:
+        try:
+            if len(network) > 16384:
+                raise ValueError("network input is too large")
+            from ginnungagap.image_network import apply_network
+
+            (network_apply or apply_network)(json.loads(network))
+        except (
+            ValueError,
+            TypeError,
+            OSError,
+            RuntimeError,
+            subprocess.SubprocessError,
+        ):
+            _write_private(
+                state_dir / PROBLEMS,
+                "The guest management network could not be configured.\n",
+            )
+            out("the guest management network could not be configured")
+            return 1
+
     # SSH host keys: an image carries none (copies would share them); an existing machine keeps the ones it has
     if not list(ssh_dir.glob("ssh_host_*_key")):
         out("creating the SSH host keys")
         if runner(["ssh-keygen", "-A"]) != 0:
             out("ssh-keygen -A failed - the machine will not accept SSH logins")
-
-    def info(name: str) -> str | None:
-        return guestinfo(PREFIX + name)
 
     hostname = info("hostname")
     if hostname:

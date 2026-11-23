@@ -1,10 +1,11 @@
 import base64
+import json
 from pathlib import Path
 
 import pytest
 import yaml
 
-from ginnungagap import console
+from ginnungagap import console, image_network
 from ginnungagap import firstboot as fb
 
 VALID = {"generator": {"llm_servers": [{"name": "o", "url": "http://10.0.0.1:11434", "model": "m"}]}, "appliance": {"public_url": "http://ginn.lab"}}  # fmt: skip
@@ -98,6 +99,44 @@ def test_plain_text_is_accepted_when_the_encoding_says_so(machine):
     m = machine({"config": yaml.safe_dump(VALID), "config.encoding": "plain"})
     assert m.run() == 0
     assert yaml.safe_load((m.config_dir / "ginnungagap.yml").read_text()) == VALID
+
+
+def test_network_only_guestinfo_runs_before_key_and_password_initialization(
+    machine, monkeypatch
+):
+    config = {
+        "address": "10.20.20.185",
+        "prefix": 24,
+        "gateway": "10.20.20.254",
+        "dns": ["1.1.1.1"],
+    }
+    m = machine({"network": json.dumps(config)})
+    seen = []
+
+    def apply(value):
+        assert m.commands == [] and m.passwords == [] and m.keys == []
+        seen.append(value)
+
+    monkeypatch.setattr(image_network, "apply_network", apply)
+    assert m.run() == 1  # normal unconfigured boot still opens the setup wizard
+    assert seen == [config]
+    assert m.passwords  # network-only boot keeps the normal generated password
+    assert not (m.config_dir / "ginnungagap.yml").exists()
+
+
+def test_invalid_network_stops_firstboot_before_access_is_initialized(
+    machine, monkeypatch
+):
+    m = machine({"network": "{}", "config": b64(VALID)})
+    monkeypatch.setattr(
+        image_network,
+        "apply_network",
+        lambda value: image_network.validate_network(value),
+    )
+    assert m.run() == 1
+    assert not m.passwords and not m.keys and not m.commands
+    assert (m.state_dir / fb.PROBLEMS).exists()
+    assert not (m.state_dir / fb.DONE_MARKER).exists()
 
 
 def test_an_invalid_configuration_is_kept_aside_with_every_reason_and_the_next_boot_tries_again(

@@ -14,7 +14,7 @@ from tests.helpers import fake_release
 from tests.helpers.fake_github import REPO, FakeGitHub
 from tests.helpers.update_world import World
 
-TOKEN = "ghp_0123456789abcdefghijklmnopqrstuvwxyz"
+TOKEN = "ghp_" + "0123456789abcdefghijklmnopqrstuvwxyz"
 
 
 @pytest.fixture

@@ -45,6 +45,153 @@ def test_the_project_name_can_be_chosen():
     assert "'other'" in run("--dry-run", "--project", "other").stdout
 
 
+def test_default_tls_identity_is_removed_without_removing_other_certificates(tmp_path):
+    script = SCRIPT.read_text()
+    function = script.split("remove_default_tls_identity() {", 1)[1].split("\n}", 1)[0]
+    private = tmp_path / "private"
+    certificates = tmp_path / "certs"
+    private.mkdir()
+    certificates.mkdir()
+    key = private / "ssl-cert-snakeoil.key"
+    certificate = certificates / "ssl-cert-snakeoil.pem"
+    custom = certificates / "custom.pem"
+    for path in (key, certificate, custom):
+        path.write_text("fixture")
+    command = function.replace("/etc/ssl/private", str(private)).replace(
+        "/etc/ssl/certs", str(certificates)
+    )
+    subprocess.run(["bash", "-c", command], check=True)
+    assert not key.exists() and not certificate.exists()
+    assert custom.read_text() == "fixture"
+
+
+@pytest.fixture
+def fwupd_identity(tmp_path):
+    root = tmp_path / "fixture"
+    pki = root / "var/lib/fwupd/pki"
+    pki.mkdir(parents=True)
+    key, certificate, unrelated = (
+        pki / name for name in ("secret.key", "client.pem", "vendor.pem")
+    )
+    for path in (key, certificate, unrelated):
+        path.write_text("fixture")
+    fakebin = tmp_path / "bin"
+    fakebin.mkdir()
+    control = fakebin / "systemctl"
+    control.write_text(
+        "#!/usr/bin/env python3\n"
+        "import json,os,pathlib,sys\n"
+        "a=sys.argv[1:]\n"
+        "with open(os.environ['CONTROL_LOG'],'a') as f:f.write(json.dumps(a)+'\\n')\n"
+        "if a[0]=='show':\n"
+        " if os.environ.get('SHOW_FAIL'):sys.exit(1)\n"
+        " print('not-found' if os.environ.get('MISSING') else 'loaded')\n"
+        " sys.exit(1 if os.environ.get('MISSING') else 0)\n"
+        "assert pathlib.Path(os.environ['KEY']).exists()\n"
+        "assert pathlib.Path(os.environ['CERTIFICATE']).exists()\n"
+        "sys.exit(1 if os.environ.get('STOP_FAIL') else 0)\n"
+    )
+    control.chmod(0o755)
+    body = (
+        SCRIPT.read_text().split("remove_fwupd_identity() {", 1)[1].split("\n}", 1)[0]
+    )
+    body = body.replace("/var", str(root / "var"))
+    log = tmp_path / "control.jsonl"
+
+    def execute(**flags):
+        return subprocess.run(
+            [
+                "bash",
+                "-c",
+                'set -euo pipefail\ndie() { echo "$*" >&2; exit 1; }\ncleanup() {\n'
+                + body
+                + "\n}\ncleanup\n",
+            ],
+            capture_output=True,
+            text=True,
+            check=False,
+            env={
+                **os.environ,
+                "PATH": str(fakebin) + os.pathsep + os.environ["PATH"],
+                "KEY": str(key),
+                "CERTIFICATE": str(certificate),
+                "CONTROL_LOG": str(log),
+                **flags,
+            },
+        )
+
+    return execute, root, key, certificate, unrelated, log
+
+
+def test_fwupd_runtime_masks_prevent_regeneration_before_exact_pair_is_removed(
+    fwupd_identity,
+):
+    execute, root, key, certificate, unrelated, log = fwupd_identity
+    outside = root / "unrelated.key"
+    outside.write_text("keep")
+    assert execute().returncode == 0
+    assert not key.exists() and not certificate.exists()
+    assert unrelated.read_text() == "fixture" and outside.read_text() == "keep"
+    calls = [json.loads(line) for line in log.read_text().splitlines()]
+    assert [call for call in calls if call[0] == "mask"] == [
+        ["mask", "--runtime", "--now", unit]
+        for unit in ("fwupd-refresh.timer", "fwupd-refresh.service", "fwupd.service")
+    ]
+
+
+def test_missing_fwupd_units_are_supported(fwupd_identity):
+    execute, _, key, certificate, unrelated, log = fwupd_identity
+    assert execute(MISSING="1").returncode == 0
+    assert not key.exists() and not certificate.exists() and unrelated.exists()
+    assert all(json.loads(line)[0] == "show" for line in log.read_text().splitlines())
+
+
+def test_fwupd_stop_failure_preserves_identity_files(fwupd_identity):
+    execute, _, key, certificate, _, _ = fwupd_identity
+    assert execute(STOP_FAIL="1").returncode != 0
+    assert key.read_text() == "fixture" and certificate.read_text() == "fixture"
+
+
+def test_fwupd_state_query_failure_preserves_identity_files(fwupd_identity):
+    execute, _, key, certificate, _, _ = fwupd_identity
+    assert execute(SHOW_FAIL="1").returncode != 0
+    assert key.read_text() == "fixture" and certificate.read_text() == "fixture"
+
+
+def test_fwupd_nonregular_pair_member_prevents_partial_removal(fwupd_identity):
+    execute, _, key, certificate, _, log = fwupd_identity
+    certificate.unlink()
+    certificate.mkdir()
+    assert execute().returncode != 0
+    assert key.read_text() == "fixture" and certificate.is_dir() and not log.exists()
+
+
+@pytest.mark.parametrize("linked", ["directory", "key", "certificate"])
+def test_fwupd_identity_never_follows_links(fwupd_identity, tmp_path, linked):
+    execute, root, key, certificate, _, log = fwupd_identity
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    target = outside / "keep.key"
+    target.write_text("keep")
+    if linked == "directory":
+        original = root / "var/lib/fwupd"
+        original.rename(root / "var/lib/fwupd-old")
+        original.symlink_to(outside, target_is_directory=True)
+    else:
+        path = key if linked == "key" else certificate
+        path.unlink()
+        path.symlink_to(target)
+    assert execute().returncode != 0
+    assert target.read_text() == "keep" and not log.exists()
+
+
+def test_fwupd_identity_cleanup_is_listed_before_zeroing():
+    text = run("--dry-run", "--zero-free-space").stdout
+    assert text.index("stop fwupd until shutdown") < text.index(
+        "fill the free disk space"
+    )
+
+
 def test_an_unknown_option_is_refused():
     assert run("--frobnicate").returncode == 1
 

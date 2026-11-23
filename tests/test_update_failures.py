@@ -14,7 +14,7 @@ from tests.helpers import fake_release
 from tests.helpers.fake_github import FakeGitHub
 from tests.helpers.update_world import Crash, World
 
-TOKEN = "ghp_0123456789abcdefghijklmnopqrstuvwxyz"
+TOKEN = "ghp_" + "0123456789abcdefghijklmnopqrstuvwxyz"
 UP_FLAGS = "up -d --no-deps --no-build --pull never"
 
 

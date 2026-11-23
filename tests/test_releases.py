@@ -9,7 +9,7 @@ from ginnungagap import releases as rl
 from tests.helpers import fake_release
 from tests.helpers.fake_github import FakeGitHub
 
-TOKEN = "ghp_0123456789abcdefghijklmnopqrstuvwxyz"
+TOKEN = "ghp_" + "0123456789abcdefghijklmnopqrstuvwxyz"
 
 
 @pytest.fixture

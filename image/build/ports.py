@@ -292,6 +292,10 @@ class EsxiPort(Protocol):
         """The first IPv4 address VMware Tools report. :raises Timeout: none within `timeout` seconds. :raises NotFound:"""
         ...
 
+    def wait_for_link_local(self, name: str, timeout: float) -> str:
+        """The hardware-MAC-matched link-local IPv6 address, without worker interface zone."""
+        ...
+
     # -- changes --
     def import_ova(
         self,
@@ -426,6 +430,10 @@ class RemotePort(Protocol):
         """Removes the per-run known_hosts and key files of this target. Idempotent."""
         ...
 
+    def close_master(self, target: RemoteTarget) -> None:
+        """Close one SSH multiplexed transport without deleting shared run keys or known hosts."""
+        ...
+
 
 @runtime_checkable
 class ShareApiPort(Protocol):
@@ -546,6 +554,7 @@ ESXI_READ_ONLY = frozenset(
         "get_extra_config",
         "wait_powered_off",
         "wait_for_ip",
+        "wait_for_link_local",
     }
 )
 ESXI_MUTATING = frozenset(
@@ -574,6 +583,7 @@ REMOTE_MUTATING = frozenset(
         "put",
         "get",
         "forget",
+        "close_master",
     }
 )
 SHARE_READ_ONLY = frozenset(

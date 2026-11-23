@@ -18,7 +18,10 @@ from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
 
-import appliance_common as common
+try:
+    from . import appliance_common as common
+except ImportError:  # direct script invocation
+    import appliance_common as common
 
 CONFIG_KEY = "guestinfo.ginnungagap.config"
 MAX_VALUE = 60000  # an ExtraConfig value must stay well below 64 KiB
@@ -88,9 +91,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--port", type=int, default=443)
     parser.add_argument("--user", default="root")
     parser.add_argument("--vm", required=True)
-    parser.add_argument(
-        "--config", required=True, help="the ginnungagap.yml to hand to the appliance"
-    )
+    parser.add_argument("--config", help="the ginnungagap.yml to hand to the appliance")
     parser.add_argument(
         "--ssh-key-file",
         help="a public key file; installed for the admin user at first boot",
@@ -102,7 +103,25 @@ def main(argv: Sequence[str] | None = None) -> int:
         help="let the login user use sudo without a password (for automation; the image has it off)",
     )
     parser.add_argument("--power-on", action="store_true")
+    parser.add_argument(
+        "--clear",
+        action="store_true",
+        help="clear all appliance guestinfo keys without powering on",
+    )
     args = parser.parse_args(argv)
+
+    if args.clear and (
+        args.config
+        or args.ssh_key_file
+        or args.hostname
+        or args.sudo_nopasswd
+        or args.power_on
+    ):
+        parser.error(
+            "--clear cannot be combined with configuration or power-on options"
+        )
+    if not args.clear and not args.config:
+        parser.error("--config is required unless --clear is used")
 
     try:
         key = (
@@ -110,8 +129,12 @@ def main(argv: Sequence[str] | None = None) -> int:
             if args.ssh_key_file
             else None
         )
-        options = guestinfo_options(
-            Path(args.config).read_bytes(), key, args.hostname, args.sudo_nopasswd
+        options = (
+            {}
+            if args.clear
+            else guestinfo_options(
+                Path(args.config).read_bytes(), key, args.hostname, args.sudo_nopasswd
+            )
         )
     except (OSError, ValueError) as exc:
         print(f"{exc}", file=sys.stderr)
@@ -124,8 +147,16 @@ def main(argv: Sequence[str] | None = None) -> int:
         print(f"no VM named {args.vm} on {args.host}", file=sys.stderr)
         return 1
     try:
+        if args.clear:
+            if str(vm.runtime.powerState) != "poweredOff":
+                raise RuntimeError("power off the VM before clearing its guestinfo")
+            options = {
+                item.key: ""
+                for item in vm.config.extraConfig or []
+                if item.key.startswith("guestinfo.ginnungagap.")
+            }
         common.wait_for_task(vm.ReconfigVM_Task(config_spec(options)))
-        print("set: " + ", ".join(sorted(options)))
+        print(("cleared: " if args.clear else "set: ") + ", ".join(sorted(options)))
         if args.power_on and str(vm.runtime.powerState) != "poweredOn":
             common.wait_for_task(vm.PowerOnVM_Task())
             print(f"{args.vm} powered on")

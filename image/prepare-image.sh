@@ -185,6 +185,40 @@ remove_identity() {
   rm -f /var/lib/dhcp/*.leases /var/lib/NetworkManager/*.lease 2>/dev/null || true
 }
 
+remove_default_tls_identity() {
+  # Debian's package-generated key belongs to the build machine, never to copies of its image.
+  rm -f -- /etc/ssl/private/ssl-cert-snakeoil.key /etc/ssl/certs/ssl-cert-snakeoil.pem
+}
+
+remove_fwupd_identity() {
+  local dir path unit state
+  # fwupd creates this per-machine signing pair at startup; clones must create their own.
+  # https://blogs.gnome.org/hughsie/2019/03/12/a-fwupd-client-side-certificate/
+  for dir in /var /var/lib /var/lib/fwupd /var/lib/fwupd/pki; do
+    [ ! -L "$dir" ] || die "refusing a linked fwupd identity directory"
+  done
+  for path in /var/lib/fwupd/pki/secret.key /var/lib/fwupd/pki/client.pem; do
+    [ ! -L "$path" ] || die "refusing a linked fwupd identity file"
+    if [ -e "$path" ] && [ ! -f "$path" ]; then
+      die "fwupd identity is not a regular file"
+    fi
+  done
+  # Runtime masks block timer and D-Bus reactivation during preparation only.
+  # /run disappears at shutdown: the installed enable/mask state is unchanged.
+  for unit in fwupd-refresh.timer fwupd-refresh.service fwupd.service; do
+    if state=$(systemctl show --property=LoadState --value "$unit" 2>/dev/null); then
+      :
+    else
+      [ "$state" = not-found ] || die "could not inspect fwupd service state"
+    fi
+    if [ "$state" != not-found ]; then
+      [ -n "$state" ] || die "could not inspect fwupd service state"
+      systemctl mask --runtime --now "$unit" || die "could not stop fwupd identity generation"
+    fi
+  done
+  rm -f -- /var/lib/fwupd/pki/secret.key /var/lib/fwupd/pki/client.pem
+}
+
 remove_access() {
   local account rule
   # Match the UID used by firstboot. Replace the hash entirely so it cannot be recovered by unlocking the account.
@@ -304,7 +338,9 @@ act "remove the update access token, history, downloads, audit log, backups, rol
 act "remove the build cache and untagged image layers" remove_build_leftovers
 act "remove the configuration, the rendered files, the first-boot marker and the generated SSH password" remove_configuration
 act "remove staged and rejected setup files" remove_staged_configuration
+act "stop fwupd until shutdown and remove its generated client key and certificate" remove_fwupd_identity
 act "remove the SSH host keys, the machine id and DHCP leases" remove_identity
+act "remove Debian's machine-specific default TLS key and certificate" remove_default_tls_identity
 act "reset the host name of the base VM to '$DEFAULT_HOSTNAME' (guestinfo sets the real one at the first boot)" reset_hostname
 act "remove the login password hash, shadow backups, authorized SSH keys, passwordless sudo rules and shell histories" remove_access
 act "clean logs, package caches and temporary files" clean_logs

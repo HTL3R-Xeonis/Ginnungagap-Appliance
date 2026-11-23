@@ -1,0 +1,22 @@
+[Unit]
+Description=Poll for the newest unbuilt stable Ginnungagap release
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+User=imgbuild
+Group=imgbuild
+UMask=0077
+ExecStart=/usr/local/bin/ginnungagap-image-build poll
+Restart=no
+SuccessExitStatus=3
+TimeoutStartSec=5min
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ReadWritePaths=/var/lib/ginnungagap-image-build
+RestrictSUIDSGID=true
+LockPersonality=true
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6

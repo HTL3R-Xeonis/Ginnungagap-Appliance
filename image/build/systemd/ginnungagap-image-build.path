@@ -1,0 +1,10 @@
+[Unit]
+Description=Run the image builder for a queued release
+
+[Path]
+PathExists=/var/lib/ginnungagap-image-build/queue/pending.json
+PathExists=/var/lib/ginnungagap-image-build/queue/active.json
+Unit=ginnungagap-image-build.service
+
+[Install]
+WantedBy=multi-user.target

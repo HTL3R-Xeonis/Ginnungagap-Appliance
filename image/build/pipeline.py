@@ -53,13 +53,14 @@ RUN STATE: <state_dir>/runs/<run id>/
     state.json     schema 1: run_id, version, status (running|published|failed|blocked|deferred|interrupted|stopped|dry-run|crashed),
                    pid, started_at, finished_at, options, attempt, phases{P0..P16: status pending|running|ok|failed|warning|skipped|
                    planned, started_at, ended_at, seconds, attempt, result, error}, failure{phase, kind, message}, resources[...]
-                   (every cleanup, status open|cleaned|kept|final|failed), kept, keep_until, events[...]
+                   (every cleanup, status open|cleaned|retained|kept|final|failed), kept, keep_until, events[...]
     summary.json   the BuildSummary of the run; the P16 phase of WP5 writes the permanent copies
     NN-name.log    one log per phase, run.log for everything;  diag/  evidence of failed attempts;  key/ release/ ...  the phases' folders
     <state_dir>/lock    flock, one build at a time;  <state_dir>/PAUSE   an existing file defers every real run
 
-RESUME (`RunOptions.resume = run id`): only a run that failed/was interrupted/crashed AFTER P11 (P0-P11 ok) can continue; it restarts at
-P12 (RESUME_FROM), the artifacts of P0-P11 (the exported OVA) are the phases' business to re-check. Earlier phases start over: a new run.
+RESUME (`RunOptions.resume = run id`): a failed/interrupted/crashed run with P0-P11 ok restarts at P12 (RESUME_FROM).
+If P0-P10 are ok and P11 failed/pending/running, a recorded owned export whose size and SHA still match P10 permits restarting
+at P11. Inspection is rerun, never marked successful by resume. Earlier failed phases require a new run.
 
 DRY RUN: P0-P3 really run with READ-ONLY views of the ports (a mutating call raises DryRunViolation); every later phase is only
 described (`describe(ctx)`); nothing is created on any host and no PAUSE/lab-busy deferral is applied (it is reported in the summary).
@@ -70,6 +71,7 @@ from __future__ import annotations
 
 import contextlib
 import fcntl
+import hashlib
 import json
 import logging
 import os
@@ -456,6 +458,8 @@ class StateFile:
 
     @classmethod
     def load(cls, run_dir: Path) -> StateFile | None:
+        if run_dir.is_symlink() or (run_dir / "state.json").is_symlink():
+            return None
         data = _read_json(run_dir / "state.json")
         if not isinstance(data, dict):
             return None
@@ -482,6 +486,147 @@ def list_runs(state_dir: Path) -> list[StateFile]:
             if state is not None:
                 found.append(state)
     return sorted(found, key=lambda s: str(s.data.get("started_at", "")))
+
+
+def _published(state: StateFile) -> bool:
+    """P14 is the durable boundary, even when a crash prevented the final status write."""
+    return state.data.get("status") == "published" or (
+        state.data.get("phases", {}).get(PUBLISH_PHASE, {}).get("status") == "ok"
+    )
+
+
+def _owned_export_path(state_dir: Path, state: StateFile, ref: str) -> Path | None:
+    """Only the recorded run's immediate export directory, with no symlink escape."""
+    run_id = str(state.data.get("run_id", ""))
+    if not names_module.parse_run_id(run_id):
+        return None
+    expected = runs_dir(state_dir) / run_id / "export"
+    target = Path(ref)
+    if (
+        target != expected
+        or state.path != expected.parent / "state.json"
+        or expected.is_symlink()
+        or expected.parent.is_symlink()
+        or state.path.is_symlink()
+        or expected.resolve() != runs_dir(state_dir).resolve() / run_id / "export"
+    ):
+        return None
+    return expected
+
+
+def _validated_export(state: StateFile, directory: Path) -> bool:
+    """Trust the successful P10 validation only while its exact bytes still exist."""
+    phase = state.data.get("phases", {}).get("P10", {})
+    facts = phase.get("result") or {}
+    size, digest = facts.get("size"), facts.get("sha256")
+    if (
+        phase.get("status") != "ok"
+        or not isinstance(facts.get("path"), str)
+        or type(size) is not int
+        or size <= 0
+        or not isinstance(digest, str)
+        or re.fullmatch(r"[0-9a-f]{64}", digest) is None
+    ):
+        return False
+    ova = Path(facts["path"])
+    if (
+        ova.parent != directory
+        or ova.suffix != ".ova"
+        or ova.is_symlink()
+        or not ova.is_file()
+        or ova.stat().st_size != size
+    ):
+        return False
+    with ova.open("rb") as stream:
+        return hashlib.file_digest(stream, "sha256").hexdigest() == digest
+
+
+def _discard_export(state_dir: Path, directory: Path) -> None:
+    # Import lazily: the adapter registers phases and itself imports this module.
+    from .esxi import cleanup_export_artifacts
+
+    # The helper's published branch deletes only this exact, guarded private directory.
+    cleanup_export_artifacts(state_dir, directory, published=True)
+
+
+def cleanup_recorded_exports(
+    state_dir: Path,
+    runs: dict[str, StateFile],
+    report: JanitorReport,
+    *,
+    now: datetime,
+    resume_run: str | None = None,
+    failed_run: str | None = None,
+) -> None:
+    """Bound failed-export retention using recorded ownership and the successful P10 digest.
+
+    ``failed_run`` is the final-failure cleanup still inside the running process, before
+    its terminal status has been saved. Every other running run remains untouchable.
+    """
+    candidates: list[tuple[str, StateFile, Path, list[dict[str, Any]]]] = []
+    terminal = {"failed", "interrupted", "blocked", "crashed", "stopped"}
+    for run_id, state in runs.items():
+        records = [
+            record
+            for record in state.data.get("resources", [])
+            if record.get("kind") == "export_artifact"
+            and _owned_export_path(state_dir, state, str(record.get("ref"))) is not None
+        ]
+        if not records:
+            continue
+        directory = Path(records[0]["ref"])
+        until = _parse_iso(state.data.get("keep_until"))
+        if state.data.get("kept") and until is not None and now < until:
+            report.kept.append(str(directory))
+            continue
+        if (
+            not _published(state)
+            and state.data.get("status") not in terminal
+            and run_id != failed_run
+        ):
+            continue
+        try:
+            if not _published(state) and _validated_export(state, directory):
+                candidates.append((run_id, state, directory, records))
+                continue
+            existed = directory.exists()
+            _discard_export(state_dir, directory)
+            if existed:
+                report.removed_paths.append(str(directory))
+            for record in records:
+                record["status"] = "cleaned"
+            state.save()
+        except Exception as exc:  # noqa: BLE001 - best effort; keep possible evidence if unreadable
+            report.errors.append(
+                f"export_artifact {directory}: {type(exc).__name__}: {exc}"
+            )
+    if not candidates:
+        return
+    selected = max(
+        candidates,
+        key=lambda item: (
+            item[0] == resume_run,
+            str(item[1].data.get("started_at", "")),
+            item[0],
+        ),
+    )
+    for candidate in candidates:
+        _, state, directory, records = candidate
+        try:
+            if candidate is selected:
+                report.kept.append(str(directory))
+                status = "retained"
+            else:
+                _discard_export(state_dir, directory)
+                report.removed_paths.append(str(directory))
+                status = "cleaned"
+            for record in records:
+                record["status"] = status
+            state.save()
+        except Exception as exc:  # noqa: BLE001 - one locked export must not hide the others
+            report.errors.append(
+                f"export_artifact {directory}: {type(exc).__name__}: {exc}"
+            )
 
 
 def attempts_in_window(
@@ -519,6 +664,7 @@ class RunOptions:
     keep: bool = False
     force_busy: bool = False
     resume: str | None = None
+    refresh_catalog: bool = False
     # for the phases:
     base: str | None = None
     release_dir: Path | None = None
@@ -527,6 +673,10 @@ class RunOptions:
     retry: bool = False
     clean_base: bool = False
     skip_janitor: bool = False
+
+    def __post_init__(self):
+        if self.refresh_catalog and not self.resume:
+            raise PermanentError("--refresh-catalog requires --resume")
 
 
 @dataclass(frozen=True)
@@ -911,6 +1061,7 @@ class Janitor:
         logger: logging.Logger,
         share: ShareApiPort | None = None,
         current_run: str | None = None,
+        resume_run: str | None = None,
     ) -> None:
         self.config = config
         self.esxi = esxi
@@ -919,6 +1070,7 @@ class Janitor:
         self.log = logger
         self.share = share
         self.current_run = current_run
+        self.resume_run = resume_run
 
     def _kept(self, state: StateFile | None) -> bool:
         if state is None or not state.data.get("kept"):
@@ -954,6 +1106,7 @@ class Janitor:
         self._vms(report, runs)
         self._folders(report, runs)
         self._recorded_resources(report, runs)
+        self._export_artifacts(report, runs)
         return report
 
     def _vms(self, report: JanitorReport, runs: dict[str, StateFile]) -> None:
@@ -1029,6 +1182,11 @@ class Janitor:
                 kind, ref = record.get("kind"), str(record.get("ref"))
                 try:
                     if kind == "share_folder" and self.share is not None:
+                        if _published(state):
+                            # P14 may have committed before the resource status was saved.
+                            record["status"] = "final"
+                            changed = True
+                            continue
                         data = record.get("data") or {}
                         if not ref.startswith(names_module.FOLDER_PREFIX):
                             continue
@@ -1058,6 +1216,17 @@ class Janitor:
                     changed = True
             if changed:
                 state.save()
+
+    def _export_artifacts(
+        self, report: JanitorReport, runs: dict[str, StateFile]
+    ) -> None:
+        cleanup_recorded_exports(
+            self.state_dir,
+            runs,
+            report,
+            now=self.clock.now(),
+            resume_run=self.resume_run,
+        )
 
 
 # ---------- signals ----------
@@ -1180,7 +1349,7 @@ class Pipeline:
                 + ", ".join(f"{pid} ({_SPEC[pid].name})" for pid in missing)
             )
 
-    def _janitor(self) -> JanitorReport:
+    def _janitor(self, *, resume_run: str | None = None) -> JanitorReport:
         return Janitor(
             self.config,
             self.esxi,
@@ -1188,6 +1357,7 @@ class Pipeline:
             self.state_dir,
             self.log,
             share=self.share,
+            resume_run=resume_run,
         ).run()
 
     def _new_state(
@@ -1237,16 +1407,55 @@ class Pipeline:
             raise PipelineError(
                 f"run {run_id} ended as {data.get('status')}; only failed, interrupted or crashed runs can be resumed"
             )
+        phases = data.get("phases", {})
+        resume_from = (
+            RESUME_FROM if phases.get("P11", {}).get("status") == "ok" else "P11"
+        )
         not_done = [
             pid
-            for pid in PHASE_IDS[: phase_index(RESUME_FROM)]
-            if data["phases"][pid]["status"] != "ok"
+            for pid in PHASE_IDS[: phase_index(resume_from)]
+            if phases.get(pid, {}).get("status") != "ok"
         ]
         if not_done:
             raise PipelineError(
                 f"run {run_id} cannot be resumed: {', '.join(not_done)} did not finish "
-                f"(only a run whose phases before {RESUME_FROM} are done can continue; start a new run)"
+                f"(only a run whose phases before {resume_from} are done can continue; start a new run)"
             )
+        if resume_from == "P11":
+            if phases.get("P11", {}).get("status") not in {
+                "failed",
+                "pending",
+                "running",
+            }:
+                raise PipelineError(
+                    f"run {run_id} has no resumable P11 inspection state; start a new run"
+                )
+            directory = next(
+                (
+                    owned
+                    for record in data.get("resources", [])
+                    if record.get("kind") == "export_artifact"
+                    and (
+                        owned := _owned_export_path(
+                            self.state_dir, state, str(record.get("ref"))
+                        )
+                    )
+                    is not None
+                ),
+                None,
+            )
+            try:
+                valid = directory is not None and _validated_export(state, directory)
+            except OSError:
+                valid = False
+            if not valid:
+                raise PipelineError(
+                    f"run {run_id} cannot resume P11 without its recorded, size/hash-validated P10 export; start a new run"
+                )
+        # The run keeps its original start time, but its owner is this new
+        # process. Persist only after every resume validation has passed.
+        data.update(pid=os.getpid(), host=socket.gethostname())
+        state.save()
         return state
 
     # -- the run --
@@ -1395,7 +1604,7 @@ class Pipeline:
                 raise Deferred(paused)
             if not options.skip_janitor:
                 try:
-                    report = self._janitor()
+                    report = self._janitor(resume_run=options.resume)
                 except ports.TransientError:
                     raise
                 except Exception as exc:  # noqa: BLE001 - best effort, the original problem stays the one that is reported
@@ -1421,10 +1630,33 @@ class Pipeline:
     ) -> tuple[Failure | None, bool]:
         """Runs the phases in order. Returns (the failure that ended the run or None, whether stop-after ended it early)."""
         options = ctx.options
-        start = phase_index(RESUME_FROM) if resumed else 0
+        resume_from = RESUME_FROM if state.phase("P11").get("status") == "ok" else "P11"
+        start = phase_index(resume_from) if resumed else 0
         if resumed:
             for pid in PHASE_IDS[:start]:
                 ctx.results[pid] = dict(state.phase(pid).get("result") or {})
+            # Callbacks cannot survive a process crash; restore the P10 artifact's cleanup
+            # without rerunning export. Final failure keeps it, successful publication removes it.
+            for record in list(state.data.get("resources", [])):
+                if record.get("kind") != "export_artifact":
+                    continue
+                directory = _owned_export_path(
+                    self.state_dir, state, str(record.get("ref"))
+                )
+                if directory is None:
+                    continue
+                assert ctx.cleanup is not None
+                ctx.cleanup.phase = phase_index("P10")
+                ctx.on_cleanup(
+                    "export_artifact",
+                    str(directory),
+                    lambda directory=directory: (
+                        _discard_export(self.state_dir, directory)
+                        if ctx.summary.published
+                        else None
+                    ),
+                )
+                break
             for pid in PHASE_IDS[start:]:
                 state.data["phases"][pid] = {
                     "name": _SPEC[pid].name,
@@ -1433,7 +1665,7 @@ class Pipeline:
             state.data.update(
                 status="running", failure=None, finished_at=None, attempt=1
             )
-            self._event(state, "resumed", RESUME_FROM, f"resumed from {RESUME_FROM}")
+            self._event(state, "resumed", resume_from, f"resumed from {resume_from}")
         # P16 (summary) is not part of the loop: it runs once at the end for every outcome (see _finish)
         loop_end = phase_index("P15")
         last = (
@@ -1501,6 +1733,18 @@ class Pipeline:
         self._diagnose(ctx, f"attempt{ctx.attempt}")
         assert ctx.cleanup is not None
         ctx.summary.cleanup_warnings.extend(ctx.cleanup.run("retry", since=restart))
+        # Retained diagnostic exports belong to the failed attempt, whereas a retry
+        # rebuilds the base VM. Never let ovftool encounter that attempt's old output.
+        if restart <= phase_index("P10"):
+            for record in state.data.get("resources", []):
+                if record.get("kind") != "export_artifact":
+                    continue
+                directory = _owned_export_path(
+                    self.state_dir, state, str(record.get("ref"))
+                )
+                if directory is not None:
+                    _discard_export(self.state_dir, directory)
+                    record["status"] = "cleaned"
         for pid in PHASE_IDS[restart:]:
             state.data["phases"][pid] = {"name": _SPEC[pid].name, "status": "pending"}
             ctx.results.pop(pid, None)

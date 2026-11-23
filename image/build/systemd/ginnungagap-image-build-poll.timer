@@ -1,0 +1,12 @@
+[Unit]
+Description=Check for a signed appliance release every fifteen minutes
+
+[Timer]
+OnBootSec=5min
+OnUnitActiveSec=15min
+RandomizedDelaySec=1min
+Persistent=true
+Unit=ginnungagap-image-build-poll.service
+
+[Install]
+WantedBy=timers.target

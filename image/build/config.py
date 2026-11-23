@@ -30,6 +30,7 @@ Keys (defaults in brackets; the ones marked + are not listed in plan section 10 
 
 from __future__ import annotations
 
+import ipaddress
 import os
 import re
 import stat
@@ -95,12 +96,23 @@ class ShareConfig:
 
 
 @dataclass(frozen=True)
+class ManagementNetwork:
+    build_address: str
+    acceptance_address: str
+    prefix: int
+    gateway: str
+    dns: tuple[str, ...]
+
+
+@dataclass(frozen=True)
 class ImageConfig:
     cpu: int = 4
     memory_gb: int = 4
     disk_gb: int = 20
     install_method: str = "update"
     os_type: str = "debian12_64Guest"
+    ssh_user: str | None = None  # explicit override when the base catalog has no login
+    management_network: ManagementNetwork | None = None
 
 
 @dataclass(frozen=True)
@@ -160,6 +172,35 @@ class BuildHostConfig:
 # ---------- secrets ----------
 
 
+def _readonly_systemd_credential(path: Path, info: os.stat_result) -> bool:
+    """Recognize systemd's root-owned ACL credential copy, never a normal 0440 file."""
+    if (
+        not path.is_absolute()
+        or ".." in path.parts
+        or not path.is_relative_to(Path("/run/credentials"))
+        or len(path.relative_to("/run/credentials").parts) < 2
+        or info.st_uid != 0
+        or info.st_gid != 0
+        or stat.S_IMODE(info.st_mode) != 0o440
+        or info.st_nlink != 1
+    ):
+        return False
+    try:
+        # Reject symlinked or unprivileged/writable ancestors before trusting the
+        # special ACL permissions of the kernel-mounted credentials directory.
+        for parent in path.parents:
+            metadata = parent.lstat()
+            if (
+                not stat.S_ISDIR(metadata.st_mode)
+                or metadata.st_uid != 0
+                or metadata.st_mode & 0o022
+            ):
+                return False
+        return bool(os.statvfs(path).f_flag & os.ST_RDONLY)
+    except (AttributeError, OSError):
+        return False
+
+
 def check_secret_file(path: str | Path) -> Path:
     """
     The path when it is a plain file that only its owner may read. :raises SecretFileError: missing, a link, not a regular
@@ -178,7 +219,7 @@ def check_secret_file(path: str | Path) -> Path:
         raise SecretFileError(
             f"the secret file {path} is not a plain file - refusing to use it"
         )
-    if info.st_mode & 0o077:
+    if info.st_mode & 0o077 and not _readonly_systemd_credential(path, info):
         raise SecretFileError(
             f"the secret file {path} is readable by other users (mode {stat.S_IMODE(info.st_mode):04o}); "
             f"run `chmod 600 {path}`"
@@ -437,7 +478,56 @@ def parse_config(data: Any, *, source: str = "build-host.yml") -> BuildHostConfi
     sh.finish()
 
     im = root.section("image")
+    _, network_raw = im._get("management_network", None)
+    management_network = None
+    if network_raw is not None:
+        network_section = _Section(network_raw, "image.management_network", problems)
+        before = len(problems)
+        build_address = network_section.string("build_address", None)
+        acceptance_address = network_section.string("acceptance_address", None)
+        gateway = network_section.string("gateway", None)
+        prefix = network_section.integer("prefix", 24)
+        dns = network_section.host_list("dns", (), re.compile(r"[0-9.]+"))
+        network_section.finish()
+        try:
+            addresses = [
+                ipaddress.IPv4Address(value)
+                for value in (build_address, acceptance_address, gateway)
+            ]
+            if not 1 <= prefix <= 30:
+                raise ValueError()
+            subnet = ipaddress.IPv4Network(f"{build_address}/{prefix}", strict=False)
+            if len(set(addresses)) != 3 or any(
+                address not in subnet
+                or address in (subnet.network_address, subnet.broadcast_address)
+                or address.is_loopback
+                or address.is_link_local
+                or address.is_multicast
+                or address.is_unspecified
+                or address.is_reserved
+                for address in addresses
+            ):
+                raise ValueError()
+            if not 1 <= len(dns) <= 4 or any(
+                ipaddress.IPv4Address(value).is_unspecified
+                or ipaddress.IPv4Address(value).is_multicast
+                for value in dns
+            ):
+                raise ValueError()
+        except (ValueError, TypeError):
+            problems.append(
+                "image.management_network requires three distinct usable IPv4 addresses in one subnet, prefix 1..30 and valid DNS addresses"
+            )
+        if len(problems) == before:
+            management_network = ManagementNetwork(
+                build_address, acceptance_address, prefix, gateway, dns
+            )
+    ssh_user = im.optional_string("ssh_user")
+    if ssh_user and not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_.-]{0,63}\$?", ssh_user):
+        problems.append("image.ssh_user must be a plain SSH account name")
     image = ImageConfig(
+        management_network=management_network,
+        ssh_user=ssh_user,
         cpu=im.integer("cpu", 4),
         memory_gb=im.integer("memory_gb", 4),
         disk_gb=im.integer("disk_gb", 20),

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import inspect
 import json
 import os
@@ -1294,6 +1295,71 @@ def test_a_run_that_failed_after_the_export_resumes_at_stage(world):
     assert any(e["event"] == "resumed" for e in state["events"])
 
 
+@pytest.mark.parametrize("resume_from", ["P11", "P12"])
+@pytest.mark.parametrize("old_status", ["failed", "running"])
+def test_resume_records_current_process_before_work_and_keeps_original_start(
+    world, monkeypatch, resume_from, old_status
+):
+    failed = (
+        inspection_failed_run(world)
+        if resume_from == "P11"
+        else world.run(
+            registry=world.registry(
+                P13=flaky(world.trace, 1, error=lambda: PermanentError("timeout"))
+            )
+        )
+    )
+    path = failed.run_dir / "state.json"
+    previous = world.state(failed)
+    previous.update(pid=987654321, host="previous-worker", status=old_status)
+    path.write_text(json.dumps(previous))
+    monkeypatch.setattr(pipeline.os, "getpid", lambda: 123456789)
+    monkeypatch.setattr(pipeline.socket, "gethostname", lambda: "current-worker")
+    seen = []
+
+    def inspect_owner(ctx):
+        seen.append(json.loads(path.read_text()))
+        return STANDARD[resume_from](ctx)
+
+    resumed = world.run(
+        registry=world.registry(**{resume_from: inspect_owner}), resume=failed.run_id
+    )
+    assert resumed.status == "published"
+    assert len(seen) == 1
+    for current in (seen[0], world.state(resumed)):
+        assert current["pid"] == 123456789
+        assert current["host"] == "current-worker"
+        assert current["started_at"] == previous["started_at"]
+    assert seen[0]["status"] == "running"
+    assert any(event["event"] == "resumed" for event in seen[0]["events"])
+    summary = json.loads((resumed.run_dir / "summary.json").read_text())
+    assert summary["started_at"] == previous["started_at"]
+
+
+@pytest.mark.parametrize("invalid", ["earlier-phase", "version", "published", "export"])
+def test_invalid_resume_never_rewrites_process_or_existing_state(world, invalid):
+    failed = inspection_failed_run(world)
+    path = failed.run_dir / "state.json"
+    previous = world.state(failed)
+    previous.update(pid=987654321, host="previous-worker", status="running")
+    version = VERSION
+    if invalid == "earlier-phase":
+        previous["phases"]["P8"]["status"] = "failed"
+    elif invalid == "version":
+        version = "1.3.1"
+    elif invalid == "published":
+        previous["status"] = "published"
+    else:
+        Path(previous["phases"]["P10"]["result"]["path"]).unlink()
+    path.write_text(json.dumps(previous))
+    original_bytes = path.read_bytes()
+    with pytest.raises(pipeline.PipelineError):
+        world.pipeline()._resume_state(
+            failed.run_id, version, pipeline.RunOptions(resume=failed.run_id)
+        )
+    assert path.read_bytes() == original_bytes
+
+
 def test_a_run_that_did_not_get_past_the_install_cannot_be_resumed(world):
     outcome = world.run(
         registry=world.registry(
@@ -1654,6 +1720,249 @@ def seed_dead_run(world, run_id, status="running", annotation=True) -> str:
     return vm
 
 
+def seed_export(
+    world, run_id, *, status="failed", validated=True, resource_status="open"
+):
+    """A persisted P10 result, or an interrupted export without a successful P10."""
+    seed_dead_run(world, run_id, status=status)
+    run_dir = world.state_dir / "runs" / run_id
+    directory = run_dir / "export"
+    directory.mkdir()
+    ova = directory / "image.ova"
+    ova.write_bytes(b"verified export " + run_id.encode())
+    path = run_dir / "state.json"
+    state = json.loads(path.read_text())
+    if validated:
+        state["phases"]["P10"] = {
+            "status": "ok",
+            "result": {
+                "path": str(ova),
+                "size": ova.stat().st_size,
+                "sha256": hashlib.sha256(ova.read_bytes()).hexdigest(),
+            },
+        }
+    state["resources"].append(
+        {
+            "id": 0,
+            "kind": "export_artifact",
+            "ref": str(directory),
+            "phase": "P10",
+            "when": "always",
+            "status": resource_status,
+        }
+    )
+    path.write_text(json.dumps(state))
+    return ova
+
+
+def retained_export(ctx):
+    """Small deterministic stand-in for a successful, validated production P10."""
+    from image.build.esxi import cleanup_export_artifacts
+
+    directory = ctx.run_dir / "export"
+    ctx.on_cleanup(
+        "export_artifact",
+        str(directory),
+        lambda: cleanup_export_artifacts(
+            ctx.state_dir, directory, published=ctx.summary.published
+        ),
+    )
+    directory.mkdir(exist_ok=True)
+    ova = directory / "image.ova"
+    assert not ova.exists(), "a rebuilt attempt must not reuse the prior export"
+    ova.write_bytes(f"export attempt {ctx.attempt}".encode())
+    ctx.esxi.delete_vm(ctx.results["P4"]["vm"])
+    return {
+        "path": str(ova),
+        "ova": str(ova),
+        "size": ova.stat().st_size,
+        "sha256": hashlib.sha256(ova.read_bytes()).hexdigest(),
+    }
+
+
+@pytest.mark.parametrize("resource_status", ["open", "failed", "cleaned", "retained"])
+def test_janitor_retains_only_the_newest_validated_failed_export(
+    world, resource_status
+):
+    old = seed_export(world, "1.2.8-20261119T100000Z", resource_status=resource_status)
+    newest = seed_export(
+        world, "1.2.9-20261119T110000Z", resource_status=resource_status
+    )
+    # A directory alone does not prove ownership; even a failed foreign export is untouchable.
+    seed_dead_run(world, "1.2.7-20261119T090000Z", status="failed")
+    foreign = world.state_dir / "runs" / "1.2.7-20261119T090000Z" / "export"
+    foreign.mkdir()
+    (foreign / "foreign.ova").write_bytes(b"not recorded as ours")
+    report = world.pipeline().run_janitor()
+    assert report.clean
+    assert newest.is_file() and foreign.is_dir() and not old.parent.exists()
+    assert str(newest.parent) in report.kept
+    state = json.loads((newest.parent.parent / "state.json").read_text())
+    assert state["resources"][0]["status"] == "retained"
+    # Cleaned/retained resource records must still participate in the next retention sweep.
+    next_ova = seed_export(world, "1.3.0-20261120T100000Z")
+    world.pipeline().run_janitor()
+    assert next_ova.is_file() and not newest.parent.exists() and foreign.exists()
+
+
+@pytest.mark.parametrize(
+    "damage", ["unvalidated", "same_size_corruption", "truncated", "missing"]
+)
+def test_janitor_discards_incomplete_or_changed_exports_without_evicting_valid_one(
+    world, damage
+):
+    good = seed_export(world, "1.2.8-20261119T100000Z")
+    bad = seed_export(
+        world, "1.2.9-20261119T110000Z", validated=damage != "unvalidated"
+    )
+    if damage == "same_size_corruption":
+        bad.write_bytes(b"x" * bad.stat().st_size)
+    elif damage == "truncated":
+        bad.write_bytes(b"short")
+    elif damage == "missing":
+        bad.unlink()
+    report = world.pipeline().run_janitor()
+    assert report.clean and good.is_file() and not bad.parent.exists()
+
+
+def test_janitor_respects_active_run_keep_and_foreign_export_paths(world):
+    active_run = "1.3.0-20261120T100000Z"
+    active = seed_export(world, active_run, status="running")
+    kept = seed_export(world, "1.2.9-20261119T110000Z")
+    kept_state = kept.parent.parent / "state.json"
+    data = json.loads(kept_state.read_text())
+    data.update(
+        kept=True, keep_until=(world.clock.now() + timedelta(hours=1)).isoformat()
+    )
+    kept_state.write_text(json.dumps(data))
+    precious = world.tmp / "published-store"
+    precious.mkdir()
+    (precious / "saved.ova").write_bytes(b"published image")
+    seed_dead_run(world, "1.2.8-20261119T100000Z", status="failed")
+    foreign_state = world.state_dir / "runs" / "1.2.8-20261119T100000Z" / "state.json"
+    data = json.loads(foreign_state.read_text())
+    data["resources"] = [
+        {"kind": "export_artifact", "ref": str(precious), "status": "open"}
+    ]
+    foreign_state.write_text(json.dumps(data))
+    report = pipeline.Janitor(
+        world.config,
+        world.esxi,
+        world.clock,
+        world.state_dir,
+        world.pipeline().log,
+        current_run=active_run,
+    ).run()
+    assert report.clean and active.is_file() and kept.is_file()
+    assert (precious / "saved.ova").read_bytes() == b"published image"
+    assert (
+        json.loads((active.parent.parent / "state.json").read_text())["status"]
+        == "running"
+    )
+
+
+def test_janitor_never_follows_symlinked_run_state_or_export(world):
+    good = seed_export(world, "1.2.8-20261119T100000Z")
+    linked = seed_export(world, "1.2.9-20261119T110000Z")
+    linked.unlink()
+    linked.parent.rmdir()
+    precious = world.tmp / "precious"
+    precious.mkdir()
+    (precious / "foreign.ova").write_bytes(b"foreign")
+    linked.parent.symlink_to(precious, target_is_directory=True)
+    # A run symlink and state-file symlink must not cause foreign state writes either.
+    foreign_run = world.tmp / "foreign-run"
+    foreign_run.mkdir()
+    original = json.dumps({"run_id": "1.2.7-20261119T090000Z", "status": "running"})
+    (foreign_run / "state.json").write_text(original)
+    (world.state_dir / "runs" / "1.2.7-20261119T090000Z").symlink_to(
+        foreign_run, target_is_directory=True
+    )
+    state_link_run = world.state_dir / "runs" / "1.2.6-20261119T080000Z"
+    state_link_run.mkdir()
+    (state_link_run / "state.json").symlink_to(foreign_run / "state.json")
+    report = world.pipeline().run_janitor()
+    assert report.clean and good.is_file()
+    assert (
+        linked.parent.is_symlink()
+        and (precious / "foreign.ova").read_bytes() == b"foreign"
+    )
+    assert (foreign_run / "state.json").read_text() == original
+
+
+def test_janitor_crash_after_publish_removes_private_export_and_preserves_store(world):
+    ova = seed_export(world, "1.3.0-20261120T100000Z", status="running")
+    path = ova.parent.parent / "state.json"
+    state = json.loads(path.read_text())
+    state["phases"]["P14"] = {"status": "ok"}
+    state["resources"].append(
+        {
+            "kind": "share_folder",
+            "ref": "Ginnungagap_Appliance_v1.3.0",
+            "status": "open",
+        }
+    )
+    path.write_text(json.dumps(state))
+    report = world.pipeline().run_janitor()
+    world.share.remove_folder.assert_not_called()
+    assert report.clean and not ova.parent.exists()
+    state = json.loads(path.read_text())
+    assert state["resources"][0]["status"] == "cleaned"
+    assert state["resources"][1]["status"] == "final"
+
+
+def test_resume_preserves_requested_older_export_and_restores_success_cleanup(world):
+    failed = world.run(
+        registry=world.registry(
+            P10=retained_export,
+            P13=flaky(
+                world.trace, 99, error=lambda: PermanentError("acceptance failed")
+            ),
+        )
+    )
+    old = Path(world.state(failed)["phases"]["P10"]["result"]["path"])
+    newer = seed_export(world, "1.3.1-20261120T110000Z")
+    seen = []
+
+    def stage(ctx):
+        seen.append(Path(ctx.results["P10"]["path"]).read_bytes())
+        return p12(ctx)
+
+    resumed = world.run(registry=world.registry(P12=stage), resume=failed.run_id)
+    assert resumed.status == "published" and seen == [b"export attempt 1"]
+    assert not old.parent.exists() and not newer.parent.exists()
+
+
+def test_failed_resume_retains_verified_export_for_another_resume(world):
+    registry = world.registry(
+        P10=retained_export,
+        P13=flaky(world.trace, 99, error=lambda: PermanentError("acceptance failed")),
+    )
+    failed = world.run(registry=registry)
+    ova = Path(world.state(failed)["phases"]["P10"]["result"]["path"])
+    resumed = world.run(registry=registry, resume=failed.run_id)
+    assert resumed.status == "failed" and ova.read_bytes() == b"export attempt 1"
+    world.pipeline().run_janitor()
+    assert ova.is_file()
+    assert world.run(resume=failed.run_id).status == "published"
+    assert not ova.parent.exists()
+
+
+def test_transient_retry_discards_only_prior_attempt_export(world):
+    world.trace.clear()
+    outcome = world.run(
+        registry=world.registry(
+            P10=retained_export,
+            P11=flaky(world.trace, 1),
+            P13=flaky(world.trace, 99, error=lambda: PermanentError("final failure")),
+        )
+    )
+    assert outcome.status == "failed" and world.state(outcome)["attempt"] == 2
+    ova = Path(world.state(outcome)["phases"]["P10"]["result"]["path"])
+    assert ova.read_bytes() == b"export attempt 2"
+    assert world.trace.count("P10") == 2
+
+
 def test_the_janitor_deletes_only_prefixed_objects(world):
     esxi = world.esxi
     dead_vm = seed_dead_run(world, "1.2.9-20261119T100000Z")
@@ -1869,3 +2178,148 @@ def test_the_redactor_handles_keys_tokens_and_short_values():
 def test_the_stat_of_the_run_folder_is_private(world):
     outcome = world.run()
     assert stat.S_IMODE(outcome.run_dir.stat().st_mode) == 0o700
+
+
+def inspection_failed_run(world):
+    return world.run(
+        registry=world.registry(
+            P10=retained_export,
+            P11=flaky(
+                world.trace, 99, error=lambda: PermanentError("inspection rejected")
+            ),
+        )
+    )
+
+
+def test_failed_inspection_resumes_at_p11_with_exact_validated_export(world):
+    failed = inspection_failed_run(world)
+    ova = Path(world.state(failed)["phases"]["P10"]["result"]["path"])
+    before = ova.read_bytes()
+    world.trace.clear()
+    seen = []
+
+    def inspect_export(ctx):
+        seen.append(Path(ctx.results["P10"]["path"]).read_bytes())
+        assert ctx.results["P5"]
+        return {"checks": [{"name": "strict inspection", "passed": True}]}
+
+    resumed = world.run(
+        registry=world.registry(P11=inspect_export), resume=failed.run_id
+    )
+    assert resumed.status == "published"
+    assert world.trace == ["P11", "P12", "P13", "P14"]
+    assert seen == [before] and not ova.parent.exists()
+    current = world.state(resumed)
+    assert current["phases"]["P11"]["status"] == "ok"
+    assert any(
+        event["event"] == "resumed" and event.get("phase") == "P11"
+        for event in current["events"]
+    )
+
+
+@pytest.mark.parametrize("phase_status", ["pending", "running"])
+def test_crashed_or_pending_inspection_can_restart_from_validated_p10(
+    world, phase_status
+):
+    failed = inspection_failed_run(world)
+    path = failed.run_dir / "state.json"
+    state = world.state(failed)
+    state["status"] = "crashed"
+    state["phases"]["P11"] = {"status": phase_status}
+    path.write_text(json.dumps(state))
+    world.trace.clear()
+    resumed = world.run(resume=failed.run_id)
+    assert resumed.status == "published" and world.trace == ["P11", "P12", "P13", "P14"]
+
+
+def test_resumed_inspection_still_blocks_publication_and_retains_export(world):
+    failed = inspection_failed_run(world)
+    ova = Path(world.state(failed)["phases"]["P10"]["result"]["path"])
+    world.trace.clear()
+    world.share.reset_mock()
+    resumed = world.run(
+        registry=world.registry(
+            P11=flaky(
+                world.trace, 99, error=lambda: PermanentError("private key residue")
+            )
+        ),
+        resume=failed.run_id,
+    )
+    assert resumed.status == "failed" and resumed.failed_phase == "P11"
+    assert (
+        world.trace == ["P11"]
+        and world.state(resumed)["phases"]["P11"]["status"] == "failed"
+    )
+    world.share.make_folder.assert_not_called()
+    assert ova.read_bytes() == b"export attempt 1"
+
+
+@pytest.mark.parametrize(
+    "damage",
+    [
+        "changed",
+        "missing",
+        "size",
+        "hash",
+        "outside",
+        "untracked",
+        "symlink",
+        "unvalidated",
+    ],
+)
+def test_inspection_resume_requires_recorded_owned_unchanged_validated_export(
+    world, damage
+):
+    failed = inspection_failed_run(world)
+    path = failed.run_dir / "state.json"
+    state = world.state(failed)
+    p10 = state["phases"]["P10"]
+    facts = p10["result"]
+    ova = Path(facts["path"])
+    if damage == "changed":
+        original = ova.read_bytes()
+        ova.write_bytes(b"X" + original[1:])  # same size, changed SHA-256
+    elif damage == "missing":
+        ova.unlink()
+    elif damage == "size":
+        facts["size"] += 1
+    elif damage == "hash":
+        facts["sha256"] = "0" * 64
+    elif damage == "outside":
+        foreign = world.tmp / "foreign.ova"
+        foreign.write_bytes(ova.read_bytes())
+        facts["path"] = str(foreign)
+    elif damage == "untracked":
+        state["resources"] = [
+            resource
+            for resource in state["resources"]
+            if resource.get("kind") != "export_artifact"
+        ]
+    elif damage == "symlink":
+        foreign = world.tmp / "foreign.ova"
+        ova.rename(foreign)
+        ova.symlink_to(foreign)
+    elif damage == "unvalidated":
+        p10["status"] = "failed"
+    path.write_text(json.dumps(state))
+    world.trace.clear()
+    resumed = world.run(resume=failed.run_id)
+    assert (
+        resumed.status == "blocked" and "new run" in resumed.reason and not world.trace
+    )
+
+
+@pytest.mark.parametrize("earlier_phase", ["P0", "P8", "P9", "P10"])
+def test_inspection_resume_cannot_skip_an_earlier_failed_phase(world, earlier_phase):
+    failed = inspection_failed_run(world)
+    path = failed.run_dir / "state.json"
+    state = world.state(failed)
+    state["phases"][earlier_phase]["status"] = "failed"
+    path.write_text(json.dumps(state))
+    world.trace.clear()
+    resumed = world.run(resume=failed.run_id)
+    assert (
+        resumed.status == "blocked"
+        and earlier_phase in resumed.reason
+        and not world.trace
+    )

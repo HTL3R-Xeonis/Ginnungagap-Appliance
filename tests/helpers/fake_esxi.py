@@ -315,6 +315,14 @@ class FakeEsxi:
         self.clock.advance(timeout)
         return False
 
+    def wait_for_link_local(self, name: str, timeout: float) -> str:
+        self._enter("wait_for_link_local", name=name, timeout=timeout)
+        vm = self._need(name)
+        if vm.power_state != POWERED_ON or vm.never_gets_ip:
+            self.clock.advance(timeout)
+            raise Timeout(f"{name} reported no hardware link-local IPv6")
+        return "fe80::250:56ff:feaa:bbcc"
+
     def wait_for_ip(self, name: str, timeout: float) -> str:
         self._enter("wait_for_ip", name=name, timeout=timeout)
         vm = self._need(name)
