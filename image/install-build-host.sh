@@ -1,5 +1,5 @@
 #!/bin/bash
-# Install pinned image-build tooling. Deliberately enables no service, path unit or timer.
+# Install pinned image-build tooling. Deliberately enables no service, path unit or timer (also not the optional status page).
 set -euo pipefail
 umask 022
 
@@ -156,3 +156,4 @@ if [[ -z "$target_root" ]]; then
 fi
 echo 'Installed pinned image-build tooling. No units were enabled.'
 echo 'Configure build-host.yml, credentials, share mount and trusted signers; run a dry run before enabling the path and timer.'
+echo 'Optional read-only status page: ginnungagap-image-build-status.service is installed but not enabled. Set status_http: true in build-host.yml, then run: sudo systemctl enable --now ginnungagap-image-build-status.service'

@@ -226,8 +226,8 @@ image_build janitor
 image_build run --release v1.3.0 --resume 1.3.0-20261120T120000Z
 ```
 
-Use the run ID printed by your run, not the example timestamp. `status`, `list`, `logs` and `show` read saved state; no
-status HTTP server is started (`status_http` is currently a reserved config setting). `status` adds `current` for a running
+Use the run ID printed by your run, not the example timestamp. `status`, `list`, `logs` and `show` read saved state; an HTTP
+status page exists only when you switch it on (see "Optional status page"). `status` adds `current` for a running
 job alongside `latest` for the previous result; an older `latest` alone does not describe current progress. `logs` prints the saved run log;
 use `journalctl -f` to follow a service live. Per-phase logs, diagnostics, `inspection.json` and `acceptance.json` live below
 `/var/lib/ginnungagap-image-build/runs/<run-id>/`. Final summaries are in `builds/<version>/summary.json` and `latest.json`;
@@ -262,6 +262,59 @@ Retain the original run's required release-directory/prerelease/unsigned options
 Original P1 evidence is retained. P12 records the before/current catalog plus added, removed and changed IDs in `catalog_refresh`; review this audit with the recovery result. Publication still refuses a catalog change during staging or acceptance. The option neither changes another template nor skips artifact, inspection or acceptance checks.
 
 Public share/staging directories are explicitly **0755**, and public OVA/YAML files **0644**, even when the service uses UMask 0077. This allows the OVA HTTP server to read and range-serve the staged artifact before catalog publication. Private state, credentials and key evidence remain 0700/0600 as appropriate; they are not made public with the staging directory.
+
+## Optional status page
+
+A small read-only HTTP page for a later "Images" row in the Igdrasyl admin. It is **off by default** (`status_http: false`),
+uses only the Python standard library and needs no extra package. Configuration (`build-host.yml`):
+
+| Key | Default | Meaning |
+|---|---|---|
+| `status_http` | `false` | `true` allows `serve-status` to start; with `false` it refuses with exit code 2. |
+| `status_bind` | `0.0.0.0` | IP address to listen on (an IPv6 address is accepted too). Prefer the management address. |
+| `status_port` | `8183` | TCP port, 1024-65535. |
+
+It serves exactly two paths, `GET`/`HEAD` only (every other method answers 405 with `Allow: GET, HEAD`, every other path 404;
+there is no directory listing and the request path is never used as a file name): `/healthz` returns `{"ok": true}`, and
+`/status.json` returns the document below. Answers carry `Cache-Control: no-store` and `Content-Type: application/json; charset=utf-8`,
+and no CORS header (the consumer is a server, not a browser). **There is no authentication and no TLS: use it on the LAN only**
+and do not forward the port. It never returns secrets, credential or key paths, ESXi addresses, run keys, log text or tracebacks:
+the document is built only from the fields below, every text is cut to 200 characters, stripped of control characters, and the
+`reason` is additionally scrubbed of URLs, IPv4 addresses, absolute paths and `password=...`-like pairs. An unknown or missing source
+field becomes `null`; a missing or corrupt state file never breaks the page.
+
+```json
+{"schema": 1, "generated_at": "2026-11-24T10:15:00Z", "worker": "imgbuild",
+ "state": "building",
+ "paused": false,
+ "active": {"run_id": "1.3.7-20261124T100000Z", "release": "1.3.7", "phase": "P13", "started_at": "2026-11-24T10:00:00Z"},
+ "latest": {"version": "1.3.6", "result": "published", "started_at": "2026-11-20T09:00:00Z", "finished_at": "2026-11-20T10:30:00Z",
+            "template": "ginnungagap-appliance-v1.3.6", "reason": null, "acceptance": {"passed": 42, "total": 42}},
+ "builds": ["... up to 20 BUILD objects, newest first, the same shape as latest ..."]}
+```
+
+* `state`: `building` when a run with `state.json` status `running` exists (the rule of `status`), else `paused` when the `PAUSE`
+  file exists, else `idle`. `paused` is true whenever `PAUSE` exists, also while a build runs. `active` is that run (`phase` is the
+  running phase `P0`..`P16`, `null` between two phases), otherwise `null`.
+* `latest` comes from `latest.json`, `builds` from `builds/<version>/summary.json` (at most 20). `result` is one of `published`,
+  `failed`, `blocked`, `deferred`, `interrupted`, `stopped`, `dry-run`; an unknown value is shown as `failed`, never as a success.
+  `template` is only set for a published image. `reason` is only set for another result. `acceptance` counts the checks of
+  `acceptance.checks` (`passed` of `total`) and is `null` when the run recorded none.
+
+The installer copies `ginnungagap-image-build-status.service` but never enables it. To try it:
+
+```bash
+# build-host.yml: status_http: true  (optionally status_bind / status_port), then
+sudo systemctl enable --now ginnungagap-image-build-status.service
+curl -s http://127.0.0.1:8183/healthz
+curl -s http://127.0.0.1:8183/status.json | python3 -m json.tool
+curl -si -X POST http://127.0.0.1:8183/status.json | head -n 3   # 405, Allow: GET, HEAD
+# without the unit, in the foreground until Ctrl-C / SIGTERM:
+image_build serve-status
+```
+
+With `status_http: false` the service stops at once with exit code 2 and is not restarted. Disable it again with
+`sudo systemctl disable --now ginnungagap-image-build-status.service`.
 
 ## Enable scheduling only after the checks
 
@@ -298,6 +351,9 @@ Do not invoke `work` as the normal manual interface; use `run --release`. The ti
 renders its interval from `poll_minutes` (editing that YAML alone does not rewrite the existing timer drop-in).
 Automatic selection skips blocked releases and releases at the configured failed-attempt limit per 24 hours. A busy-host
 deferral clears its queue item so a later poll can reconsider it; it does not spin the service in a restart loop.
+
+The optional status page is separate and independent of scheduling: set `status_http: true`, then
+`sudo systemctl enable --now ginnungagap-image-build-status.service` (see "Optional status page").
 
 To stop scheduling, create `PAUSE` and disable the triggers; a current build continues unless explicitly stopped:
 
@@ -446,4 +502,4 @@ host not ready) creates no run directory; P16 runs once for every outcome that h
 * The janitor runs at the start of every real run and in `Pipeline.run_janitor()` (both hold the lock). It touches only `imgbuild-`/`imgaccept-`
   VMs and datastore folders, and what a crashed run recorded in its own state.json (a share folder only with its marker, paths only below `runs/`).
 * The config adds a few keys to plan section 10 that the phases need: `paths.state_dir`, `paths.allowed_signers`, `share.ssh_*`,
-  `image.os_type`, `status_http`, `limits.*`.
+  `image.os_type`, `status_http`, `status_bind`, `status_port`, `limits.*`.

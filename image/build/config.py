@@ -22,7 +22,7 @@ Keys (defaults in brackets; the ones marked + are not listed in plan section 10 
     share.mode [nfs: nfs|ssh]  share.path [/mnt/esxi_templates]  share.ssh_host/ssh_user/ssh_key_file (required for mode ssh)+
     image.cpu [4]  image.memory_gb [4]  image.disk_gb [20]  image.install_method [update: update|checkouts]  image.os_type+
     acceptance.upgrade_test [true]  acceptance.extra_hosts [[]]
-    keep_failed [false]  status_http [false]  notify.command [""]
+    keep_failed [false]  status_http [false]  status_bind ["0.0.0.0"]  status_port [8183, 1024-65535]  notify.command [""]
     paths.state_dir+ [/var/lib/ginnungagap-image-build]  paths.allowed_signers+ [/etc/ginnungagap-image-build/allowed_signers]
     limits.*+  build_disk_free_gb 25, share_free_gb 10, datastore_free_gb 50, max_attempts 2 (attempts per run: one retry),
                max_attempts_per_release 2 (per 24 h), orphan_age_hours 6, keep_hours 24
@@ -155,6 +155,8 @@ class BuildHostConfig:
     acceptance: AcceptanceConfig = field(default_factory=AcceptanceConfig)
     keep_failed: bool = False
     status_http: bool = False
+    status_bind: str = "0.0.0.0"
+    status_port: int = 8183
     notify: NotifyConfig = field(default_factory=NotifyConfig)
     paths: PathsConfig = field(default_factory=PathsConfig)
     limits: LimitsConfig = field(default_factory=LimitsConfig)
@@ -332,13 +334,20 @@ class _Section:
             return default
         return value
 
-    def integer(self, key: str, default: int, minimum: int = 1) -> int:
+    def integer(
+        self, key: str, default: int, minimum: int = 1, maximum: int | None = None
+    ) -> int:
         present, value = self._get(key, default)
         if not present:
             return default
         if isinstance(value, bool) or not isinstance(value, int) or value < minimum:
             self.problems.append(
                 f"{self._name(key)} must be a whole number >= {minimum}"
+            )
+            return default
+        if maximum is not None and value > maximum:
+            self.problems.append(
+                f"{self._name(key)} must be a whole number between {minimum} and {maximum}"
             )
             return default
         return value
@@ -548,6 +557,13 @@ def parse_config(data: Any, *, source: str = "build-host.yml") -> BuildHostConfi
 
     keep_failed = root.boolean("keep_failed", False)
     status_http = root.boolean("status_http", False)
+    status_bind = root.string("status_bind", "0.0.0.0") or "0.0.0.0"
+    try:
+        ipaddress.ip_address(status_bind)
+    except ValueError:
+        problems.append("status_bind must be an IP address such as 0.0.0.0 or 10.0.0.5")
+        status_bind = "0.0.0.0"
+    status_port = root.integer("status_port", 8183, minimum=1024, maximum=65535)
 
     no = root.section("notify")
     command = no.text_allowing_empty("command", "")
@@ -593,6 +609,8 @@ def parse_config(data: Any, *, source: str = "build-host.yml") -> BuildHostConfi
         acceptance=acceptance,
         keep_failed=keep_failed,
         status_http=status_http,
+        status_bind=status_bind,
+        status_port=status_port,
         notify=notify,
         paths=paths,
         limits=limits,

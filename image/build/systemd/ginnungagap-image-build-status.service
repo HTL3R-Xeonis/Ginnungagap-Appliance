@@ -1,0 +1,32 @@
+[Unit]
+Description=Read-only HTTP status page of the Ginnungagap image build worker
+Wants=network-online.target
+After=network-online.target
+ConditionPathExists=/etc/ginnungagap-image-build/build-host.yml
+
+[Service]
+Type=simple
+User=imgbuild
+Group=imgbuild
+UMask=0077
+ExecStart=/usr/local/bin/ginnungagap-image-build serve-status
+Restart=on-failure
+RestartSec=10
+# Exit code 2 means status_http is false or the configuration is invalid: do not loop.
+RestartPreventExitStatus=2
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+CapabilityBoundingSet=
+RestrictSUIDSGID=true
+LockPersonality=true
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+# The page only reads /var/lib/ginnungagap-image-build; it needs no writable path and no credential.
+
+[Install]
+WantedBy=multi-user.target

@@ -80,6 +80,10 @@ def parser() -> argparse.ArgumentParser:
     sub.add_parser("janitor", help="Clean only stale build-owned resources")
     for command in ("status", "list"):
         sub.add_parser(command).add_argument("--json", action="store_true")
+    sub.add_parser(
+        "serve-status",
+        help="Serve the optional read-only status page until SIGTERM (needs status_http: true)",
+    )
     sub.add_parser("logs").add_argument("run")
     sub.add_parser("show").add_argument("version")
     update = sub.add_parser(
@@ -265,6 +269,19 @@ def status(config: BuildHostConfig) -> dict[str, Any]:
     }
 
 
+def serve_status(config: BuildHostConfig) -> int:
+    """The optional read-only HTTP status page, in the foreground until SIGTERM."""
+    if not config.status_http:
+        print(
+            "the status page is off: set status_http: true in build-host.yml to serve it",
+            file=sys.stderr,
+        )
+        return 2
+    status_server = importlib.import_module("image.build.status_server")
+    status_server.serve(config.paths.state_dir, config.status_bind, config.status_port)
+    return 0
+
+
 def print_outcome(outcome: Any, *, as_json: bool = False) -> None:
     if as_json:
         value = (
@@ -436,6 +453,8 @@ def main(argv: list[str] | None = None) -> int:
                 worker.esxi.close()
         if args.command == "self-update":
             return self_update(config, version(args.release), args.release_dir)
+        if args.command == "serve-status":
+            return serve_status(config)
         if args.command == "status":
             body = status(config)
         elif args.command == "list":

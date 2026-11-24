@@ -45,6 +45,12 @@ def test_installer_stages_disabled_units_and_preserves_user_configuration(tmp_pa
     )
     assert "OnUnitActiveSec=23min" in dropin.read_text()
     assert not list(target.rglob("*.wants")), "installer must not enable units"
+    status_unit = target / "etc/systemd/system/ginnungagap-image-build-status.service"
+    assert "serve-status" in status_unit.read_text()
+    assert "[Install]" in status_unit.read_text()
+    assert "ginnungagap-image-build-status.service" in first.stdout
+    assert "status_http: true" in first.stdout
+    assert "not enabled" in first.stdout
     assert (target / "opt/ginnungagap-image-build/current").is_symlink()
     snapshot = (target / "opt/ginnungagap-image-build/current").resolve()
     assert snapshot.stat().st_mode & 0o777 == 0o755
