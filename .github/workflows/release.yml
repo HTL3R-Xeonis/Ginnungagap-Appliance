@@ -76,10 +76,12 @@ jobs:
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install "PyYAML>=6" "pytest>=8" ruff
+          pip install -r requirements-test.txt ruff
 
       # the same gate as ci.yml: a release is never built from a state whose tests or style checks fail
       - name: Tests and style checks
+        env:
+          REQUIRE_ALL_TESTS: "1"  # a missing library fails the run instead of skipping tests
         run: |
           pytest
           ruff check .

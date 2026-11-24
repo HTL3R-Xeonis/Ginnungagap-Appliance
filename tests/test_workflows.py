@@ -38,6 +38,21 @@ def test_ci_runs_the_tests_and_both_ruff_checks_on_every_push_and_pull_request()
     assert "--check" in commands
 
 
+@pytest.mark.parametrize("name", ["ci.yml", "release.yml"])
+def test_the_gate_installs_every_test_library_and_fails_instead_of_skipping(name):
+    """Without the libraries of requirements-test.txt 13 tests were skipped silently, locally and in CI."""
+    workflow = load(name)
+    jobs = workflow["jobs"]
+    job = "tests_and_linter" if name == "ci.yml" else "release"
+    commands = "\n".join(step.get("run", "") for step in jobs[job]["steps"])
+    assert "pip install -r requirements-test.txt" in commands
+    pytest_steps = [
+        step for step in jobs[job]["steps"] if "pytest" in step.get("run", "")
+    ]
+    assert pytest_steps
+    assert all(step["env"]["REQUIRE_ALL_TESTS"] == "1" for step in pytest_steps)
+
+
 def test_the_release_workflow_starts_only_from_a_pushed_version_tag_or_by_hand():
     workflow = load("release.yml")
     trigger = workflow["on"]

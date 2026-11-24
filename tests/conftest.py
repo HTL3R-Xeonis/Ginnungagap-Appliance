@@ -1,4 +1,6 @@
 import copy
+import importlib
+import os
 from pathlib import Path
 
 import pytest
@@ -10,6 +12,17 @@ from ginnungagap import firstboot as firstboot_module
 from ginnungagap import operate as operate_module
 
 ROOT = Path(__file__).resolve().parent.parent
+
+
+# Some tests need a library that is not a dependency of the program itself (pyVmomi, fastapi, jsonschema, ...). Locally a missing one
+# skips them. CI and the release run with REQUIRE_ALL_TESTS=1: then a missing library FAILS the test instead, so a test can never be
+# skipped quietly there (it was: 13 tests never ran in CI before requirements-test.txt existed).
+if os.environ.get("REQUIRE_ALL_TESTS"):
+
+    def _importorskip_strict(modname, *args, **kwargs):
+        return importlib.import_module(modname)
+
+    pytest.importorskip = _importorskip_strict
 
 
 @pytest.fixture
