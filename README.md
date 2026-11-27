@@ -559,7 +559,11 @@ publishes or pushes on its own**.
    the image-builder tooling itself is a separate, root-only signed `self-update`, never part of a build.
 
 The image name follows the appliance release version. The older manual [image procedure](image/README.md) is still available.
-The automated build VM is prepared, but a complete real automated build and its acceptance/failure drills remain to be verified.
+Unsigned RC commissioning (17 offline and 37 acceptance checks, crash recovery and worker reboot) is verified. Signed
+production activation is still blocked: v1.3.7 preparation builds locally while Plan 1 requires exact digest pulls without
+source fallback. Strict `--prebuilt-only` support is implemented and tested locally for v1.3.9; it needs a new signed release and complete
+production qualification. Its factory path explicitly uses `image.install_method: checkouts` for old-base compatibility.
+Worker .183 uses user-approved build .187 and acceptance .185; PAUSE is restored and automatic triggers stay disabled.
 <!-- END releasing -->
 
 ## Not part of this solution

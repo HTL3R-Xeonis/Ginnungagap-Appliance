@@ -13,7 +13,19 @@ from pathlib import Path, PurePosixPath
 from ginnungagap.image_network import restore_script
 
 from . import pipeline, remote
-from .ports import CommandFailed, PermanentError, TransientError
+from .ports import Blocked, CommandFailed, PermanentError, TransientError
+
+_PREBUILT_SERVICES = frozenset(
+    (
+        "ginnungagap",
+        "template-esxi",
+        "collector-esxi",
+        "template-gns3",
+        "collector-gns3",
+        "generator",
+        "setup",
+    )
+)
 
 # Executed as root in a throw-away guest, never on the build host. The release
 # was verified with the pinned tooling before it crossed the SSH connection.
@@ -74,6 +86,7 @@ lines.extend(k+'='+shlex.quote(v) for k,v in values.items());env.write_text('\\n
 """
 
 PREPARED_MARKER = "IMGBUILD_PREPARE_VERIFIED"
+PREBUILT_AUDIT_MARKER = "IMGBUILD_PREBUILT_AUDIT="
 _LEGACY_SOURCE_CLEANUP = """def cleanup_legacy_sources(root=pathlib.Path('/'),owner_uid=0):
  legacy=root/'srv/repos'
  if not legacy.exists() and not legacy.is_symlink(): return
@@ -131,10 +144,18 @@ release=pathlib.Path(sys.argv[3])
 if release.name!='rel' or release.parent.parent!=pathlib.Path('/home'): raise RuntimeError('invalid build upload directory')
 if release.is_symlink(): raise RuntimeError('build upload directory is a symlink')
 shutil.rmtree(release)
-subprocess.run([sys.argv[1],'--yes','--zero-free-space'],check=True)
+strict='--prebuilt-only' in sys.argv[4:]
+prepared=subprocess.run([sys.argv[1],'--yes','--zero-free-space',*sys.argv[4:]],check=True,**({'stdout':subprocess.PIPE,'text':True} if strict else {}))
+audits=[]
+if strict:
+ for line in prepared.stdout.splitlines():
+  if line.startswith('IMGBUILD_PREBUILT_AUDIT='): audits.append(line)
+  else: print(line,flush=True)
+ if len(audits)!=1: raise RuntimeError('prebuilt preparation did not emit one audit')
 expected=set(json.loads(sys.argv[2]))
 found=set(subprocess.check_output(['docker','image','ls','--format','{{.Repository}}:{{.Tag}}'],text=True).splitlines())
 if not expected or found!=expected: raise RuntimeError('prepared Docker image set does not match compose')
+if strict: print(audits[0],flush=True)
 print('IMGBUILD_PREPARE_VERIFIED',flush=True)
 """
 )
@@ -147,6 +168,104 @@ def _manifest(ctx):
     ):
         raise PermanentError("the verified phase did not supply its component manifest")
     return manifest
+
+
+def _image_policy(manifest: dict) -> tuple[str, dict[str, str]]:
+    images = manifest.get("images", {})
+    if not isinstance(images, dict):
+        raise Blocked("verified release has malformed prebuilt image claims")
+    if not images:
+        return "source", {}
+    if set(images) != _PREBUILT_SERVICES:
+        raise Blocked("prebuilt release requires all seven signed service image refs")
+    refs = {}
+    for service, entry in sorted(images.items()):
+        ref = entry.get("ref") if isinstance(entry, dict) else None
+        if (
+            not isinstance(ref, str)
+            or re.fullmatch(
+                rf"ghcr\.io/htl3r-xeonis/ginnungagap-{re.escape(service)}@sha256:[0-9a-f]{{64}}",
+                ref,
+            )
+            is None
+        ):
+            raise Blocked("prebuilt release requires seven pinned GHCR service digests")
+        refs[service] = ref
+    return "prebuilt-only", refs
+
+
+def _advertises_prebuilt_only(help_text: str) -> bool:
+    return re.search(r"(?<![\w-])--prebuilt-only(?![\w-])", help_text) is not None
+
+
+def _manifest_sha(ctx, manifest: dict) -> str:
+    phase = ctx.result_of("P2")
+    directory = phase.get("release_dir") or phase.get("directory")
+    try:
+        contents = (Path(directory) / "components.json").read_bytes()
+        if json.loads(contents) != manifest:
+            raise ValueError()
+        digest = hashlib.sha256(contents).hexdigest()
+        if phase.get("manifest_sha256", digest) != digest:
+            raise ValueError()
+    except (OSError, ValueError, TypeError):
+        raise Blocked(
+            "prebuilt image claims differ from the verified release manifest"
+        ) from None
+    return digest
+
+
+def _prebuilt_audit(
+    output: str, version: str, digest: str, refs: dict[str, str]
+) -> dict:
+    lines = [
+        line[len(PREBUILT_AUDIT_MARKER) :]
+        for line in output.splitlines()
+        if line.startswith(PREBUILT_AUDIT_MARKER)
+    ]
+    try:
+        if len(lines) != 1:
+            raise ValueError()
+        audit = json.loads(lines[0])
+        if (
+            not isinstance(audit, dict)
+            or set(audit)
+            != {
+                "schema",
+                "policy",
+                "appliance_version",
+                "manifest_sha256",
+                "services",
+                "registry_aliases_removed",
+                "upstream_pulled",
+            }
+            or type(audit.get("schema")) is not int
+            or audit["schema"] != 1
+            or audit.get("policy") != "prebuilt-only"
+            or audit.get("appliance_version") != version
+            or audit.get("manifest_sha256") != digest
+            or audit.get("registry_aliases_removed") is not True
+            or audit.get("upstream_pulled") is not True
+            or not isinstance(audit.get("services"), dict)
+            or set(audit["services"]) != set(refs)
+        ):
+            raise ValueError()
+        for service, ref in refs.items():
+            entry = audit["services"][service]
+            if (
+                not isinstance(entry, dict)
+                or set(entry) != {"ref", "image_id", "compose_tag"}
+                or entry.get("ref") != ref
+                or entry.get("compose_tag") != f"ginnungagap-{service}:latest"
+                or not isinstance(entry.get("image_id"), str)
+                or re.fullmatch(r"sha256:[0-9a-f]{64}", entry["image_id"]) is None
+            ):
+                raise ValueError()
+    except (ValueError, TypeError, KeyError):
+        raise PermanentError(
+            "prebuilt image audit does not prove the verified manifest and all seven service images"
+        ) from None
+    return audit
 
 
 def verify_installed(raw: str, manifest: dict, version: str) -> dict:
@@ -182,10 +301,17 @@ def verify_installed(raw: str, manifest: dict, version: str) -> dict:
     ),
 )
 def install_release(ctx):
-    target = remote.target_from_result(ctx.result_of("P5"))
-    release_dir = ctx.result_of("P6")["release_dir"]
     manifest = _manifest(ctx)
     method = ctx.config.image.install_method
+    image_policy, image_refs = _image_policy(manifest)
+    if image_refs and method != "checkouts":
+        raise Blocked(
+            "prebuilt-only factory installation requires explicit image.install_method=checkouts"
+        )
+    manifest_sha = _manifest_sha(ctx, manifest) if image_refs else None
+    prebuilt_audit = None
+    target = remote.target_from_result(ctx.result_of("P5"))
+    release_dir = ctx.result_of("P6")["release_dir"]
     # Copy the daemon's trust, never a key supplied by the release being tested.
     if not ctx.options.allow_unsigned:
         trusted = ctx.config.paths.allowed_signers
@@ -267,9 +393,19 @@ def install_release(ctx):
                 ],
                 timeout=1200,
             )
-            ctx.remote.run(
-                target, ["sudo", "-n", "ginnungagap", "build-images"], timeout=3600
-            )
+            command = ["sudo", "-n", "ginnungagap", "build-images"]
+            if image_refs:
+                help_text = ctx.remote.run(target, [*command, "--help"]).stdout
+                if not _advertises_prebuilt_only(help_text):
+                    raise Blocked(
+                        "installed release lacks prebuilt-only image pull capability"
+                    )
+                command.append("--prebuilt-only")
+            built = ctx.remote.run(target, command, timeout=3600)
+            if image_refs:
+                prebuilt_audit = _prebuilt_audit(
+                    built.stdout, ctx.version, manifest_sha, image_refs
+                )
             record = (
                 "set -a; . /etc/ginnungagap/install.env; set +a; exec python3 -c "
                 + shlex.quote(_RECORD_CHECKOUTS)
@@ -316,10 +452,19 @@ def install_release(ctx):
         raise PermanentError(
             "could not establish the expected compose image set"
         ) from None
+    if prebuilt_audit and not {
+        entry["compose_tag"] for entry in prebuilt_audit["services"].values()
+    }.issubset(images):
+        raise PermanentError(
+            "prebuilt image audit differs from the expected compose image set"
+        )
     return {
         "installed": ctx.version,
         "components": components,
         "method": method,
+        "image_policy": image_policy,
+        "image_refs": image_refs,
+        "prebuilt_audit": prebuilt_audit,
         "appliance_dir": appliance_dir,
         "images": images,
     }
@@ -332,11 +477,38 @@ def install_release(ctx):
     ),
 )
 def prepare_image(ctx):
+    manifest = _manifest(ctx)
+    image_policy, image_refs = _image_policy(manifest)
+    manifest_sha = _manifest_sha(ctx, manifest) if image_refs else None
+    installed = ctx.result_of("P7")
+    if image_refs and (
+        installed.get("method") != "checkouts"
+        or installed.get("image_policy") != image_policy
+        or installed.get("image_refs") != image_refs
+    ):
+        raise Blocked(
+            "prebuilt preparation requires the recorded strict checkout installation"
+        )
+    if image_refs:
+        recorded_audit = _prebuilt_audit(
+            PREBUILT_AUDIT_MARKER + json.dumps(installed.get("prebuilt_audit")),
+            ctx.version,
+            manifest_sha,
+            image_refs,
+        )
     target = remote.target_from_result(ctx.result_of("P5"))
-    appliance = ctx.result_of("P7")["appliance_dir"]
+    appliance = installed["appliance_dir"]
     unit = f"imgprep-{ctx.run_id.replace('.', '-')}".lower()
     log = "/run/imgprep.log"
-    images = ctx.result_of("P7")["images"]
+    images = installed["images"]
+    arguments = []
+    if image_refs:
+        help_text = ctx.remote.run(
+            target, ["sudo", "-n", f"{appliance}/image/prepare-image.sh", "--help"]
+        ).stdout
+        if not _advertises_prebuilt_only(help_text):
+            raise Blocked("installed prepare script lacks prebuilt-only capability")
+        arguments.append("--prebuilt-only")
     result = ctx.remote.run_detached(
         target,
         unit,
@@ -347,6 +519,7 @@ def prepare_image(ctx):
             f"{appliance}/image/prepare-image.sh",
             json.dumps(images),
             ctx.result_of("P6")["release_dir"],
+            *arguments,
         ],
         log_path=log,
         timeout=5400,
@@ -355,7 +528,24 @@ def prepare_image(ctx):
     )
     if not result.ok or PREPARED_MARKER not in result.stdout:
         raise PermanentError("image preparation did not complete successfully")
-    return {"prepared": True, "log_path": log, "unit": unit, "images": images}
+    prebuilt_audit = None
+    if image_refs:
+        prebuilt_audit = _prebuilt_audit(
+            result.stdout, ctx.version, manifest_sha, image_refs
+        )
+        if prebuilt_audit != recorded_audit:
+            raise PermanentError(
+                "prebuilt service image identity changed during preparation"
+            )
+    return {
+        "prepared": True,
+        "log_path": log,
+        "unit": unit,
+        "images": images,
+        "image_policy": image_policy,
+        "image_refs": image_refs,
+        "prebuilt_audit": prebuilt_audit,
+    }
 
 
 def verify_ova(

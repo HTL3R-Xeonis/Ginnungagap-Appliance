@@ -20,7 +20,9 @@ image:
   cpu: 4
   memory_gb: 4
   disk_gb: 20
-  install_method: update
+  # Required for strict digest-only builds of releases with prebuilt images.
+  # Installs verified source without starting/building, then pulls exact digests.
+  install_method: checkouts
   ssh_user: null  # otherwise use the base template's declared account
   # Optional reserved addresses for temporary guests; the exported image returns to DHCP.
   # management_network:

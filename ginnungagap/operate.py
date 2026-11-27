@@ -11,6 +11,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 import shutil
 import subprocess
 import tempfile
@@ -19,6 +20,8 @@ from collections.abc import Callable
 from datetime import datetime
 from pathlib import Path
 from typing import Any
+
+import yaml
 
 from ginnungagap import config as config_module
 from ginnungagap import render as render_module
@@ -428,6 +431,7 @@ def build_images(
     out: Callable[[str], None] = print,
     remove_other: bool = False,
     inspect: Inspect | None = None,
+    prebuilt_only: bool = False,
 ) -> int:
     """
     Builds and pulls the images of EVERY service, without starting anything - for an appliance image, which must come up
@@ -437,6 +441,13 @@ def build_images(
     """
     run = _runner(run, bundle)
     inspect = inspect or (lambda args: default_inspect(args, cwd=bundle))
+    manifest = None
+    if prebuilt_only:
+        try:
+            manifest = _prebuilt_manifest(bundle)
+        except (OSError, ValueError, yaml.YAMLError) as exc:
+            out(f"prebuilt-only image preparation refused: {exc}")
+            return 1
     config = config_module.normalise(
         {
             "services": {"ova_store": True},
@@ -458,6 +469,10 @@ def build_images(
         out(f"render failed: {exc}")
         return 1
     try:
+        if manifest is not None:
+            return _prepare_prebuilt_images(
+                bundle, manifest, run, inspect, out, remove_other
+            )
         for step, command in (
             ("building", ("--profile", "*", "build")),
             ("pulling", ("--profile", "*", "pull", "--ignore-buildable")),
@@ -471,6 +486,131 @@ def build_images(
     finally:
         shutil.rmtree(rendered, ignore_errors=True)
     out("All images are in the local image store.")
+    return 0
+
+
+def _prebuilt_manifest(bundle: Path) -> tuple[Any, str]:
+    """Read the release manifest installed by install.sh, never the upload folder."""
+    from ginnungagap import manifest as manifest_module
+    from ginnungagap.version import __version__
+
+    path = bundle / "components.json"
+    if path.is_symlink():
+        raise ValueError("the installed release manifest is a symlink")
+    raw = path.read_bytes()
+    manifest = manifest_module.validate(json.loads(raw))
+    if manifest.version != __version__:
+        raise ValueError("installed manifest and program versions differ")
+    if set(manifest.images) != set(manifest_module.IMAGE_SERVICES):
+        raise ValueError("the installed manifest must name all seven prebuilt images")
+    compose = yaml.safe_load((bundle / "compose.yml").read_text())
+    services = compose.get("services") if isinstance(compose, dict) else None
+    if not isinstance(services, dict) or {
+        name
+        for name, settings in services.items()
+        if isinstance(settings, dict) and "build" in settings
+    } != set(manifest_module.IMAGE_SERVICES):
+        raise ValueError("compose buildable services differ from the release image set")
+    return manifest, hashlib.sha256(raw).hexdigest()
+
+
+def _prepare_prebuilt_images(
+    bundle: Path,
+    verified: tuple[Any, str],
+    run: Runner,
+    inspect: Inspect,
+    out: Callable[[str], None],
+    remove_other: bool,
+) -> int:
+    """Pull exact release digests and prove their local aliases; never compile."""
+    from ginnungagap import manifest as manifest_module
+
+    manifest, manifest_sha = verified
+    project = _project(bundle)
+    audit: dict[str, Any] = {}
+    wanted_text = inspect(compose_args(bundle, "--profile", "*", "config", "--images"))
+    wanted = {
+        _image_reference(line.strip())
+        for line in (wanted_text or "").splitlines()
+        if line.strip()
+    }
+    if not {
+        image_reference(project, s) for s in manifest_module.IMAGE_SERVICES
+    }.issubset(wanted):
+        out(
+            "compose does not use every expected prebuilt image alias; no image was pulled"
+        )
+        return 1
+
+    def identity(reference: str) -> str | None:
+        value = image_id(reference, inspect)
+        return value if value and re.fullmatch(r"sha256:[a-f0-9]{64}", value) else None
+
+    for service in manifest_module.IMAGE_SERVICES:
+        ref = manifest.images[service]["ref"]
+        local = image_reference(project, service)
+        out(f"pulling the prebuilt image of {service} ({ref})")
+        if run(["docker", "pull", ref]) != 0:
+            out(f"prebuilt-only pull failed for {service}; no local build is allowed")
+            return 1
+        pulled_id = identity(ref)
+        try:
+            digests = json.loads(
+                inspect(
+                    [
+                        "docker",
+                        "image",
+                        "inspect",
+                        "--format",
+                        "{{json .RepoDigests}}",
+                        ref,
+                    ]
+                )
+                or "null"
+            )
+        except (ValueError, TypeError):
+            digests = None
+        if pulled_id is None or not isinstance(digests, list) or ref not in digests:
+            out(f"prebuilt-only digest identity could not be proved for {service}")
+            return 1
+        if run(["docker", "tag", ref, local]) != 0 or identity(local) != pulled_id:
+            out(f"prebuilt-only compose image identity differs for {service}")
+            return 1
+        audit[service] = {"ref": ref, "image_id": pulled_id, "compose_tag": local}
+    if run(compose_args(bundle, "--profile", "*", "pull", "--ignore-buildable")) != 0:
+        out("pulling the upstream images failed; no local build is allowed")
+        return 1
+    # Remove registry references only after every signed image and its retained
+    # compose alias have been proved. Never force removal of an image.
+    for service, entry in audit.items():
+        if identity(entry["compose_tag"]) != entry["image_id"]:
+            out(f"prebuilt-only compose image changed for {service}")
+            return 1
+    for reference in dict.fromkeys(entry["ref"] for entry in audit.values()):
+        if run(["docker", "image", "rm", reference]) != 0:
+            out("removing a verified registry alias failed")
+            return 1
+    for service, entry in audit.items():
+        if identity(entry["compose_tag"]) != entry["image_id"]:
+            out(f"prebuilt-only compose image was lost for {service}")
+            return 1
+    if remove_other and remove_other_images(bundle, run, inspect, out) != 0:
+        return 1
+    out(
+        "IMGBUILD_PREBUILT_AUDIT="
+        + json.dumps(
+            {
+                "schema": 1,
+                "policy": "prebuilt-only",
+                "appliance_version": manifest.version,
+                "manifest_sha256": manifest_sha,
+                "services": audit,
+                "registry_aliases_removed": True,
+                "upstream_pulled": True,
+            },
+            sort_keys=True,
+        )
+    )
     return 0
 
 

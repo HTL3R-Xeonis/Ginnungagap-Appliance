@@ -12,6 +12,8 @@ import shutil
 import subprocess
 import sys
 import tarfile
+from copy import deepcopy
+from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace as NS
 
@@ -21,6 +23,7 @@ import yaml
 from image.build import config, esxi, names, pipeline, remote
 from image.build import phases_install as install
 from image.build.ports import (
+    Blocked,
     CommandFailed,
     CommandResult,
     PermanentError,
@@ -210,6 +213,79 @@ def responses(ctx, update_help="usage: update --apply --no-start"):
     )
 
 
+def strict_release(ctx):
+    ctx.config = replace(
+        ctx.config, image=replace(ctx.config.image, install_method="checkouts")
+    )
+    manifest = ctx.results["P2"]["manifest"]
+    manifest["images"] = {
+        service: {
+            "ref": f"ghcr.io/htl3r-xeonis/ginnungagap-{service}@sha256:{number:064x}"
+        }
+        for number, service in enumerate(sorted(install._PREBUILT_SERVICES), 1)
+    }
+    path = Path(ctx.results["P2"]["directory"]) / "components.json"
+    path.write_text(json.dumps(manifest))
+    digest = hashlib.sha256(path.read_bytes()).hexdigest()
+    ctx.results["P2"]["manifest_sha256"] = digest
+    return {
+        "schema": 1,
+        "policy": "prebuilt-only",
+        "appliance_version": ctx.version,
+        "manifest_sha256": digest,
+        "services": {
+            service: {
+                "ref": entry["ref"],
+                "image_id": f"sha256:{number + 100:064x}",
+                "compose_tag": f"ginnungagap-{service}:latest",
+            }
+            for number, (service, entry) in enumerate(manifest["images"].items())
+        },
+        "registry_aliases_removed": True,
+        "upstream_pulled": True,
+    }
+
+
+def audit_output(audit):
+    return install.PREBUILT_AUDIT_MARKER + json.dumps(audit) + "\n"
+
+
+def strict_responses(
+    ctx,
+    audit,
+    *,
+    build_help="--prebuilt-only",
+    prepare_help="--prebuilt-only",
+    output=None,
+):
+    ctx.remote.respond(
+        ["sudo", "-n", "ginnungagap", "build-images", "--help"],
+        CommandResult(0, build_help),
+    )
+    ctx.remote.respond(
+        ["sudo", "-n", "ginnungagap", "build-images", "--prebuilt-only"],
+        CommandResult(0, audit_output(audit) if output is None else output),
+    )
+    ctx.remote.respond(
+        [
+            "sudo",
+            "-n",
+            "/var/lib/ginnungagap/components/Ginnungagap-Appliance/image/prepare-image.sh",
+            "--help",
+        ],
+        CommandResult(0, prepare_help),
+    )
+    images = [item["compose_tag"] for item in audit["services"].values()]
+    ctx.remote.respond(
+        ["sudo", "-n", "sh"],
+        CommandResult(0, json.dumps(images + ["caddy:2", "nginx:alpine"])),
+    )
+    responses(ctx)
+    ctx.remote.prepared = CommandResult(
+        0, audit_output(audit) + install.PREPARED_MARKER
+    )
+
+
 def test_guestinfo_and_key_are_installed_before_first_power_on(ctx):
     bootstrap(ctx)
     operations = ctx.esxi.names_called()
@@ -331,6 +407,8 @@ def test_update_uses_verified_offline_release_no_start_and_checks_all_commits(ct
     assert "GINNUNGAGAP_INSTALL_ARGS=--image" in command
     assert result["installed"] == ctx.version and len(result["components"]) == 5
     assert result["images"] == ["ginnungagap:latest", "caddy:2"]
+    assert result["image_policy"] == "source"
+    assert result["image_refs"] == {} and result["prebuilt_audit"] is None
     altered = installed_response(ctx)
     altered["installed"]["components"] = {
         **altered["installed"]["components"],
@@ -412,9 +490,203 @@ def test_prepare_checks_image_set_in_privileged_unit_before_sudoers_disappears(c
     assert call["argv"][0] == "python3"
     assert "docker" in call["argv"][2]
     assert result["images"] == ctx.results["P7"]["images"]
+    assert result["image_policy"] == "source"
+    assert result["image_refs"] == {} and result["prebuilt_audit"] is None
+    assert call["argv"][-1] == ctx.results["P6"]["release_dir"]
+    assert "--prebuilt-only" not in call["argv"]
     ctx.remote.prepared = CommandResult(0, "Ready. Shut this machine down now")
     with pytest.raises(PermanentError, match="preparation"):
         install.prepare_image(ctx)
+
+
+def test_strict_release_requires_explicit_checkouts_before_any_guest_mutation(ctx):
+    strict_release(ctx)
+    ctx.config = replace(
+        ctx.config, image=replace(ctx.config.image, install_method="update")
+    )
+    ctx.options = pipeline.RunOptions(allow_unsigned=False)
+    bootstrap(ctx)
+    before_calls = deepcopy(ctx.remote.calls)
+    before_files = dict(ctx.remote.files)
+    with pytest.raises(Blocked, match="explicit image.install_method=checkouts"):
+        install.install_release(ctx)
+    assert ctx.remote.calls == before_calls and ctx.remote.files == before_files
+
+
+@pytest.mark.parametrize(
+    "damage", ["missing", "extra", "foreign", "tag", "wrong-service", "not-object"]
+)
+def test_partial_or_unpinned_prebuilt_claims_never_start_installation(ctx, damage):
+    strict_release(ctx)
+    images = ctx.results["P2"]["manifest"]["images"]
+    if damage == "missing":
+        images.pop("setup")
+    elif damage == "extra":
+        images["unknown"] = images["setup"]
+    elif damage == "foreign":
+        images["setup"]["ref"] = "ghcr.io/another/setup@sha256:" + "a" * 64
+    elif damage == "tag":
+        images["setup"]["ref"] = "ghcr.io/htl3r-xeonis/ginnungagap-setup:1.3.8"
+    elif damage == "wrong-service":
+        images["setup"] = images["generator"]
+    else:
+        ctx.results["P2"]["manifest"]["images"] = []
+    bootstrap(ctx)
+    before = deepcopy(ctx.remote.calls)
+    with pytest.raises(Blocked, match="prebuilt"):
+        install.install_release(ctx)
+    assert ctx.remote.calls == before
+
+
+def test_strict_checkouts_use_capability_and_signed_refs_without_build_fallback(ctx):
+    audit = strict_release(ctx)
+    bootstrap(ctx)
+    strict_responses(ctx, audit)
+    ctx.results["P7"] = install.install_release(ctx)
+    result = install.prepare_image(ctx)
+    commands = [c["argv"] for c in ctx.remote.calls if c["method"] == "run"]
+    install_call = next(c for c in commands if "--manifest" in c)
+    help_call = ["sudo", "-n", "ginnungagap", "build-images", "--help"]
+    pull_call = ["sudo", "-n", "ginnungagap", "build-images", "--prebuilt-only"]
+    assert (
+        commands.index(install_call)
+        < commands.index(help_call)
+        < commands.index(pull_call)
+    )
+    assert not any("--apply" in c or "--build-local" in c for c in commands)
+    assert ["sudo", "-n", "ginnungagap", "build-images"] not in commands
+    detached = next(c for c in ctx.remote.calls if c["method"] == "run_detached")
+    assert detached["argv"][-1] == "--prebuilt-only"
+    assert detached["argv"][-2] == ctx.results["P6"]["release_dir"]
+    assert "*sys.argv[4:]" in detached["argv"][2]
+    for phase in (ctx.results["P7"], result):
+        assert phase["image_policy"] == "prebuilt-only"
+        assert phase["image_refs"] == {
+            service: entry["ref"] for service, entry in audit["services"].items()
+        }
+        assert phase["prebuilt_audit"] == audit
+
+
+@pytest.mark.parametrize(
+    "help_text", ["usage: build-images", "--prebuilt-only-fallback"]
+)
+def test_strict_installation_never_pulls_without_exact_capability(ctx, help_text):
+    audit = strict_release(ctx)
+    bootstrap(ctx)
+    strict_responses(ctx, audit, build_help=help_text)
+    with pytest.raises(Blocked, match="lacks prebuilt-only"):
+        install.install_release(ctx)
+    commands = [c["argv"] for c in ctx.remote.calls if c["method"] == "run"]
+    assert not any("--prebuilt-only" in c for c in commands)
+    assert ["sudo", "-n", "ginnungagap", "build-images"] not in commands
+
+
+def test_failed_strict_cli_probe_cannot_fall_back_to_build(ctx):
+    audit = strict_release(ctx)
+    bootstrap(ctx)
+    ctx.remote.respond(
+        ["sudo", "-n", "ginnungagap", "build-images", "--help"], CommandResult(2)
+    )
+    strict_responses(ctx, audit)
+    with pytest.raises(CommandFailed):
+        install.install_release(ctx)
+    assert not any("--prebuilt-only" in c.get("argv", []) for c in ctx.remote.calls)
+
+
+@pytest.mark.parametrize("phase", ["P7", "P8"])
+@pytest.mark.parametrize(
+    "damage",
+    [
+        "missing",
+        "duplicate",
+        "manifest",
+        "version",
+        "ref",
+        "image-id",
+        "tag",
+        "missing-service",
+        "upstream",
+        "aliases",
+        "extra-field",
+        "extra-service-field",
+    ],
+)
+def test_strict_audit_must_prove_every_signed_image_and_no_fallback(ctx, phase, damage):
+    audit = strict_release(ctx)
+    broken = deepcopy(audit)
+    if damage == "manifest":
+        broken["manifest_sha256"] = "0" * 64
+    elif damage == "version":
+        broken["appliance_version"] = "9.9.9"
+    elif damage == "ref":
+        broken["services"]["setup"]["ref"] = "wrong"
+    elif damage == "image-id":
+        broken["services"]["setup"]["image_id"] = "not-an-image-id"
+    elif damage == "tag":
+        broken["services"]["setup"]["compose_tag"] = "foreign:latest"
+    elif damage == "missing-service":
+        broken["services"].pop("setup")
+    elif damage == "upstream":
+        broken["upstream_pulled"] = False
+    elif damage == "aliases":
+        broken["registry_aliases_removed"] = False
+    elif damage == "extra-field":
+        broken["unexpected"] = "untrusted"
+    elif damage == "extra-service-field":
+        broken["services"]["setup"]["unexpected"] = "untrusted"
+    output = audit_output(broken)
+    if damage == "missing":
+        output = "All images are in the local image store.\n"
+    elif damage == "duplicate":
+        output += output
+    bootstrap(ctx)
+    strict_responses(ctx, audit, output=output if phase == "P7" else None)
+    if phase == "P7":
+        with pytest.raises(PermanentError, match="prebuilt image audit"):
+            install.install_release(ctx)
+    else:
+        ctx.results["P7"] = install.install_release(ctx)
+        ctx.remote.prepared = CommandResult(0, output + install.PREPARED_MARKER)
+        with pytest.raises(PermanentError, match="prebuilt image audit"):
+            install.prepare_image(ctx)
+
+
+def test_strict_preparation_rejects_missing_capability_before_detached_cleanup(ctx):
+    audit = strict_release(ctx)
+    bootstrap(ctx)
+    strict_responses(ctx, audit, prepare_help="--prebuilt-only-optional")
+    ctx.results["P7"] = install.install_release(ctx)
+    with pytest.raises(Blocked, match="prepare script lacks prebuilt-only"):
+        install.prepare_image(ctx)
+    assert not any(c["method"] == "run_detached" for c in ctx.remote.calls)
+
+
+def test_strict_preparation_rejects_image_identity_drift_after_valid_pull(ctx):
+    audit = strict_release(ctx)
+    bootstrap(ctx)
+    strict_responses(ctx, audit)
+    ctx.results["P7"] = install.install_release(ctx)
+    changed = deepcopy(audit)
+    changed["services"]["setup"]["image_id"] = "sha256:" + "f" * 64
+    ctx.remote.prepared = CommandResult(
+        0, audit_output(changed) + install.PREPARED_MARKER
+    )
+    with pytest.raises(PermanentError, match="identity changed"):
+        install.prepare_image(ctx)
+
+
+@pytest.mark.parametrize("damage", ["file", "metadata"])
+def test_strict_installation_requires_original_verified_manifest_bytes(ctx, damage):
+    strict_release(ctx)
+    bootstrap(ctx)
+    if damage == "file":
+        (Path(ctx.results["P2"]["directory"]) / "components.json").write_text("{}")
+    else:
+        ctx.results["P2"]["manifest_sha256"] = "0" * 64
+    before = deepcopy(ctx.remote.calls)
+    with pytest.raises(Blocked, match="differ from the verified release manifest"):
+        install.install_release(ctx)
+    assert ctx.remote.calls == before
 
 
 def test_shutdown_clears_guestinfo_and_does_not_boot_prepared_image(ctx):

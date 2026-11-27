@@ -20,16 +20,18 @@
 # Run it on a machine on which `install.sh --install-packages --image --no-start` was run. It is DESTRUCTIVE for what it
 # removes, so it asks for --yes; --dry-run only lists what it would do.
 #
-#   sudo image/prepare-image.sh --yes [--zero-free-space] [--project NAME]
+#   sudo image/prepare-image.sh --yes [--zero-free-space] [--project NAME] [--prebuilt-only]
 #   image/prepare-image.sh --dry-run
 #
 # --zero-free-space  fill the free disk space with zeros first (the exported disk compresses better; takes a while)
+# --prebuilt-only   pull exact installed release digests; fail instead of building any image locally
 # --project NAME     the compose project whose containers and volumes are removed (default ginnungagap)
 set -euo pipefail
 
 YES=0
 DRY=0
 ZERO=0
+PREBUILT_ONLY=0
 PROJECT=ginnungagap
 DEFAULT_HOSTNAME=ginnungagap
 
@@ -40,6 +42,7 @@ while [ $# -gt 0 ]; do
     --yes) YES=1; shift ;;
     --dry-run) DRY=1; shift ;;
     --zero-free-space) ZERO=1; shift ;;
+    --prebuilt-only) PREBUILT_ONLY=1; shift ;;
     --project) PROJECT=${2:?}; shift 2 ;;
     -h|--help) sed -n '2,/^# --project/p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
     *) die "unknown option $1 (see --help)" ;;
@@ -56,7 +59,13 @@ act() {  # description, then the function to run
   if [ "$DRY" = 1 ]; then echo "would: $1"; else echo "== $1"; "$2"; fi
 }
 
-build_images() { ginnungagap build-images --remove-other-images; }
+build_images() {
+  if [ "$PREBUILT_ONLY" = 1 ]; then
+    ginnungagap build-images --prebuilt-only --remove-other-images
+  else
+    ginnungagap build-images --remove-other-images
+  fi
+}
 
 stop_setup() {
   systemctl stop ginnungagap-setup-apply.path ginnungagap-setup-apply.service
@@ -332,7 +341,11 @@ zero_free_space() {
 act "stop the setup watcher" stop_setup
 # the containers go first: an image that a container still uses cannot be removed
 act "remove the containers and volumes of the project '$PROJECT'" remove_services
-act "build and pull the images of every service and remove every image that is not part of the current compose project" build_images
+if [ "$PREBUILT_ONLY" = 1 ]; then
+  act "pull and verify the pinned images of every service and remove images outside the current compose project" build_images
+else
+  act "build and pull the images of every service and remove every image that is not part of the current compose project" build_images
+fi
 act "record the installed release for 'ginnungagap update' (adopt the checkouts unless the image was built by an update)" record_release
 act "remove the update access token, history, downloads, audit log, backups, rollback image tags and unpacked releases that are not installed (the installed release stays)" remove_update_leftovers
 act "remove the build cache and untagged image layers" remove_build_leftovers

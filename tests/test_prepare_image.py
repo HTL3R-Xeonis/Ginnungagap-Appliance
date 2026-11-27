@@ -45,6 +45,31 @@ def test_the_project_name_can_be_chosen():
     assert "'other'" in run("--dry-run", "--project", "other").stdout
 
 
+def test_prebuilt_flag_selects_only_the_strict_cli_without_changing_source_default(
+    tmp_path,
+):
+    source = SCRIPT.read_text()
+    body = source.split("build_images() {", 1)[1].split("\n}", 1)[0]
+    for value, expected in (
+        ("0", "build-images --remove-other-images"),
+        ("1", "build-images --prebuilt-only --remove-other-images"),
+    ):
+        script = (
+            'ginnungagap() { printf "%s\\n" "$*"; }\nPREBUILT_ONLY='
+            + value
+            + "\n"
+            + body
+        )
+        observed = subprocess.run(
+            ["bash", "-c", script], capture_output=True, text=True, check=True
+        )
+        assert observed.stdout.strip() == expected
+    result = run("--dry-run", "--prebuilt-only")
+    assert result.returncode == 0, result.stderr
+    assert "pull and verify the pinned images" in result.stdout
+    assert "build and pull the images" not in result.stdout
+
+
 def test_default_tls_identity_is_removed_without_removing_other_certificates(tmp_path):
     script = SCRIPT.read_text()
     function = script.split("remove_default_tls_identity() {", 1)[1].split("\n}", 1)[0]

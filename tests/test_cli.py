@@ -114,6 +114,15 @@ def test_issue_command_rewrites_the_console_text(tmp_path, console_refreshes):
     assert console_refreshes == [tmp_path]
 
 
+def test_build_images_prebuilt_only_is_explicit_and_combines_with_cleanup(monkeypatch):
+    seen = []
+    monkeypatch.setattr(
+        cli.operate, "build_images", lambda *a, **k: seen.append(k) or 0
+    )
+    assert cli.main(["build-images", "--prebuilt-only", "--remove-other-images"]) == 0
+    assert seen == [{"prebuilt_only": True, "remove_other": True}]
+
+
 def test_apply_staged_refreshes_the_console_whatever_the_result(
     tmp_path, monkeypatch, console_refreshes
 ):

@@ -90,6 +90,11 @@ def _parser() -> argparse.ArgumentParser:
     )
     build.add_argument("--generator-config", default=DEFAULT_GENERATOR_CONFIG)
     build.add_argument(
+        "--prebuilt-only",
+        action="store_true",
+        help="pull and verify every image from the installed release manifest; never build locally",
+    )
+    build.add_argument(
         "--remove-other-images",
         action="store_true",
         help="afterwards remove every tagged Docker image that the compose project does not use "
@@ -365,6 +370,13 @@ def main(argv: list[str] | None = None) -> int:
             return 1
         return operate.restore(args.backup, bundle)
     if args.command == "build-images":
+        if args.prebuilt_only:
+            return operate.build_images(
+                bundle,
+                args.generator_config,
+                remove_other=args.remove_other_images,
+                prebuilt_only=True,
+            )
         if args.remove_other_images:
             return operate.build_images(
                 bundle, args.generator_config, remove_other=True

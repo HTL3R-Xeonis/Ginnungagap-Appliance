@@ -6,36 +6,38 @@ commands and their current limits.
 
 ## Current lab status and boundaries
 
-Mandatory implementation and local RC commissioning are complete. The dedicated Debian worker is
-**183-Debian-Ginn-Imagebuild**, **10.20.20.183**, on ESXi **10.20.20.83**. Reserved **.184** serves build guests;
-**.185** serves sequential acceptance guests on **10.20.20.205**. Normal guards remain
-`allowed_hosts: [10.20.20.205]` and `allowed_running_vms: [GNS3VM5]`.
+Worker **183-Debian-Ginn-Imagebuild** is **10.20.20.183** on ESXi .83. The current user-approved build address is
+**10.20.20.187**; acceptance guests use **10.20.20.185** on allowed host **10.20.20.205**. Former .184 is occupied by an
+unrelated system and must not be assigned to a factory guest. Normal allowed running VM remains GNS3VM5.
 
-Run `1.3.7-rc.20261122-20261122T151422Z` is **published**, with no failure or cleanup warning. Catalog template
-`ginnungagap-appliance-v1.3.7-rc.20261122` has ID/SHA-256
-`7F18B41C11A50B9FD33CA235E4DC810524E6171C1CCF9F43D06EB4AFF4326400`; its unchanged OVA is 2,631,383,040 bytes.
-All **17 offline checks** and **37 acceptance checks (A6/B23/C8)** passed, including four distinct configured reboots with
-nine running/healthy containers and no ordering cycles, exact-version upgrade, retained application/login state and exact
-captured-base rollback. Independent catalog/HEAD200/range206/BUILD-INFO checks passed. Owned temporary VMs, folders,
-private run keys and the current private export were removed; only GNS3VM5 remains on `.205`.
+Unsigned RC `ginnungagap-appliance-v1.3.7-rc.20261122` passed 17 offline/37 acceptance checks, crash recovery and worker
+reboot. It remains unchanged and does not establish the signed production gate. Official signed **v1.3.7** exists: all eight
+assets were independently verified on the worker, and 47 operative files matched its bootstrap and commit 46eb122.
+The subsequently published v1.3.8 contains upstream component/CI changes, but not the still-local strict-factory correction.
 
-The real P13 SIGKILL/janitor/resume drill passed with an unchanged retained OVA. The worker reboot also passed: static
-`.183`, key login/sudo, persistent NFSv4 writable by imgbuild and successful startup janitor. Evidence is under the run's
-`evidence/` directory (`p13-crash-drill.json`, `p13-janitor-result.json`, `post-publication-audit.json`,
-`worker-reboot-audit.json`). Latest validation: **1459 passed, 8 skipped**, Ruff 98 files and three Bash scripts clean,
-source `3212e2e7`.
+Normal run **1.3.7-20261124T111142Z** passed P0-P7, then was controlled-stopped in P8. Released preparation always builds
+locally, contrary to Plan 1's required digest-only image origin. Cleanup passed: only GNS3VM5, no owned datastore folders
+or private keys, no production template. PAUSE is restored; poll timer/path are disabled, only startup janitor enabled.
 
-Only **startup janitor is enabled**. Poll timer/path remain **disabled**, and the imgbuild-owned mode-0600 **PAUSE** file
-records the production hold. Local stable version/pin **v1.3.7** is prepared, but tag v1.3.7 is absent and the official release
-is still **v1.3.6**. The user must commit/push/tag the new code; independently verify and run the signed stable release
-before enabling normal scheduling. The published local unsigned RC does not satisfy that separate production gate.
-Optional WP9 remains optional and unimplemented.
+Strict prebuilt-only support is implemented/tested locally for **v1.3.9**, not released or live qualified. It uses explicit
+`image.install_method: checkouts`: install verified archives with `--no-start` and no Docker build, require
+`build-images --prebuilt-only`, prove all seven signed digest/image-ID/local-tag mappings, then prepare with
+`--prebuilt-only`. Missing claims or failed pull/identity checks must fail without source fallback; ordinary updater fallback
+and offline gates remain unchanged. Earlier local checkpoint: 1516 tests passed / 8 skipped, Ruff 98 files and three Bash scripts clean. The real isolated Docker smoke pulled/verified all seven official v1.3.7 refs with zero builds; incomplete/unknown-digest negatives failed without fallback or pruning. Its unsigned consumer fixture was labelled 1.3.8 and is not signed factory acceptance.
 
-The daemon uses pinned root-owned tooling and protected systemd credentials; downloaded release code runs in the
-throw-away guest rather than updating its verifier. Resume records the real owner/PID and preserves the original run start.
-A powered-on unrelated VM normally defers a build. The one-time manual RC `--force-busy` exception does not extend normal
-allow lists or bypass signature, artifact, inspection, acceptance or no-overwrite checks. Unrelated VMs and older templates
-remain outside cleanup scope. Detailed corrected failures and measurements stay in the Handoff archive.
+**Integrated verification on 27 November 2026:** the prepared v1.3.9 source `d8bb8380df284fe972ed21514b42ea27c2c528be2adf07b28df9ddd7ce5f215a` passed **1584 tests, 8 skipped** with `requirements-test.txt` installed and `REQUIRE_ALL_TESTS=1`; Ruff check/format (100 files) and three Bash syntax checks passed. The skips concern six neighbouring-repository checks and two root-context constraints, not missing Python libraries. Logs: `.174:~/xeonis-image-build-1795204462320/nov27-strict139-validation/{tests,lint,dependencies}.log`. This remains local software qualification; no signed v1.3.9 release or production image is claimed.
+
+Actual worker configuration is still `image.install_method: update` on the existing v1.3.7 bootstrap, with PAUSE and disabled
+triggers. Local example/checkouts preparation does not change it. Update the pinned tooling from the new signed release
+before explicitly changing the method; do not run an old worker against unsupported strict capabilities.
+
+After user commit/push/tag, verify the new signed release independently, update pinned root-owned tooling separately,
+configure checkouts explicitly, and repeat the full production A-C checks with .187/.185. Do not rewrite v1.3.7 or enable
+scheduling from RC/source-build evidence. The approved WP9 status page and Igdrasyl row were implemented upstream and are preserved by this merge; their rollout is separate from this strict-factory production gate.
+
+Evidence: `/home/imageadmin/production-v1.3.7-20261124/{verification,source-comparison}.json` and
+`runs/1.3.7-20261124T111142Z/evidence/production-stop-audit.json`. The protected previous config is
+`/etc/ginnungagap-image-build/build-host.before-production-187-20261124.yml`.
 
 ## Install and configure the worker
 
@@ -318,16 +320,16 @@ With `status_http: false` the service stops at once with exit code 2 and is not 
 
 ## Enable scheduling only after the checks
 
-The lab's local RC commissioning is complete, but normal activation remains on hold. Startup janitor is already enabled;
-poll timer/path are disabled and PAUSE records why. The user must first commit/push/tag the prepared v1.3.7 implementation
-and the resulting signed stable release must be independently verified. The current official v1.3.6 lacks these changes.
-Then review the hold and permit a normal signed-stable manual run without unsigned/prerelease exceptions:
+Startup janitor is enabled. Poll timer/path remain disabled and PAUSE records the production hold. Signed v1.3.7 did not
+meet the no-local-build criterion. First verify the corrected signed release (prepared target v1.3.9), update pinned tooling
+separately and configure `image.install_method: checkouts` explicitly. Then review the hold and permit the strict manual
+production run, without unsigned/prerelease/busy exceptions:
 
 ```bash
 sudo -u imgbuild cat /var/lib/ginnungagap-image-build/PAUSE
 # Only after the new signed stable release is verified and a stable test may start:
 sudo -u imgbuild rm -- /var/lib/ginnungagap-image-build/PAUSE
-image_build run --release v1.3.7
+image_build run --release v1.3.9
 ```
 
 Keep poll/path disabled during that production check. If it fails, restore the PAUSE hold and diagnose; a published local
