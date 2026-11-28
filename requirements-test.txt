@@ -6,6 +6,6 @@ pytest>=8
 pyvmomi==9.1.0.0
 fastapi==0.163.1
 httpx==0.28.1
-jsonschema>=4
+jsonschema>=4.26.0
 bcrypt>=4
 python-multipart>=0.0.20
