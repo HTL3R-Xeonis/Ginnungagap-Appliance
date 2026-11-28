@@ -3,8 +3,8 @@
 # instead of silently skipping tests (see tests/conftest.py). Locally: pip install -r requirements-test.txt
 PyYAML>=6
 pytest>=8
-pyvmomi==9.1.0.0
-fastapi==0.163.1
+pyvmomi==9.1.1.0
+fastapi==0.165.0
 httpx==0.28.1
 jsonschema>=4
 bcrypt>=4
